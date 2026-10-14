@@ -7,6 +7,7 @@ const { page } = useBudget();
 const { open } = useModal();
 
 const actionLabel = computed(() => {
+  if (page.value === "Accounts") return "Add account";
   if (page.value === "Budgets") return "Add budget";
   if (page.value === "Pots") return "Add pot";
   if (page.value === "Recurring Bills") return "Add bill";

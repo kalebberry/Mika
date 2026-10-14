@@ -30,6 +30,11 @@ export interface ModalFormState {
   status?: TransactionStatus;
   customCategory?: string;
   customColor?: string;
+  accountType?: "checking" | "savings" | "credit";
+  creditLimit?: string;
+  dueDay?: number;
+  minPayment?: string;
+  includeInSafeToSpend?: boolean;
 }
 
 const dialogRef = ref<HTMLDialogElement | null>(null);
@@ -55,6 +60,11 @@ const form = ref<ModalFormState>({
   protected: false,
   status: "posted",
   customCategory: "",
+  accountType: "checking",
+  creditLimit: "",
+  dueDay: 1,
+  minPayment: "",
+  includeInSafeToSpend: true,
 });
 
 export function useModal() {
@@ -64,6 +74,11 @@ export function useModal() {
     page,
     sum,
     postTransaction,
+    addAccount,
+    updateAccount,
+    adjustAccountBalance,
+    deleteAccount,
+    getAccountBalance,
   } = useBudget();
   const { toast } = useToast();
   const { showCompanion } = useCompanion();
@@ -162,6 +177,43 @@ export function useModal() {
           protected: Boolean(b.protected),
         };
       }
+    } else if (m === "Add account") {
+      form.value = {
+        ...form.value,
+        name: "",
+        amount: "0.00",
+        accountType: "checking",
+        creditLimit: "",
+        dueDay: 1,
+        minPayment: "",
+        includeInSafeToSpend: true,
+      };
+    } else if (m === "Edit account") {
+      const acc = (state.value.accounts || []).find((item) => item.id === id);
+      if (acc) {
+        form.value = {
+          ...form.value,
+          name: acc.name,
+          accountType: acc.type,
+          creditLimit:
+            acc.creditLimit !== undefined ? String(acc.creditLimit / 100) : "",
+          dueDay: acc.dueDay || 1,
+          minPayment:
+            acc.minPayment !== undefined ? String(acc.minPayment / 100) : "",
+          includeInSafeToSpend: Boolean(acc.includeInSafeToSpend),
+        };
+      }
+    } else if (m === "Adjust balance") {
+      const acc = (state.value.accounts || []).find((item) => item.id === id);
+      if (acc) {
+        const bal = getAccountBalance(acc);
+        form.value = {
+          ...form.value,
+          name: acc.name,
+          amount: String(Math.abs(bal) / 100),
+          accountType: acc.type,
+        };
+      }
     }
 
     dialogRef.value?.showModal();
@@ -178,6 +230,104 @@ export function useModal() {
     const amount = cents(Number(f.amount));
     const target = cents(Number(f.target));
     const name = f.name.trim();
+
+    if (mode.value === "Add account") {
+      if (!name) {
+        error.value = "Enter an account name.";
+        return;
+      }
+      const initialBal = cents(Number(f.amount || 0));
+      if (!Number.isFinite(initialBal) || initialBal < 0) {
+        error.value = "Enter a valid balance ($0.00 or greater).";
+        return;
+      }
+      const isCredit = f.accountType === "credit";
+      let limitCents: number | undefined;
+      let minPayCents: number | undefined;
+      if (isCredit) {
+        limitCents = cents(Number(f.creditLimit || 0));
+        if (!Number.isFinite(limitCents) || limitCents < 0) {
+          error.value = "Enter a valid credit limit ($0.00 or greater).";
+          return;
+        }
+        if (f.minPayment) {
+          minPayCents = cents(Number(f.minPayment));
+          if (!Number.isFinite(minPayCents) || minPayCents < 0) {
+            error.value = "Enter a valid minimum payment.";
+            return;
+          }
+        }
+      }
+      addAccount({
+        name,
+        type: f.accountType || "checking",
+        balance: initialBal,
+        creditLimit: limitCents,
+        dueDay: isCredit && f.dueDay ? Number(f.dueDay) : undefined,
+        minPayment: minPayCents,
+        includeInSafeToSpend: isCredit
+          ? false
+          : Boolean(f.includeInSafeToSpend),
+      });
+      close();
+      return;
+    }
+
+    if (mode.value === "Edit account") {
+      if (!name) {
+        error.value = "Enter an account name.";
+        return;
+      }
+      const acc = (state.value.accounts || []).find((a) => a.id === selected.value);
+      if (!acc) return;
+      const isCredit = acc.type === "credit";
+      let limitCents: number | undefined;
+      let minPayCents: number | undefined;
+      if (isCredit) {
+        if (f.creditLimit !== undefined && f.creditLimit !== "") {
+          limitCents = cents(Number(f.creditLimit));
+          if (!Number.isFinite(limitCents) || limitCents < 0) {
+            error.value = "Enter a valid credit limit ($0.00 or greater).";
+            return;
+          }
+        }
+        if (f.minPayment !== undefined && f.minPayment !== "") {
+          minPayCents = cents(Number(f.minPayment));
+          if (!Number.isFinite(minPayCents) || minPayCents < 0) {
+            error.value = "Enter a valid minimum payment.";
+            return;
+          }
+        }
+      }
+      updateAccount(selected.value, {
+        name,
+        creditLimit: limitCents,
+        dueDay: isCredit && f.dueDay ? Number(f.dueDay) : undefined,
+        minPayment: minPayCents,
+        includeInSafeToSpend: isCredit
+          ? false
+          : Boolean(f.includeInSafeToSpend),
+      });
+      close();
+      return;
+    }
+
+    if (mode.value === "Adjust balance") {
+      const newBal = cents(Number(f.amount || 0));
+      if (!Number.isFinite(newBal) || newBal < 0) {
+        error.value = "Enter a valid balance ($0.00 or greater).";
+        return;
+      }
+      adjustAccountBalance(selected.value, newBal);
+      close();
+      return;
+    }
+
+    if (mode.value === "Delete account") {
+      deleteAccount(selected.value);
+      close();
+      return;
+    }
 
     if (
       [

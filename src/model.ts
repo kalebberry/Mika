@@ -47,8 +47,25 @@ export type BillSettlement = {
   settledAt?: string;
 };
 
+export type AccountType = "checking" | "savings" | "credit";
+
+export interface Account {
+  id: string;
+  name: string;
+  type: AccountType;
+  opening: number; // Integer cents. Baseline opening balance for the account
+  balance?: number; // Integer cents. For manual accounts without transaction ledgers, holds current balance
+  creditLimit?: number; // Integer cents (credit card only)
+  dueDay?: number; // 1-31 (credit card only)
+  minPayment?: number; // Integer cents (credit card only)
+  includeInSafeToSpend: boolean; // True for primary checking, default false for savings/credit
+  archived?: boolean; // Soft-delete / hide from active views
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type State = {
-  version: 2;
+  version: 2 | 3;
   demo: boolean;
   opening: number;
   payday: string;
@@ -58,6 +75,7 @@ export type State = {
   pots: Pot[];
   bills: Bill[];
   settledBills?: BillSettlement[];
+  accounts: Account[];
 };
 
 export interface ThemeColor {
@@ -109,10 +127,47 @@ export function getFollowingPayday(s: { payday: string; followingPayday?: string
   return s.followingPayday || addDays(s.payday, 14);
 }
 
+export function getAccountBalance(account: Account, s: State): number {
+  if (account.id === "acc-default-checking") {
+    const ledgerSum = s.transactions
+      .filter((t) => isLedgerStatus(t.status))
+      .reduce((n, t) => n + t.amount, 0);
+    return account.opening + ledgerSum;
+  }
+  return account.balance !== undefined ? account.balance : account.opening;
+}
+
+export function getAvailableCredit(account: Account, s?: State): number {
+  if (account.type !== "credit") return 0;
+  const currentBalance = s ? getAccountBalance(account, s) : (account.balance !== undefined ? account.balance : account.opening);
+  const limit = account.creditLimit || 0;
+  return Math.max(0, limit - currentBalance);
+}
+
+export function accountTotals(s: State) {
+  const accounts = s.accounts || [];
+  const activeAccounts = accounts.filter((a) => !a.archived);
+  const cashAccounts = activeAccounts.filter((a) => a.type === "checking" || a.type === "savings");
+  const creditAccounts = activeAccounts.filter((a) => a.type === "credit");
+
+  const totalCashAssets = cashAccounts.reduce((sum, a) => sum + getAccountBalance(a, s), 0);
+  const totalCreditDebt = creditAccounts.reduce((sum, a) => sum + getAccountBalance(a, s), 0);
+  const totalAvailableCredit = creditAccounts.reduce((sum, a) => sum + getAvailableCredit(a, s), 0);
+
+  return {
+    totalCashAssets,
+    totalCreditDebt,
+    totalAvailableCredit,
+    activeCount: activeAccounts.length,
+    archivedCount: accounts.length - activeAccounts.length,
+  };
+}
+
 export function blank(): State {
   const payday = nextPayday();
+  const d = today();
   return {
-    version: 2,
+    version: 3,
     demo: false,
     opening: 0,
     payday,
@@ -122,6 +177,18 @@ export function blank(): State {
     pots: [],
     bills: [],
     settledBills: [],
+    accounts: [
+      {
+        id: "acc-default-checking",
+        name: "Primary Checking",
+        type: "checking",
+        opening: 0,
+        includeInSafeToSpend: true,
+        archived: false,
+        createdAt: d,
+        updatedAt: d,
+      },
+    ],
   };
 }
 
@@ -237,6 +304,43 @@ export function demo(): State {
       { id: "b3", name: "Phone", amount: 5500, day: 12, protected: false, settledDueDates: [] },
     ],
     settledBills: [],
+    accounts: [
+      {
+        id: "acc-default-checking",
+        name: "Primary Checking",
+        type: "checking",
+        opening: 285675,
+        includeInSafeToSpend: true,
+        archived: false,
+        createdAt: d,
+        updatedAt: d,
+      },
+      {
+        id: "acc-demo-savings",
+        name: "Emergency Savings",
+        type: "savings",
+        opening: 450000,
+        balance: 450000,
+        includeInSafeToSpend: false,
+        archived: false,
+        createdAt: d,
+        updatedAt: d,
+      },
+      {
+        id: "acc-demo-credit",
+        name: "Mika Rewards Visa",
+        type: "credit",
+        opening: 35000,
+        balance: 35000,
+        creditLimit: 200000,
+        dueDay: 22,
+        minPayment: 3500,
+        includeInSafeToSpend: false,
+        archived: false,
+        createdAt: d,
+        updatedAt: d,
+      },
+    ],
   };
 }
 
@@ -646,10 +750,71 @@ export function migrateState(raw: any, now = today()): State {
       ? raw.followingPayday
       : addDays(payday, 14);
 
+  const rawOpening = Number(raw.opening) || 0;
+  let accounts: Account[] = [];
+
+  if (Array.isArray(raw.accounts) && raw.accounts.length > 0) {
+    accounts = raw.accounts.map((a: any) => {
+      const isCredit = a.type === "credit";
+      const isPrimaryChecking = a.id === "acc-default-checking";
+      const type: AccountType =
+        a.type === "savings" || a.type === "credit" ? a.type : "checking";
+      const acc: Account = {
+        id: String(a.id || uid()),
+        name: String(a.name || (isCredit ? "Credit Card" : "Account")),
+        type,
+        opening: isPrimaryChecking ? rawOpening : Number(a.opening) || 0,
+        includeInSafeToSpend: isCredit
+          ? false
+          : a.includeInSafeToSpend !== undefined
+            ? Boolean(a.includeInSafeToSpend)
+            : isPrimaryChecking,
+        archived: Boolean(a.archived),
+        createdAt: String(a.createdAt || now),
+        updatedAt: String(a.updatedAt || now),
+      };
+      if (a.balance !== undefined) {
+        acc.balance = Number(a.balance);
+      }
+      if (isCredit) {
+        acc.creditLimit = Number(a.creditLimit) || 0;
+        if (a.dueDay) {
+          acc.dueDay = Math.min(31, Math.max(1, Number(a.dueDay)));
+        }
+        if (a.minPayment) {
+          acc.minPayment = Number(a.minPayment);
+        }
+      }
+      return acc;
+    });
+  } else {
+    // Phase 1 Migration: convert existing single cash balance into a default checking account
+    accounts = [
+      {
+        id: "acc-default-checking",
+        name: "Primary Checking",
+        type: "checking",
+        opening: rawOpening,
+        includeInSafeToSpend: true,
+        archived: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+  }
+
+  // Ensure there is at least one primary checking or safe-to-spend cash account
+  if (!accounts.some((a) => a.includeInSafeToSpend)) {
+    const primary = accounts.find((a) => a.type === "checking");
+    if (primary) {
+      primary.includeInSafeToSpend = true;
+    }
+  }
+
   return {
-    version: 2,
+    version: raw.version === 3 ? 3 : 2,
     demo: Boolean(raw.demo),
-    opening: Number(raw.opening) || 0,
+    opening: rawOpening,
     payday,
     followingPayday,
     transactions,
@@ -657,6 +822,7 @@ export function migrateState(raw: any, now = today()): State {
     pots,
     bills,
     settledBills,
+    accounts,
   };
 }
 
@@ -665,6 +831,7 @@ export function resetWorkspace(current: State, keepPlan: boolean): State {
   if (keepPlan) {
     fresh.budgets = current.budgets.map((b) => ({ ...b }));
     fresh.bills = current.bills.map((b) => ({ ...b }));
+    fresh.accounts = (current.accounts || []).map((a) => ({ ...a }));
   }
   return fresh;
 }

@@ -20,6 +20,11 @@ import {
   spent,
   isLedgerStatus,
   getUncoveredScheduledExpenses,
+  type Account,
+  type AccountType,
+  accountTotals,
+  getAccountBalance,
+  getAvailableCredit,
 } from "../src/model.ts";
 
 test("Test A — Future paycheck: income remains scheduled until confirmed/posted", () => {
@@ -694,6 +699,395 @@ test("Test J — isLedgerStatus helper correctness", () => {
   assert.equal(isLedgerStatus(undefined), false);
   assert.equal(isLedgerStatus("unknown"), false);
 });
+
+test("Test K — Account data model: checking, savings, and credit card creation", () => {
+  const d = "2026-10-14";
+  const checking: Account = {
+    id: "acc-1",
+    name: "Everyday Checking",
+    type: "checking",
+    opening: 250000, // $2,500.00
+    includeInSafeToSpend: true,
+    archived: false,
+    createdAt: d,
+    updatedAt: d,
+  };
+
+  const savings: Account = {
+    id: "acc-2",
+    name: "High Yield Savings",
+    type: "savings",
+    opening: 1000000, // $10,000.00
+    balance: 1000000,
+    includeInSafeToSpend: false,
+    archived: false,
+    createdAt: d,
+    updatedAt: d,
+  };
+
+  const creditCard: Account = {
+    id: "acc-3",
+    name: "Cashback Visa",
+    type: "credit",
+    opening: 45000, // $450.00 owed
+    balance: 45000,
+    creditLimit: 300000, // $3,000.00
+    dueDay: 18,
+    minPayment: 3500, // $35.00
+    includeInSafeToSpend: false,
+    archived: false,
+    createdAt: d,
+    updatedAt: d,
+  };
+
+  assert.equal(checking.type, "checking");
+  assert.equal(checking.includeInSafeToSpend, true);
+  assert.equal(savings.type, "savings");
+  assert.equal(savings.includeInSafeToSpend, false);
+  assert.equal(creditCard.type, "credit");
+  assert.equal(creditCard.creditLimit, 300000);
+  assert.equal(creditCard.dueDay, 18);
+  assert.equal(creditCard.minPayment, 3500);
+});
+
+test("Test L — Assets vs Liabilities and available credit calculation", () => {
+  const state: State = blank();
+  state.opening = 200000; // $2,000.00
+
+  // Replace default accounts with test accounts
+  const checking: Account = {
+    id: "acc-default-checking",
+    name: "Primary Checking",
+    type: "checking",
+    opening: 200000, // $2,000.00
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  const savings: Account = {
+    id: "acc-savings",
+    name: "Vacation Savings",
+    type: "savings",
+    opening: 800000, // $8,000.00
+    balance: 800000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  const card1: Account = {
+    id: "acc-card-1",
+    name: "Sapphire Preferred",
+    type: "credit",
+    opening: 50000, // $500.00 owed
+    balance: 50000,
+    creditLimit: 500000, // $5,000.00 limit
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  const card2: Account = {
+    id: "acc-card-2",
+    name: "Store Card",
+    type: "credit",
+    opening: 30000, // $300.00 owed
+    balance: 30000,
+    creditLimit: 100000, // $1,000.00 limit
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  state.accounts = [checking, savings, card1, card2];
+
+  // Available credit checks: limit - balance owed
+  assert.equal(getAvailableCredit(card1, state), 450000, "Card 1 available credit: $5,000 - $500 = $4,500");
+  assert.equal(getAvailableCredit(card2, state), 70000, "Card 2 available credit: $1,000 - $300 = $700");
+  assert.equal(getAvailableCredit(checking, state), 0, "Non-credit account has 0 available credit");
+
+  // Account summary totals
+  const summary = accountTotals(state);
+  assert.equal(summary.totalCashAssets, 1000000, "Total cash assets: Checking ($2,000) + Savings ($8,000) = $10,000.00");
+  assert.equal(summary.totalCreditDebt, 80000, "Total credit card debt: $500 + $300 = $800.00");
+  assert.equal(summary.totalAvailableCredit, 520000, "Total available credit: $4,500 + $700 = $5,200.00");
+});
+
+test("Test M — Migration from single-balance v1/v2: prevents double-counting and establishes authoritative checking balance", () => {
+  const simulatedToday = "2026-10-14";
+  const legacyState = {
+    version: 2,
+    opening: 740543, // $7,405.43
+    payday: "2026-10-21",
+    transactions: [
+      { id: "t1", name: "Groceries", amount: -15000, category: "Groceries", date: "2026-10-10", status: "pending" },
+      { id: "t2", name: "Side gig", amount: 40000, category: "Income", date: "2026-10-11", status: "cleared" },
+    ],
+    budgets: [],
+    pots: [],
+    bills: [],
+  };
+
+  const migrated = migrateState(legacyState, simulatedToday);
+
+  // 1. Exactly 1 default checking account created
+  assert.equal(migrated.accounts.length, 1);
+  const defChecking = migrated.accounts[0]!;
+  assert.equal(defChecking.id, "acc-default-checking");
+  assert.equal(defChecking.type, "checking");
+  assert.equal(defChecking.name, "Primary Checking");
+  assert.equal(defChecking.includeInSafeToSpend, true);
+
+  // 2. Opening balance must match raw opening ($7,405.43), not the post-transaction balance!
+  assert.equal(defChecking.opening, 740543);
+  assert.equal(migrated.opening, 740543);
+
+  // 3. Authoritative balance derived via getAccountBalance: opening + (-$150 + $400) = $7,655.43
+  const expectedBalance = 740543 - 15000 + 40000;
+  assert.equal(getAccountBalance(defChecking, migrated), expectedBalance);
+  assert.equal(totals(migrated, simulatedToday).balance, expectedBalance);
+});
+
+test("Test N — Migration idempotence: multiple runs preserve exact state and balances", () => {
+  const simulatedToday = "2026-10-14";
+  const legacyState = {
+    version: 2,
+    opening: 500000,
+    payday: "2026-10-21",
+    transactions: [
+      { id: "t1", name: "Expense", amount: -2500, category: "General", date: "2026-10-10", status: "pending" },
+    ],
+    budgets: [],
+    pots: [],
+    bills: [],
+  };
+
+  // Run 1
+  const m1 = migrateState(legacyState, simulatedToday);
+  assert.equal(m1.accounts.length, 1);
+
+  // Run 2: Re-migrating m1
+  const m2 = migrateState(m1, simulatedToday);
+  assert.equal(m2.accounts.length, 1, "Idempotent: does not duplicate default checking account");
+  assert.deepEqual(m2, m1);
+
+  // Run 3: JSON round-trip serialization then re-migrating
+  const json = JSON.stringify(m2);
+  const parsed = JSON.parse(json);
+  const m3 = migrateState(parsed, simulatedToday);
+  assert.deepEqual(m3, m2, "JSON round-trip must preserve identical account structure and balances");
+});
+
+test("Test O — Safe to Spend eligibility: savings and credit cards do not inflate Safe to Spend", () => {
+  const simulatedToday = "2026-10-14";
+  const state: State = blank();
+  state.opening = 500000; // $5,000.00
+  state.payday = "2026-10-21";
+
+  // Primary checking ($5,000)
+  const checking: Account = {
+    id: "acc-default-checking",
+    name: "Primary Checking",
+    type: "checking",
+    opening: 500000,
+    includeInSafeToSpend: true,
+    createdAt: simulatedToday,
+    updatedAt: simulatedToday,
+  };
+
+  // Large savings account ($50,000.00) with includeInSafeToSpend: false
+  const savings: Account = {
+    id: "acc-savings-huge",
+    name: "Home Down Payment",
+    type: "savings",
+    opening: 5000000, // $50,000.00
+    balance: 5000000,
+    includeInSafeToSpend: false,
+    createdAt: simulatedToday,
+    updatedAt: simulatedToday,
+  };
+
+  // Credit card with $20,000 limit and $1,500 owed
+  const credit: Account = {
+    id: "acc-credit",
+    name: "Platinum Card",
+    type: "credit",
+    opening: 150000, // $1,500 owed
+    balance: 150000,
+    creditLimit: 2000000, // $20,000 limit
+    includeInSafeToSpend: false,
+    createdAt: simulatedToday,
+    updatedAt: simulatedToday,
+  };
+
+  state.accounts = [checking, savings, credit];
+
+  // Pots: $1,000
+  state.pots.push({ id: "p1", name: "Car Fund", saved: 100000, target: 200000, color: "#277c78" });
+
+  const t = totals(state, simulatedToday);
+  // Safe to Spend must strictly be based on checking: $5,000 - $1,000 (pots) = $4,000.00
+  // NOT $54,000 or $74,000!
+  assert.equal(t.balance, 500000, "Totals balance remains strictly the primary cash ledger");
+  assert.equal(t.safe, 400000, "Safe to spend is $4,000.00; savings and credit limit do NOT inflate spendable cash");
+
+  // Account totals separately report assets and debts
+  const summary = accountTotals(state);
+  assert.equal(summary.totalCashAssets, 5500000, "Cash assets report $55,000 total ($5k checking + $50k savings)");
+  assert.equal(summary.totalCreditDebt, 150000, "Credit debt reports $1,500 owed");
+  assert.equal(summary.totalAvailableCredit, 1850000, "Available credit reports $18,500");
+});
+
+test("Test P — Manual balance adjustments vs metadata edits: separation of concerns", () => {
+  const state: State = blank();
+  state.opening = 400000; // $4,000.00
+
+  // 1. Primary checking with transaction
+  const checking: Account = {
+    id: "acc-default-checking",
+    name: "Primary Checking",
+    type: "checking",
+    opening: 400000,
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  state.transactions.push({
+    id: "t1",
+    name: "Coffee",
+    amount: -500, // -$5.00
+    category: "Dining Out",
+    date: "2026-10-14",
+    status: "cleared",
+  });
+
+  // Current balance is $3,995.00
+  assert.equal(getAccountBalance(checking, state), 399500);
+
+  // Manual balance adjustment on primary checking to $4,500.00
+  const postedSum = -500;
+  const newCheckingBalance = 450000;
+  state.opening = newCheckingBalance - postedSum; // $4,500 - (-$5) = $4,505.00
+  checking.opening = state.opening;
+
+  // Now checking balance is exactly $4,500.00, preserving transaction history
+  assert.equal(getAccountBalance(checking, state), 450000);
+  assert.equal(state.transactions.length, 1, "Transaction history preserved");
+
+  // 2. Standalone savings account
+  const savings: Account = {
+    id: "acc-savings-2",
+    name: "Emergency Fund",
+    type: "savings",
+    opening: 1000000,
+    balance: 1000000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  state.accounts = [checking, savings];
+
+  // Metadata edit (rename) does NOT change balance
+  savings.name = "Rainy Day Savings";
+  assert.equal(savings.balance, 1000000, "Metadata edit does not touch balance");
+
+  // Balance adjustment on savings account updates its balance without touching checking opening
+  savings.balance = 1250000; // $12,500.00
+  assert.equal(getAccountBalance(savings, state), 1250000);
+  assert.equal(getAccountBalance(checking, state), 450000, "Checking balance unchanged by savings adjustment");
+  assert.equal(state.opening, 450500, "State opening unchanged by savings adjustment");
+});
+
+test("Test Q — Archiving and unarchiving accounts preserves records and protects primary checking", () => {
+  const state: State = blank();
+  const checking: Account = {
+    id: "acc-default-checking",
+    name: "Primary Checking",
+    type: "checking",
+    opening: 300000,
+    includeInSafeToSpend: true,
+    archived: false,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  const oldSavings: Account = {
+    id: "acc-old-savings",
+    name: "Old Bank Savings",
+    type: "savings",
+    opening: 50000,
+    balance: 50000,
+    includeInSafeToSpend: false,
+    archived: false,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  state.accounts = [checking, oldSavings];
+
+  // Initial totals
+  let totalsBefore = accountTotals(state);
+  assert.equal(totalsBefore.activeCount, 2);
+  assert.equal(totalsBefore.archivedCount, 0);
+  assert.equal(totalsBefore.totalCashAssets, 350000);
+
+  // Archive old savings
+  oldSavings.archived = true;
+
+  let totalsAfter = accountTotals(state);
+  assert.equal(totalsAfter.activeCount, 1);
+  assert.equal(totalsAfter.archivedCount, 1);
+  assert.equal(totalsAfter.totalCashAssets, 300000, "Archived account excluded from active cash assets");
+  assert.equal(state.accounts.length, 2, "Archived account is preserved in data model");
+
+  // Restore old savings
+  oldSavings.archived = false;
+  let totalsRestored = accountTotals(state);
+  assert.equal(totalsRestored.activeCount, 2);
+  assert.equal(totalsRestored.totalCashAssets, 350000);
+});
+
+test("Test R — Edge cases: zero balances, credit limit exceeded, and negative amounts", () => {
+  const state: State = blank();
+  const zeroChecking: Account = {
+    id: "acc-zero",
+    name: "Zero Checking",
+    type: "checking",
+    opening: 0,
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  const maxedCard: Account = {
+    id: "acc-maxed",
+    name: "Over-limit Card",
+    type: "credit",
+    opening: 120000, // $1,200 owed
+    balance: 120000,
+    creditLimit: 100000, // $1,000 limit
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  const zeroLimitCard: Account = {
+    id: "acc-zero-limit",
+    name: "Secured Card Pending",
+    type: "credit",
+    opening: 0,
+    balance: 0,
+    creditLimit: 0,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+
+  state.accounts = [zeroChecking, maxedCard, zeroLimitCard];
+
+  // Zero balance account returns 0
+  assert.equal(getAccountBalance(zeroChecking, state), 0);
+
+  // Over-limit card has available credit clamped to 0 (never negative)
+  assert.equal(getAvailableCredit(maxedCard, state), 0, "Available credit clamped to 0 when balance exceeds limit");
+
+  // Zero limit card has 0 available credit
+  assert.equal(getAvailableCredit(zeroLimitCard, state), 0);
+});
+
 
 
 

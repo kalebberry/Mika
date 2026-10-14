@@ -86,7 +86,9 @@ function onDateInput() {
   >
     <form @submit.prevent="submit">
       <div class="section-heading">
-        <h2 id="dialog-title">{{ mode }}</h2>
+        <h2 id="dialog-title">
+          {{ mode === "Adjust balance" ? "Adjust balance — " + form.name : mode }}
+        </h2>
         <button
           type="button"
           class="close"
@@ -196,6 +198,153 @@ function onDateInput() {
         }}
         Your total account balance stays the same.
       </p>
+
+      <p v-if="mode === 'Adjust balance'" class="muted">
+        {{
+          selected === 'acc-default-checking'
+            ? 'Update your current primary checking balance. Mika will calibrate your baseline opening balance while preserving your full transaction history.'
+            : 'Set the updated current balance for this account. No transactions will be created or changed.'
+        }}
+      </p>
+
+      <p v-if="mode === 'Edit account'" class="muted">
+        Update account details. To change the account's balance, use the separate "Adjust balance" action.
+      </p>
+
+      <!-- Account Type (Add account only) -->
+      <label v-if="mode === 'Add account'">
+        Account Type
+        <select v-model="form.accountType">
+          <option value="checking">Checking (Cash asset)</option>
+          <option value="savings">Savings (Cash asset)</option>
+          <option value="credit">Credit Card (Liability / Balance owed)</option>
+        </select>
+        <small v-if="form.accountType === 'credit'">
+          Credit cards represent money you owe. Available credit is never counted as spendable cash.
+        </small>
+        <small v-else-if="form.accountType === 'savings'">
+          Savings accounts are cash assets, reserved separately from daily spending money.
+        </small>
+        <small v-else>
+          Checking accounts hold your primary cash ledger.
+        </small>
+      </label>
+
+      <!-- Account Name (Add account or Edit account) -->
+      <label v-if="mode === 'Add account' || mode === 'Edit account'">
+        Account Name
+        <input
+          v-model="form.name"
+          required
+          maxlength="60"
+          :placeholder="
+            form.accountType === 'credit'
+              ? 'e.g. Chase Freedom or Apple Card'
+              : form.accountType === 'savings'
+                ? 'e.g. High Yield Savings'
+                : 'e.g. Main Checking'
+          "
+        />
+      </label>
+
+      <!-- Initial Balance (Add account only) -->
+      <label v-if="mode === 'Add account'">
+        {{ form.accountType === 'credit' ? 'Current Balance Owed ($)' : 'Starting Balance ($)' }}
+        <input
+          v-model="form.amount"
+          type="number"
+          min="0"
+          step="0.01"
+          required
+          inputmode="decimal"
+          placeholder="0.00"
+        />
+        <small v-if="form.accountType === 'credit'">
+          Enter the current unpaid balance on the card.
+        </small>
+        <small v-else>
+          Enter the current cash balance in this account.
+        </small>
+      </label>
+
+      <!-- Adjusted Balance (Adjust balance only) -->
+      <label v-if="mode === 'Adjust balance'">
+        {{ form.accountType === 'credit' ? 'New Balance Owed ($)' : 'New Current Balance ($)' }}
+        <input
+          v-model="form.amount"
+          type="number"
+          min="0"
+          step="0.01"
+          required
+          inputmode="decimal"
+          placeholder="0.00"
+        />
+        <small>
+          Enter the updated balance. This is recorded as an authoritative adjustment.
+        </small>
+      </label>
+
+      <!-- Credit card specific fields (Progressive disclosure) -->
+      <template v-if="(mode === 'Add account' || mode === 'Edit account') && form.accountType === 'credit'">
+        <label>
+          Credit Limit ($)
+          <input
+            v-model="form.creditLimit"
+            type="number"
+            min="0"
+            step="0.01"
+            required
+            inputmode="decimal"
+            placeholder="e.g. 5000.00"
+          />
+          <small>Required to calculate available credit. Credit limits never increase Safe to Spend.</small>
+        </label>
+        <label>
+          Payment Due Day of Month (Optional)
+          <input
+            v-model="form.dueDay"
+            type="number"
+            min="1"
+            max="31"
+            placeholder="1-31"
+          />
+          <small>Day of each month your payment is due.</small>
+        </label>
+        <label>
+          Minimum Payment ($ Optional)
+          <input
+            v-model="form.minPayment"
+            type="number"
+            min="0"
+            step="0.01"
+            inputmode="decimal"
+            placeholder="0.00"
+          />
+        </label>
+      </template>
+
+      <!-- Safe to Spend inclusion (Cash accounts only) -->
+      <label
+        class="reset-confirm"
+        v-if="(mode === 'Add account' || mode === 'Edit account') && form.accountType !== 'credit'"
+        style="margin-top: 0.5rem; margin-bottom: 0.75rem;"
+      >
+        <input
+          type="checkbox"
+          v-model="form.includeInSafeToSpend"
+          :disabled="selected === 'acc-default-checking'"
+        />
+        <span>
+          <strong>Include in Safe to Spend</strong>
+          <small style="display: block; color: var(--color-muted);">
+            {{
+              selected === 'acc-default-checking'
+                ? 'Primary checking is automatically included in Safe to Spend.'
+                : 'Leave unchecked for dedicated savings so these funds are protected from daily spending.'
+            }}
+          </small>
+        </span>
+      </label>
 
       <label
         v-if="
@@ -440,13 +589,15 @@ function onDateInput() {
             ? "Confirm and start fresh"
             : mode.startsWith("Delete")
               ? "Confirm removal"
-              : mode === "Settle bill" || (mode === "Pay bill" && payMethod === "settled")
-                ? "Confirm settlement"
-                : mode === "Pay bill"
-                  ? "Confirm payment"
-                  : mode.startsWith("Edit")
-                    ? "Save changes"
-                    : "Save"
+              : mode === "Adjust balance"
+                ? "Update balance"
+                : mode === "Settle bill" || (mode === "Pay bill" && payMethod === "settled")
+                  ? "Confirm settlement"
+                  : mode === "Pay bill"
+                    ? "Confirm payment"
+                    : mode.startsWith("Edit")
+                      ? "Save changes"
+                      : "Save"
         }}
       </button>
     </form>

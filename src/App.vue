@@ -11,6 +11,7 @@ import DemoBanner from "./components/common/DemoBanner.vue";
 import ActionDialog from "./components/common/ActionDialog.vue";
 
 import OverviewView from "./components/views/OverviewView.vue";
+import AccountsView from "./components/views/AccountsView.vue";
 import TransactionsView from "./components/views/TransactionsView.vue";
 import BudgetsView from "./components/views/BudgetsView.vue";
 import PotsView from "./components/views/PotsView.vue";
@@ -34,6 +35,7 @@ onMounted(() => {
       <DemoBanner />
 
       <OverviewView v-if="page === 'Overview'" />
+      <AccountsView v-else-if="page === 'Accounts'" />
       <TransactionsView v-else-if="page === 'Transactions'" />
       <BudgetsView v-else-if="page === 'Budgets'" />
       <PotsView v-else-if="page === 'Pots'" />

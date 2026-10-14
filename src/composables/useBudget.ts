@@ -1,6 +1,8 @@
 import { ref, computed, watch } from "vue";
 import {
   type State,
+  type Account,
+  type AccountType,
   demo,
   resetWorkspace,
   cents,
@@ -15,11 +17,16 @@ import {
   settleBillOccurrence,
   unsettleBillOccurrence,
   isLedgerStatus,
+  accountTotals,
+  getAccountBalance,
+  getAvailableCredit,
+  uid,
 } from "../model";
 import { useToast } from "./useToast";
 
 export type PageName =
   | "Overview"
+  | "Accounts"
   | "Transactions"
   | "Budgets"
   | "Pots"
@@ -28,6 +35,7 @@ export type PageName =
 
 export const navItems: [PageName, string][] = [
   ["Overview", "⌂"],
+  ["Accounts", "💳"],
   ["Transactions", "↕"],
   ["Budgets", "◔"],
   ["Pots", "▣"],
@@ -45,7 +53,7 @@ try {
   if (raw) {
     const parsed = JSON.parse(raw);
     if (
-      (parsed.version === 1 || parsed.version === 2) &&
+      (parsed.version === 1 || parsed.version === 2 || parsed.version === 3) &&
       Array.isArray(parsed.transactions) &&
       Array.isArray(parsed.pots) &&
       Array.isArray(parsed.bills) &&
@@ -157,6 +165,11 @@ const latest = computed(() =>
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, 5),
 );
+
+const accounts = computed(() => state.value.accounts || []);
+const activeAccounts = computed(() => accounts.value.filter((a) => !a.archived));
+const archivedAccounts = computed(() => accounts.value.filter((a) => a.archived));
+const accountSummary = computed(() => accountTotals(state.value));
 
 const budgetTotal = computed(() =>
   state.value.budgets.reduce((n, b) => n + b.limit, 0),
@@ -368,6 +381,121 @@ export function useBudget() {
     toast("Settlement removed.");
   }
 
+  function addAccount(accData: {
+    name: string;
+    type: AccountType;
+    balance: number;
+    creditLimit?: number;
+    dueDay?: number;
+    minPayment?: number;
+    includeInSafeToSpend?: boolean;
+  }) {
+    if (!state.value.accounts) state.value.accounts = [];
+    const isCredit = accData.type === "credit";
+    const newAcc: Account = {
+      id: uid(),
+      name: accData.name.trim() || (isCredit ? "Credit Card" : "Account"),
+      type: accData.type,
+      opening: accData.balance,
+      balance: accData.balance,
+      includeInSafeToSpend: isCredit ? false : Boolean(accData.includeInSafeToSpend),
+      archived: false,
+      createdAt: today(),
+      updatedAt: today(),
+    };
+    if (isCredit) {
+      newAcc.creditLimit = accData.creditLimit ? Math.max(0, accData.creditLimit) : 0;
+      if (accData.dueDay) newAcc.dueDay = Math.min(31, Math.max(1, accData.dueDay));
+      if (accData.minPayment) newAcc.minPayment = Math.max(0, accData.minPayment);
+    }
+    state.value.accounts.push(newAcc);
+    toast(`Added ${newAcc.name}.`);
+    return newAcc;
+  }
+
+  function updateAccount(
+    id: string,
+    metadata: {
+      name: string;
+      creditLimit?: number;
+      dueDay?: number;
+      minPayment?: number;
+      includeInSafeToSpend?: boolean;
+    },
+  ) {
+    const acc = (state.value.accounts || []).find((a) => a.id === id);
+    if (!acc) return false;
+    acc.name = metadata.name.trim() || acc.name;
+    acc.updatedAt = today();
+
+    if (acc.type === "credit") {
+      if (metadata.creditLimit !== undefined) {
+        acc.creditLimit = Math.max(0, metadata.creditLimit);
+      }
+      if (metadata.dueDay !== undefined) {
+        acc.dueDay = metadata.dueDay ? Math.min(31, Math.max(1, metadata.dueDay)) : undefined;
+      }
+      if (metadata.minPayment !== undefined) {
+        acc.minPayment = metadata.minPayment ? Math.max(0, metadata.minPayment) : undefined;
+      }
+      acc.includeInSafeToSpend = false;
+    } else {
+      if (metadata.includeInSafeToSpend !== undefined) {
+        acc.includeInSafeToSpend = Boolean(metadata.includeInSafeToSpend);
+      }
+    }
+    toast(`Updated ${acc.name} details.`);
+    return true;
+  }
+
+  function adjustAccountBalance(id: string, newBalanceCents: number) {
+    if (!Number.isFinite(newBalanceCents)) return false;
+    const acc = (state.value.accounts || []).find((a) => a.id === id);
+    if (!acc) return false;
+
+    if (acc.id === "acc-default-checking") {
+      const postedSum = state.value.transactions
+        .filter((t) => isLedgerStatus(t.status))
+        .reduce((n, t) => n + t.amount, 0);
+      state.value.opening = newBalanceCents - postedSum;
+      acc.opening = state.value.opening;
+      acc.updatedAt = today();
+    } else {
+      acc.balance = newBalanceCents;
+      acc.updatedAt = today();
+    }
+    toast(`Balance for ${acc.name} adjusted.`);
+    return true;
+  }
+
+  function toggleArchiveAccount(id: string) {
+    const acc = (state.value.accounts || []).find((a) => a.id === id);
+    if (!acc) return false;
+    if (acc.id === "acc-default-checking") {
+      toast("The primary checking account cannot be archived.");
+      return false;
+    }
+    acc.archived = !acc.archived;
+    acc.updatedAt = today();
+    toast(acc.archived ? `Archived ${acc.name}.` : `Restored ${acc.name}.`);
+    return true;
+  }
+
+  function deleteAccount(id: string) {
+    if (id === "acc-default-checking") {
+      toast("The primary checking account cannot be deleted.");
+      return false;
+    }
+    const idx = (state.value.accounts || []).findIndex((a) => a.id === id);
+    if (idx !== -1) {
+      const name = state.value.accounts[idx]?.name || "Account";
+      state.value.accounts.splice(idx, 1);
+      toast(`Deleted ${name}.`);
+      return true;
+    }
+    return false;
+  }
+
   function registerModelContext() {
     const context = (document as any).modelContext;
     if (context?.registerTool) {
@@ -430,6 +558,17 @@ export function useBudget() {
     toggleProtectBill,
     settleBill,
     unsettleBill,
+    accounts,
+    activeAccounts,
+    archivedAccounts,
+    accountSummary,
+    addAccount,
+    updateAccount,
+    adjustAccountBalance,
+    toggleArchiveAccount,
+    deleteAccount,
+    getAccountBalance: (a: Account) => getAccountBalance(a, state.value),
+    getAvailableCredit: (a: Account) => getAvailableCredit(a, state.value),
     registerModelContext,
   };
 }

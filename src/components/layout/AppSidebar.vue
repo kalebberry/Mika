@@ -19,7 +19,23 @@ const { page, collapsed } = useBudget();
         :aria-current="page === label ? 'page' : undefined"
         :title="label"
       >
-        <span class="nav-icon">{{ icon }}</span>
+        <span class="nav-icon" :class="{ 'has-svg': label === 'Accounts' }">
+          <svg
+            v-if="label === 'Accounts'"
+            class="sidebar-icon-svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="2" y="5" width="20" height="14" rx="2" />
+            <line x1="2" y1="10" x2="22" y2="10" />
+          </svg>
+          <template v-else>{{ icon }}</template>
+        </span>
         <span class="nav-label">{{ label }}</span>
       </button>
     </nav>
