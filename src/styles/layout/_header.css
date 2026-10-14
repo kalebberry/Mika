@@ -1,0 +1,35 @@
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+  margin-bottom: 1.625rem;
+}
+
+.eyebrow {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #77716b;
+  margin-bottom: 0.5rem;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+}
+
+@media (max-width: 37.5rem) {
+  .eyebrow {
+    display: none;
+  }
+
+  .page-header {
+    margin-bottom: 1.375rem;
+  }
+
+  .header-actions {
+    gap: 0.5rem;
+  }
+}

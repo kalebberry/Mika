@@ -1,0 +1,9 @@
+/* Theme accent variables */
+[data-theme="dark"] {
+  --color-bg: #19181c;
+  --color-surface: #201f24;
+  --color-surface-subtle: #29282e;
+  --color-text: #f8f4f0;
+  --color-line: #2e2d33;
+  --color-line-dark: #3a3940;
+}

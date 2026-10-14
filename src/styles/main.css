@@ -1,0 +1,40 @@
+/* ==========================================================================
+   Mika Budget — 7-1 Modern CSS Architecture
+   ========================================================================== */
+
+/* 1. Vendors */
+@import "./vendors/_fonts.css";
+
+/* 2. Abstracts (Tokens & Variables) */
+@import "./abstracts/_variables.css";
+
+/* 3. Base */
+@import "./base/_reset.css";
+@import "./base/_typography.css";
+
+/* 4. Layout */
+@import "./layout/_app.css";
+@import "./layout/_sidebar.css";
+@import "./layout/_header.css";
+@import "./layout/_footer.css";
+@import "./layout/_grid.css";
+
+/* 5. Components */
+@import "./components/_buttons.css";
+@import "./components/_cards.css";
+@import "./components/_forms.css";
+@import "./components/_tables.css";
+@import "./components/_dialog.css";
+@import "./components/_badges.css";
+@import "./components/_progress.css";
+@import "./components/_toast.css";
+
+/* 6. Pages */
+@import "./pages/_overview.css";
+@import "./pages/_budgets.css";
+@import "./pages/_pots.css";
+@import "./pages/_bills.css";
+@import "./pages/_settings.css";
+
+/* 7. Themes */
+@import "./themes/_theme.css";

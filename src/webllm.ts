@@ -9,7 +9,7 @@ import {
   dueDate,
   nextDueDate,
 } from "./model";
-import type { CompanionExpression } from "./companion";
+import { type CompanionExpression, companionMessage } from "./companion";
 
 export interface WebLLMModelOption {
   id: string;
@@ -204,38 +204,68 @@ export async function fetchInBrowserAdvice(
   const engine = await getOrInitWebLLMEngine(modelId, onProgress);
   const financialData = formatFinancialPrompt(state);
 
-  const systemPrompt = `You are Mika, a warm, supportive, motivating personal budgeting companion.
-Analyze the user's financial snapshot and provide brief, encouraging, practical guidance (2 to 3 sentences max).
-Choose the best expression:
-- "celebrating": if safe-to-spend is positive, goal reached, or spending is well managed.
-- "concerned": if safe-to-spend is negative or budget is exceeded.
-- "focused": if payday passed or bills are upcoming.
-- "welcome": for general check-ins or steady balance.
+  const systemPrompt = `You are Mika, a warm, supportive personal budgeting companion.
+Given the financial snapshot, provide encouraging and practical guidance (1-2 sentences).
+You MUST output ONLY a valid JSON object without markdown or commentary.
 
-Suggest an action button label and destination tab ('Settings' | 'Budgets' | 'Pots' | 'Add transaction').
-Respond ONLY with a JSON object in this exact schema, with no markdown:
+Example output:
 {
-  "expression": "welcome" | "celebrating" | "concerned" | "focused",
-  "title": "Short warm title (3-5 words)",
-  "text": "2-3 sentences of thoughtful advice.",
-  "action": "Action label",
-  "destination": "Settings" | "Budgets" | "Pots" | "Add transaction"
-}`;
+  "expression": "welcome",
+  "title": "Staying on track",
+  "text": "Your daily spending is steady and well within your plan. Keep logging daily expenses to stay ahead.",
+  "action": "Add transaction",
+  "destination": "Add transaction"
+}
+
+Allowed expressions: "welcome", "celebrating", "concerned", "focused".
+Allowed destinations: "Settings", "Budgets", "Pots", "Add transaction".`;
 
   const response = await engine.chat.completions.create({
     messages: [
       { role: "system", content: systemPrompt },
-      { role: "user", content: financialData },
+      { role: "user", content: `${financialData}\n\nProvide your JSON advice:` },
     ],
-    temperature: 0.6,
-    max_tokens: 280,
+    temperature: 0.5,
+    max_tokens: 380,
   });
 
   const rawContent = response.choices[0]?.message?.content || "";
-  return parseAdviceResult(rawContent, modelId);
+  return parseAdviceResult(rawContent, modelId, state);
 }
 
-function parseAdviceResult(raw: string, modelId: string): WebLLMAdvice {
+function cleanSentence(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+
+  // If already ending with sentence punctuation, return as-is
+  if (/[.!?]$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  // Find the last complete sentence ending
+  const lastPeriod = trimmed.lastIndexOf(".");
+  const lastExcl = trimmed.lastIndexOf("!");
+  const lastQuest = trimmed.lastIndexOf("?");
+  const lastPunctuation = Math.max(lastPeriod, lastExcl, lastQuest);
+
+  if (lastPunctuation > 25) {
+    return trimmed.slice(0, lastPunctuation + 1).trim();
+  }
+
+  return trimmed + ".";
+}
+
+function isPromptEcho(text: string): boolean {
+  return /my expression would be|personal budgeting companion|allowed expressions|respond only with|analyze the user/i.test(
+    text,
+  );
+}
+
+function parseAdviceResult(
+  raw: string,
+  modelId: string,
+  state: State,
+): WebLLMAdvice {
   let cleaned = raw.trim();
   if (cleaned.startsWith("```")) {
     cleaned = cleaned
@@ -251,45 +281,53 @@ function parseAdviceResult(raw: string, modelId: string): WebLLMAdvice {
     cleaned = cleaned.slice(firstBrace, lastBrace + 1);
   }
 
+  const defaultAdvice = companionMessage(state);
+  const validExpressions: CompanionExpression[] = [
+    "welcome",
+    "celebrating",
+    "concerned",
+    "focused",
+  ];
+  const validDestinations = [
+    "Settings",
+    "Budgets",
+    "Pots",
+    "Add transaction",
+  ];
+
   try {
     const parsed = JSON.parse(cleaned);
-    const validExpressions: CompanionExpression[] = [
-      "welcome",
-      "celebrating",
-      "concerned",
-      "focused",
-    ];
-    const validDestinations = [
-      "Settings",
-      "Budgets",
-      "Pots",
-      "Add transaction",
-    ];
 
     const expression: CompanionExpression = validExpressions.includes(
       parsed.expression,
     )
       ? parsed.expression
-      : "welcome";
+      : defaultAdvice.expression;
 
     const destination = validDestinations.includes(parsed.destination)
       ? parsed.destination
-      : "Add transaction";
+      : defaultAdvice.destination;
 
     const title =
       typeof parsed.title === "string" && parsed.title.trim()
-        ? parsed.title.trim()
-        : "A thought from Mika";
+        ? cleanSentence(parsed.title.trim()).replace(/[.!?]$/, "")
+        : defaultAdvice.title;
 
-    const text =
+    let text =
       typeof parsed.text === "string" && parsed.text.trim()
         ? parsed.text.trim()
-        : "Every small budget check-in counts. Keep steady with your daily spending habits.";
+        : "";
+
+    if (!text || isPromptEcho(text)) {
+      text = defaultAdvice.text;
+    } else {
+      text = cleanSentence(text);
+    }
 
     const action =
       typeof parsed.action === "string" && parsed.action.trim()
         ? parsed.action.trim()
-        : "Take a look";
+        : defaultAdvice.action;
 
     return {
       expression,
@@ -304,14 +342,23 @@ function parseAdviceResult(raw: string, modelId: string): WebLLMAdvice {
       }),
     };
   } catch {
+    // If JSON parsing fails, salvage any valid text or fallback to complete companion advice
+    let text = "";
+    const textMatch = raw.match(/"text"\s*:\s*"([^"]+)/i);
+    if (textMatch && textMatch[1] && !isPromptEcho(textMatch[1])) {
+      text = cleanSentence(textMatch[1]);
+    }
+
+    if (!text || isPromptEcho(text)) {
+      text = defaultAdvice.text;
+    }
+
     return {
-      expression: "welcome",
-      title: "Mika’s Insight",
-      text:
-        cleaned.slice(0, 240) ||
-        "Your finances are tracked and ready. You are taking great steps forward.",
-      action: "Add transaction",
-      destination: "Add transaction",
+      expression: defaultAdvice.expression,
+      title: defaultAdvice.title,
+      text,
+      action: defaultAdvice.action,
+      destination: defaultAdvice.destination,
       modelUsed: modelId.split("-")[0] || modelId,
       timestamp: new Date().toLocaleTimeString([], {
         hour: "2-digit",

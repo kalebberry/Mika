@@ -1,0 +1,72 @@
+.page-intro {
+  color: var(--color-muted);
+  font-size: 1rem;
+  max-width: 48.75rem;
+  margin: -0.125rem 0 1.5rem;
+}
+
+.pot-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1.5rem;
+}
+
+.pot-card .section-heading {
+  margin-bottom: 2rem;
+}
+
+.pot-amount {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.pot-amount span {
+  font-size: 0.875rem;
+  color: var(--color-muted);
+}
+
+.pot-amount strong {
+  font-size: 2rem;
+  letter-spacing: -0.05em;
+}
+
+.pot-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+@media (max-width: 50rem) {
+  .pot-card {
+    padding: 1.375rem;
+  }
+
+  .pot-amount strong {
+    font-size: 1.6rem;
+  }
+
+  .pot-actions {
+    gap: 0.625rem;
+  }
+
+  .pot-actions .secondary {
+    padding: 0.875rem 0.625rem;
+    font-size: 0.875rem;
+  }
+}
+
+@media (max-width: 37.5rem) {
+  .pot-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .pot-amount strong {
+    font-size: 2rem;
+  }
+
+  .page-intro {
+    font-size: 0.875rem;
+  }
+}

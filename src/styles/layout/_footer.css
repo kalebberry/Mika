@@ -1,0 +1,23 @@
+footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1.25rem;
+  margin-top: 2rem;
+  color: var(--color-muted);
+  font-size: 0.75rem;
+}
+
+footer .text-link {
+  font-size: 0.75rem;
+}
+
+@media (max-width: 37.5rem) {
+  footer {
+    align-items: flex-start;
+  }
+
+  footer .text-link {
+    white-space: nowrap;
+  }
+}

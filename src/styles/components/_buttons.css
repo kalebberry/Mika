@@ -1,0 +1,118 @@
+.primary {
+  background: var(--color-dark);
+  color: #ffffff;
+  font-size: 0.875rem;
+  font-weight: 700;
+  padding: 1em 1.25em;
+  border-radius: var(--radius-md);
+  min-height: 3rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5em;
+  transition: filter var(--transition-normal);
+}
+
+.secondary {
+  background: var(--color-surface-subtle);
+  color: inherit;
+  border-radius: var(--radius-md);
+  padding: 0.9em 1em;
+  font-size: 0.875rem;
+  font-weight: 700;
+  min-height: 2.875rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5em;
+  transition: filter var(--transition-normal);
+}
+
+.icon-button {
+  width: 2.75rem;
+  height: 2.75rem;
+  font-size: 1.35rem;
+  border: 1px solid #d9d5d0;
+  border-radius: var(--radius-round);
+  color: var(--color-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-normal);
+}
+
+.icon-button.active {
+  background: var(--color-teal);
+  color: #ffffff;
+  border-color: var(--color-teal);
+}
+
+.text-link {
+  font-size: 0.875rem;
+  color: var(--color-muted);
+  display: inline-flex;
+  gap: 0.875em;
+  align-items: center;
+  padding: 0.25em 0;
+}
+
+.text-link.light {
+  color: var(--color-sky-light);
+  margin-top: 1.125rem;
+  font-size: 0.875rem;
+}
+
+.delete-icon {
+  font-size: 1.25rem;
+  width: 2rem;
+  height: 2.25rem;
+  color: var(--color-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-normal);
+}
+
+.delete-icon:hover {
+  color: var(--color-danger);
+}
+
+.ai-sparkle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  background: #ffffff;
+  color: var(--color-teal);
+  border: 1.5px solid #bce1d7;
+  padding: 0.45em 1em;
+  border-radius: var(--radius-pill);
+  font-size: 0.8rem;
+  font-weight: 700;
+  box-shadow: var(--shadow-sm);
+  transition: all var(--transition-normal);
+}
+
+.ai-sparkle-btn:hover:not(:disabled) {
+  background: var(--color-teal);
+  color: #ffffff;
+  border-color: var(--color-teal);
+  box-shadow: 0 0.25rem 0.75rem rgba(39, 124, 120, 0.2);
+  transform: translateY(-1px);
+}
+
+.ai-sparkle-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.ai-reset-btn {
+  font-size: 0.78rem;
+  color: var(--color-muted);
+  padding: 0.25em 0.4em;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.ai-reset-btn:hover {
+  color: var(--color-text);
+}
