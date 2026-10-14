@@ -8,6 +8,7 @@ import { useModal } from "../../composables/useModal";
 const {
   settingsBalance,
   settingsPayday,
+  settingsFollowingPayday,
   settingsSaved,
   saveSettings,
   backup,
@@ -67,9 +68,21 @@ const { open } = useModal();
               income.
             </small>
           </label>
+          <label>
+            <span>Following payday</span>
+            <input
+              v-model="settingsFollowingPayday"
+              type="date"
+              :min="settingsPayday || today()"
+              required
+            />
+            <small>
+              The paycheck after your next one. Used to identify upcoming essential bills to protect (like next month’s rent).
+            </small>
+          </label>
           <div class="formula-note">
             <strong>Formula:</strong> Safe to spend = balance − pots − remaining
-            monthly budgets − unpaid bills through payday.
+            monthly budgets − unpaid bills through payday − protected next cycle bills.
           </div>
           <div class="settings-action-row">
             <button class="primary" type="submit">Save baseline</button>

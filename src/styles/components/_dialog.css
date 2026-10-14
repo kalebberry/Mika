@@ -138,3 +138,86 @@ dialog .reset-confirm {
   border-color: var(--color-teal);
   background: #edf6f3;
 }
+
+.color-picker-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.color-swatches-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 0.5rem;
+  padding: 0.25rem 0 0.5rem;
+}
+
+.swatch-btn {
+  width: 1.875rem;
+  height: 1.875rem;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  outline: none;
+}
+
+.swatch-btn:hover {
+  transform: scale(1.15);
+}
+
+.swatch-btn.active {
+  box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-teal);
+  transform: scale(1.12);
+}
+
+.swatch-btn.used::after {
+  content: "";
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-dark);
+  border: 1.5px solid var(--color-surface);
+}
+
+.swatch-check {
+  font-size: 0.75rem;
+  font-weight: 900;
+  color: #ffffff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+  line-height: 1;
+  pointer-events: none;
+}
+
+.custom-color-row {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-top: 0.25rem;
+}
+
+.custom-color-input {
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border: 1px solid #dedad5;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  background: none;
+  flex-shrink: 0;
+}
+
+.custom-hex-input {
+  font-family: monospace;
+  font-size: 0.875rem;
+  width: 6.5rem;
+  text-transform: uppercase;
+}

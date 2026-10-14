@@ -7,6 +7,7 @@
     "dev": "vite",
     "start": "vite",
     "build": "vue-tsc -b && vite build",
+    "test": "node --test tests/budget.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {

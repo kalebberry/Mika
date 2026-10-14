@@ -12,20 +12,20 @@ const { state, sum, days, page } = useBudget();
       <div class="safe-label">
         <span class="spark">✦</span> Safe to spend
       </div>
-      <div class="safe-number" :class="{ negative: sum.safe < 0 }">
+      <div class="safe-number" :class="{ negative: sum.shortfall > 0 }">
         {{ money(sum.safe) }}
       </div>
       <p v-if="state.payday < today()">
         Your payday has passed. Update it to refresh your spending plan.
       </p>
-      <p v-else-if="sum.safe >= 0">
+      <p v-else-if="sum.shortfall > 0">
+        Planned reserves exceed current cash by
+        <strong>{{ money(sum.shortfall) }}</strong>. Adjust your plan before spending.
+      </p>
+      <p v-else>
         About
         <strong>{{ money(Math.floor(sum.safe / days)) }} a day</strong>
         until your next payday.
-      </p>
-      <p v-else>
-        Your current reserves exceed your balance. Adjust your plan before
-        spending.
       </p>
       <button class="text-link light" @click="page = 'Settings'">
         Next payday: {{ date(state.payday) }} <span>↗</span>
@@ -45,8 +45,16 @@ const { state, sum, days, page } = useBudget();
         <span>− {{ money(sum.budgets) }}</span>
       </div>
       <div>
-        <span>Bills reserved through payday</span>
-        <span>− {{ money(sum.bills) }}</span>
+        <span>Bills due before payday</span>
+        <span>− {{ money(sum.currentCycleBills) }}</span>
+      </div>
+      <div v-if="sum.protectedCycleBills > 0">
+        <span>Next cycle bills protected</span>
+        <span>− {{ money(sum.protectedCycleBills) }}</span>
+      </div>
+      <div v-if="sum.shortfall > 0" style="color: #ff9b82; font-weight: 600;">
+        <span>Reserve shortfall</span>
+        <span>{{ money(sum.shortfall) }} deficit</span>
       </div>
       <div class="safe-total">
         <span>Yours to work with</span>

@@ -1,4 +1,11 @@
-import { type Bill, type State, isBillPaid, nextDueDate, today } from "../model";
+import {
+  type Bill,
+  type State,
+  isBillPaid,
+  nextUnpaidDueDate,
+  getFollowingPayday,
+  today,
+} from "../model";
 
 export const money = (v: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
@@ -26,11 +33,23 @@ export const formatNextDue = (v: string) => {
 export const pct = (a: number, b: number) =>
   Math.min(100, b ? Math.max(0, (a / b) * 100) : 0);
 
-export function billStatus(state: State, b: Bill) {
-  const next = nextDueDate(b);
-  return isBillPaid(state, b, next)
-    ? "Paid"
-    : next === today()
-      ? "Due today"
-      : "Upcoming";
+export function billStatus(state: State, b: Bill, now = today()) {
+  const next = nextUnpaidDueDate(state, b, now);
+  if (isBillPaid(state, b, next)) {
+    return "Paid";
+  }
+  if (next < now) {
+    return "Overdue";
+  }
+  if (next === now) {
+    return "Due today";
+  }
+  if (next <= state.payday) {
+    return "Due before payday";
+  }
+  const followingPayday = getFollowingPayday(state);
+  if (next <= followingPayday) {
+    return b.protected ? "Protected (Next cycle)" : "Next cycle";
+  }
+  return "Upcoming";
 }

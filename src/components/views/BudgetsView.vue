@@ -56,7 +56,15 @@ function viewCategoryTransactions(catName: string) {
             <i class="color-dot" :style="{ background: b.color }"></i>
             {{ b.name || b.category }}
           </h2>
-          <div>
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <button
+              class="secondary"
+              style="font-size: 0.75rem; padding: 0.25rem 0.5rem; white-space: nowrap;"
+              @click="open('Add transaction', '', b.category)"
+              title="Record an expense for this budget"
+            >
+              + Log expense
+            </button>
             <button class="text-link" @click="open('Edit budget', b.id)">
               Edit
             </button>
@@ -127,7 +135,7 @@ function viewCategoryTransactions(catName: string) {
             <strong>{{ money(t.amount) }}</strong>
           </div>
           <p v-if="!categoryRecent(b.category).length" class="muted">
-            A clean slate this month.
+            No spending recorded yet this month. Click <strong>+ Log expense</strong> above to record a purchase.
           </p>
         </div>
       </section>

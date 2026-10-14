@@ -46,6 +46,24 @@
   padding: 0;
 }
 
+.stat-link {
+  font-size: 0.75rem;
+  color: var(--color-teal);
+  text-align: left;
+  padding: 0;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font-weight: 600;
+  transition: opacity var(--transition-fast);
+  display: inline-block;
+}
+
+.stat-link:hover {
+  text-decoration: underline;
+  opacity: 0.85;
+}
+
 .dark {
   background: var(--color-dark);
   color: #ffffff;

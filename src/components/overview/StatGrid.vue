@@ -2,7 +2,22 @@
 import { money } from "../../utils/format";
 import { useBudget } from "../../composables/useBudget";
 
-const { sum, income, expenses, page } = useBudget();
+const {
+  sum,
+  income,
+  expenses,
+  scheduledIncome,
+  scheduledExpenses,
+  statusFilter,
+  category,
+  page,
+} = useBudget();
+
+function viewScheduled() {
+  statusFilter.value = "Scheduled";
+  category.value = "All";
+  page.value = "Transactions";
+}
 </script>
 
 <template>
@@ -15,12 +30,28 @@ const { sum, income, expenses, page } = useBudget();
     <article class="stat">
       <span>Income <small>this month</small></span>
       <strong>{{ money(income) }}</strong>
-      <span class="stat-caption">Money coming in</span>
+      <button
+        v-if="scheduledIncome > 0"
+        class="stat-link"
+        @click="viewScheduled"
+        title="View scheduled income in Transactions"
+      >
+        +{{ money(scheduledIncome) }} scheduled ›
+      </button>
+      <span v-else class="stat-caption">Money received</span>
     </article>
     <article class="stat">
       <span>Expenses <small>this month</small></span>
       <strong>{{ money(expenses) }}</strong>
-      <span class="stat-caption">Money going out</span>
+      <button
+        v-if="scheduledExpenses > 0"
+        class="stat-link"
+        @click="viewScheduled"
+        title="View scheduled expenses in Transactions"
+      >
+        +{{ money(scheduledExpenses) }} scheduled ›
+      </button>
+      <span v-else class="stat-caption">Money going out</span>
     </article>
   </div>
 </template>

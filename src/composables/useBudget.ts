@@ -7,6 +7,14 @@ import {
   today,
   totals,
   spent,
+  migrateState,
+  getFollowingPayday,
+  addDays,
+  isBillPaid,
+  nextUnpaidDueDate,
+  settleBillOccurrence,
+  unsettleBillOccurrence,
+  isLedgerStatus,
 } from "../model";
 import { useToast } from "./useToast";
 
@@ -37,14 +45,14 @@ try {
   if (raw) {
     const parsed = JSON.parse(raw);
     if (
-      parsed.version === 1 &&
+      (parsed.version === 1 || parsed.version === 2) &&
       Array.isArray(parsed.transactions) &&
       Array.isArray(parsed.pots) &&
       Array.isArray(parsed.bills) &&
       Array.isArray(parsed.budgets) &&
       Number.isFinite(parsed.opening)
     ) {
-      initialData = parsed;
+      initialData = migrateState(parsed);
     } else {
       throw new Error("Invalid schema");
     }
@@ -63,11 +71,14 @@ const collapsed = ref(false);
 const search = ref("");
 const category = ref("All");
 const sort = ref("Latest");
+const statusFilter = ref<"All" | "Scheduled" | "Pending" | "Cleared">("All");
 
 const sum = computed(() => totals(state.value));
 const month = computed(() => today().slice(0, 7));
 const monthly = computed(() =>
-  state.value.transactions.filter((t) => t.date.startsWith(month.value)),
+  state.value.transactions.filter(
+    (t) => isLedgerStatus(t.status) && t.date.startsWith(month.value),
+  ),
 );
 
 const income = computed(() =>
@@ -81,6 +92,28 @@ const expenses = computed(
       .reduce((n, t) => n + t.amount, 0),
 );
 
+const scheduledIncome = computed(() =>
+  state.value.transactions
+    .filter(
+      (t) =>
+        t.status === "scheduled" &&
+        t.amount > 0 &&
+        t.date.startsWith(month.value),
+    )
+    .reduce((n, t) => n + t.amount, 0),
+);
+
+const scheduledExpenses = computed(() =>
+  -state.value.transactions
+    .filter(
+      (t) =>
+        t.status === "scheduled" &&
+        t.amount < 0 &&
+        t.date.startsWith(month.value),
+    )
+    .reduce((n, t) => n + t.amount, 0),
+);
+
 const categories = computed(() =>
   Array.from(
     new Set([
@@ -89,6 +122,7 @@ const categories = computed(() =>
       "Entertainment",
       "Personal Care",
       "Transport",
+      "Utilities",
       "General",
       "Bills",
       "Income",
@@ -103,7 +137,11 @@ const list = computed(() =>
     .filter(
       (t) =>
         t.name.toLowerCase().includes(search.value.toLowerCase()) &&
-        (category.value === "All" || t.category === category.value),
+        (category.value === "All" || t.category === category.value) &&
+        (statusFilter.value === "All" ||
+          (statusFilter.value === "Scheduled" && t.status === "scheduled") ||
+          (statusFilter.value === "Pending" && (t.status === "pending" || t.status === "posted")) ||
+          (statusFilter.value === "Cleared" && t.status === "cleared")),
     )
     .sort((a, b) =>
       sort.value === "Latest"
@@ -165,6 +203,7 @@ const categoryRecent = (c: string) =>
 // Settings form state
 const settingsBalance = ref(String(sum.value.balance / 100));
 const settingsPayday = ref(state.value.payday);
+const settingsFollowingPayday = ref(getFollowingPayday(state.value));
 const settingsSaved = ref(false);
 
 watch(
@@ -181,6 +220,7 @@ watch(
   (val) => {
     if (page.value !== "Settings") {
       settingsPayday.value = val;
+      settingsFollowingPayday.value = getFollowingPayday(state.value);
     }
   },
 );
@@ -222,9 +262,14 @@ export function useBudget() {
       toast("Enter a valid balance and a payday within the next year.");
       return;
     }
-    state.value.opening =
-      balance - state.value.transactions.reduce((n, t) => n + t.amount, 0);
+    const postedSum = state.value.transactions
+      .filter((t) => isLedgerStatus(t.status))
+      .reduce((n, t) => n + t.amount, 0);
+
+    state.value.opening = balance - postedSum;
     state.value.payday = settingsPayday.value;
+    state.value.followingPayday =
+      settingsFollowingPayday.value || addDays(settingsPayday.value, 14);
     settingsSaved.value = true;
     setTimeout(() => {
       settingsSaved.value = false;
@@ -261,9 +306,10 @@ export function useBudget() {
           Array.isArray(parsed.pots) &&
           Array.isArray(parsed.bills)
         ) {
-          state.value = parsed;
-          settingsBalance.value = String(totals(parsed).balance / 100);
-          settingsPayday.value = parsed.payday || today();
+          state.value = migrateState(parsed);
+          settingsBalance.value = String(totals(state.value).balance / 100);
+          settingsPayday.value = state.value.payday;
+          settingsFollowingPayday.value = getFollowingPayday(state.value);
           toast("Backup restored successfully.");
         } else {
           toast("File does not match budget backup format.");
@@ -273,6 +319,53 @@ export function useBudget() {
       }
     };
     reader.readAsText(file);
+  }
+
+  function postTransaction(id: string, targetStatus: "pending" | "cleared" = "cleared") {
+    const tx = state.value.transactions.find((t) => t.id === id);
+    if (tx) {
+      tx.status = targetStatus;
+      tx.postedDate = tx.postedDate || today();
+      toast(
+        targetStatus === "cleared"
+          ? (tx.amount > 0
+              ? "Income cleared and confirmed."
+              : "Expense cleared and confirmed.")
+          : "Transaction marked pending.",
+      );
+    }
+  }
+
+  function toggleProtectBill(id: string) {
+    const bill = state.value.bills.find((b) => b.id === id);
+    if (bill) {
+      bill.protected = !bill.protected;
+      toast(
+        bill.protected
+          ? `Protected ${bill.name} for the following pay cycle.`
+          : `Removed protection for ${bill.name}.`,
+      );
+    }
+  }
+
+  function settleBill(billId: string, dueDate?: string) {
+    const bill = state.value.bills.find((b) => b.id === billId);
+    if (!bill) return false;
+    const due = dueDate || nextUnpaidDueDate(state.value, bill, today());
+    if (isBillPaid(state.value, bill, due)) {
+      toast(`${bill.name} (${due}) is already recorded as paid or settled.`);
+      return false;
+    }
+    const ok = settleBillOccurrence(state.value, billId, due);
+    if (ok) {
+      toast(`Marked ${bill.name} (${due}) settled before setup without deducting cash.`);
+    }
+    return ok;
+  }
+
+  function unsettleBill(billId: string, dueDate: string) {
+    unsettleBillOccurrence(state.value, billId, dueDate);
+    toast("Settlement removed.");
   }
 
   function registerModelContext() {
@@ -294,6 +387,7 @@ export function useBudget() {
               ...sum.value,
               demo: state.value.demo,
               payday: state.value.payday,
+              followingPayday: getFollowingPayday(state.value),
             }),
           }),
         ).catch(() => {});
@@ -309,11 +403,14 @@ export function useBudget() {
     search,
     category,
     sort,
+    statusFilter,
     sum,
     month,
     monthly,
     income,
     expenses,
+    scheduledIncome,
+    scheduledExpenses,
     categories,
     list,
     latest,
@@ -324,10 +421,15 @@ export function useBudget() {
     categoryRecent,
     settingsBalance,
     settingsPayday,
+    settingsFollowingPayday,
     settingsSaved,
     saveSettings,
     backup,
     importBackup,
+    postTransaction,
+    toggleProtectBill,
+    settleBill,
+    unsettleBill,
     registerModelContext,
   };
 }

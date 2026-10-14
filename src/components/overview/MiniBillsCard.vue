@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { paid } from "../../model";
+import { paid, isBillUnpaidThisMonth } from "../../model";
 import { money } from "../../utils/format";
 import { useBudget } from "../../composables/useBudget";
 
@@ -29,14 +29,18 @@ const { state, sum, page } = useBudget();
       <strong>{{
         money(
           state.bills
-            .filter((b) => !paid(state, b))
+            .filter((b) => isBillUnpaidThisMonth(state, b))
             .reduce((n, b) => n + b.amount, 0),
         )
       }}</strong>
     </div>
     <div class="bill-summary blue">
-      <span>Reserved through payday</span>
-      <strong>{{ money(sum.bills) }}</strong>
+      <span>Due before payday</span>
+      <strong>{{ money(sum.currentCycleBills) }}</strong>
+    </div>
+    <div v-if="sum.protectedCycleBills > 0" class="bill-summary purple">
+      <span>Next cycle protected</span>
+      <strong>{{ money(sum.protectedCycleBills) }}</strong>
     </div>
   </section>
 </template>

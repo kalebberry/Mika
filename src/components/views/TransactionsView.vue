@@ -10,18 +10,47 @@ const {
   sort,
   category,
   categories,
+  statusFilter,
   list,
+  sum,
+  postTransaction,
 } = useBudget();
 const { open } = useModal();
 </script>
 
 <template>
+  <div v-if="sum.scheduledIncome > 0 || sum.scheduledExpenses > 0" class="card" style="margin-bottom: 1rem; padding: 0.875rem 1.25rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; background: #faf9f6; border-left: 4px solid var(--color-teal);">
+    <div>
+      <strong style="color: var(--color-text-main); font-size: 0.875rem;">Scheduled transactions pending</strong>
+      <p style="margin: 0.125rem 0 0; font-size: 0.8125rem; color: var(--color-muted);">
+        Scheduled items do not alter your cash balance or Safe to Spend until you confirm they arrived or were paid.
+      </p>
+    </div>
+    <div style="display: flex; gap: 1rem; font-size: 0.8125rem;">
+      <span v-if="sum.scheduledIncome > 0" style="color: var(--color-teal); font-weight: 600;">
+        + {{ money(sum.scheduledIncome) }} upcoming income
+      </span>
+      <span v-if="sum.scheduledExpenses > 0" style="color: var(--color-danger); font-weight: 600;">
+        − {{ money(sum.scheduledExpenses) }} upcoming expenses
+      </span>
+    </div>
+  </div>
+
   <section class="card">
     <div class="filters">
       <label class="search">
         <span class="sr-only">Search transactions</span>
         <input v-model="search" placeholder="Search transactions" />
         <span>⌕</span>
+      </label>
+      <label>
+        Status
+        <select v-model="statusFilter">
+          <option>All</option>
+          <option>Scheduled</option>
+          <option>Pending</option>
+          <option>Cleared</option>
+        </select>
       </label>
       <label>
         Sort by
@@ -48,7 +77,7 @@ const { open } = useModal();
             <th>Category</th>
             <th>Transaction date</th>
             <th class="align-right">Amount</th>
-            <th><span class="sr-only">Actions</span></th>
+            <th class="align-right"><span class="sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody>
@@ -66,13 +95,39 @@ const { open } = useModal();
                 >
                   {{ t.name.slice(0, 1).toUpperCase() }}
                 </span>
-                <strong>{{ t.name }}</strong>
+                <div>
+                  <strong>{{ t.name }}</strong>
+                  <span
+                    class="badge"
+                    :class="{
+                      'status-scheduled': t.status === 'scheduled',
+                      'status-pending': t.status === 'pending' || t.status === 'posted',
+                      'status-cleared': t.status === 'cleared' || !t.status,
+                    }"
+                    style="display: inline-block; margin-left: 0.375rem; font-size: 0.7rem; font-weight: 600;"
+                  >
+                    {{ t.status === 'scheduled' ? 'Scheduled' : (t.status === 'pending' || t.status === 'posted') ? 'Pending' : 'Cleared' }}
+                  </span>
+                </div>
               </div>
             </td>
             <td>{{ t.category }}</td>
             <td>
               {{ date(t.date) }}
-              <span v-if="t.date > today()" class="badge" style="margin-left: 0.375rem;">Upcoming</span>
+              <span
+                v-if="t.status === 'scheduled' && t.date <= today()"
+                class="badge paid"
+                style="margin-left: 0.375rem; font-size: 0.7rem;"
+              >
+                Due for posting
+              </span>
+              <span
+                v-else-if="t.date > today()"
+                class="badge"
+                style="margin-left: 0.375rem; font-size: 0.7rem;"
+              >
+                Upcoming
+              </span>
             </td>
             <td
               class="align-right amount"
@@ -80,14 +135,44 @@ const { open } = useModal();
             >
               {{ t.amount > 0 ? "+" : "" }}{{ money(t.amount) }}
             </td>
-            <td>
-              <button
-                class="delete-icon"
-                @click="open('Delete transaction', t.id)"
-                :aria-label="'Delete ' + t.name"
-              >
-                ×
-              </button>
+            <td class="align-right">
+              <div style="display: inline-flex; align-items: center; justify-content: flex-end; gap: 0.375rem;">
+                <button
+                  v-if="t.status === 'scheduled'"
+                  class="secondary"
+                  style="padding: 0.25rem 0.5rem; font-size: 0.75rem; white-space: nowrap;"
+                  @click="postTransaction(t.id, 'cleared')"
+                  :title="t.amount > 0 ? 'Confirm income arrived and clear' : 'Confirm expense paid and clear'"
+                >
+                  {{ t.amount > 0 ? "Confirm receipt" : "Confirm payment" }}
+                </button>
+                <button
+                  v-else-if="t.status === 'pending' || t.status === 'posted'"
+                  class="secondary"
+                  style="padding: 0.25rem 0.5rem; font-size: 0.75rem; white-space: nowrap;"
+                  @click="postTransaction(t.id, 'cleared')"
+                  title="Mark transaction cleared against bank"
+                >
+                  Mark cleared
+                </button>
+                <button
+                  class="secondary"
+                  style="padding: 0.25rem 0.5rem; font-size: 0.75rem;"
+                  @click="open('Edit transaction', t.id)"
+                  :aria-label="'Edit ' + t.name"
+                  title="Edit"
+                >
+                  ✎
+                </button>
+                <button
+                  class="delete-icon"
+                  @click="open('Delete transaction', t.id)"
+                  :aria-label="'Delete ' + t.name"
+                  title="Delete"
+                >
+                  ×
+                </button>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -99,7 +184,7 @@ const { open } = useModal();
       <p>
         {{
           state.transactions.length
-            ? "Try a different search or category."
+            ? "Try a different search or status filter."
             : "Your next small step: record one expense."
         }}
       </p>
