@@ -1,10 +1,20 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { colors, themeColors, today } from "../../model";
+import { money } from "../../utils/format";
 import { useBudget } from "../../composables/useBudget";
 import { useModal } from "../../composables/useModal";
 
-const { page, categories, backup, state } = useBudget();
+const {
+  page,
+  categories,
+  backup,
+  state,
+  getAccountBalance,
+  getAccountTransactionCount,
+  getAccountDeletionBlockReason,
+  toggleArchiveAccount,
+} = useBudget();
 const {
   dialogRef,
   mode,
@@ -14,9 +24,94 @@ const {
   resetConfirmed,
   payMethod,
   form,
+  open,
   close,
   submit,
 } = useModal();
+
+const currentAccount = computed(() =>
+  (state.value.accounts || []).find((a) => a.id === selected.value),
+);
+
+const currentAccountBalance = computed(() => {
+  if (!currentAccount.value) return 0;
+  return getAccountBalance(currentAccount.value);
+});
+
+const currentAccountTxCount = computed(() => {
+  if (mode.value !== "Delete account" || !selected.value) return 0;
+  return getAccountTransactionCount(selected.value);
+});
+
+const currentAccountBlockReason = computed(() => {
+  if (mode.value !== "Delete account" || !selected.value) return null;
+  return getAccountDeletionBlockReason(selected.value);
+});
+
+function archiveFromDeleteDialog() {
+  if (selected.value) {
+    toggleArchiveAccount(selected.value);
+    close();
+  }
+}
+
+const activeAccounts = computed(() =>
+  (state.value.accounts || []).filter((a) => !a.archived),
+);
+
+const activeCashAccounts = computed(() =>
+  activeAccounts.value.filter(
+    (a) => a.type === "checking" || a.type === "savings",
+  ),
+);
+
+const activeCreditAccounts = computed(() =>
+  activeAccounts.value.filter((a) => a.type === "credit"),
+);
+
+const selectedAccount = computed(() =>
+  (state.value.accounts || []).find((a) => a.id === form.value.accountId),
+);
+
+const isCreditCardSelected = computed(
+  () => selectedAccount.value?.type === "credit",
+);
+
+function onTransactionTypeChange() {
+  if (form.value.type === "Transfer") {
+    if (!form.value.accountId || selectedAccount.value?.type === "credit") {
+      form.value.accountId =
+        activeCashAccounts.value[0]?.id || "acc-default-checking";
+    }
+    const other = activeCashAccounts.value.find(
+      (a) => a.id !== form.value.accountId,
+    );
+    if (
+      !form.value.targetAccountId ||
+      form.value.targetAccountId === form.value.accountId
+    ) {
+      form.value.targetAccountId = other?.id || "";
+    }
+  } else if (form.value.type === "Credit Card Payment") {
+    if (!form.value.accountId || selectedAccount.value?.type === "credit") {
+      form.value.accountId =
+        activeCashAccounts.value[0]?.id || "acc-default-checking";
+    }
+    if (
+      !form.value.targetAccountId ||
+      (state.value.accounts || []).find(
+        (a) => a.id === form.value.targetAccountId,
+      )?.type !== "credit"
+    ) {
+      form.value.targetAccountId = activeCreditAccounts.value[0]?.id || "";
+    }
+  } else {
+    if (!form.value.accountId) {
+      form.value.accountId =
+        activeAccounts.value[0]?.id || "acc-default-checking";
+    }
+  }
+}
 
 function handleBackdropClick(e: MouseEvent) {
   if (e.target === dialogRef.value) {
@@ -146,14 +241,75 @@ function onDateInput() {
         </button>
       </template>
 
-      <p v-if="mode.startsWith('Delete')" class="muted">
+      <template v-if="mode === 'Delete account'">
+        <p class="muted">
+          Permanently delete <strong>{{ form.name }}</strong>?
+        </p>
+
+        <!-- Blocked: Primary checking -->
+        <div
+          v-if="currentAccountBlockReason === 'primary_checking'"
+          style="background: rgba(201, 71, 54, 0.08); border-left: 3px solid var(--color-danger, #c94736); padding: 0.875rem; border-radius: 6px; margin: 0.75rem 0;"
+        >
+          <strong style="color: var(--color-danger, #c94736); display: block; margin-bottom: 0.25rem;">
+            ⚠️ Deletion Prohibited
+          </strong>
+          <p style="margin: 0; font-size: 0.85rem; line-height: 1.4;">
+            Primary Checking is your foundational cash ledger and cannot be deleted.
+          </p>
+        </div>
+
+        <!-- Blocked: Nonzero Balance -->
+        <div
+          v-else-if="currentAccountBlockReason === 'has_balance'"
+          style="background: rgba(201, 71, 54, 0.08); border-left: 3px solid var(--color-danger, #c94736); padding: 0.875rem; border-radius: 6px; margin: 0.75rem 0;"
+        >
+          <strong style="color: var(--color-danger, #c94736); display: block; margin-bottom: 0.25rem;">
+            ⚠️ Nonzero Balance ({{ money(currentAccountBalance) }})
+          </strong>
+          <p style="margin: 0; font-size: 0.85rem; line-height: 1.4;">
+            This account currently has a balance of <strong>{{ money(currentAccountBalance) }}</strong>. An account must have a balance of $0.00 before it can be permanently deleted.
+          </p>
+          <p style="margin: 0.5rem 0 0; font-size: 0.85rem; line-height: 1.4;">
+            Use <strong>Adjust balance</strong> to zero out the balance first, or <strong>Archive</strong> this account instead.
+          </p>
+        </div>
+
+        <!-- Blocked: Existing Transactions -->
+        <div
+          v-else-if="currentAccountBlockReason === 'has_transactions'"
+          style="background: rgba(201, 71, 54, 0.08); border-left: 3px solid var(--color-danger, #c94736); padding: 0.875rem; border-radius: 6px; margin: 0.75rem 0;"
+        >
+          <strong style="color: var(--color-danger, #c94736); display: block; margin-bottom: 0.25rem;">
+            ⚠️ Financial History Linked
+          </strong>
+          <p style="margin: 0; font-size: 0.85rem; line-height: 1.4;">
+            This account has <strong>{{ currentAccountTxCount }} linked transaction{{ currentAccountTxCount === 1 ? '' : 's' }}</strong> (such as transfers, payments, or purchases).
+          </p>
+          <p style="margin: 0.5rem 0 0; font-size: 0.85rem; line-height: 1.4;">
+            To preserve your financial history and ensure account ledgers remain balanced, this account cannot be deleted. Please <strong>Archive</strong> this account instead.
+          </p>
+        </div>
+
+        <!-- Allowed: $0 balance and 0 transactions -->
+        <div v-else class="formula-note">
+          <p style="margin: 0; font-size: 0.85rem;">
+            ✓ <strong>Verified:</strong> Account balance is $0.00 and has no linked transaction history.
+          </p>
+          <p style="margin: 0.5rem 0 0; font-size: 0.85rem; color: var(--color-danger, #c94736);">
+            This account will be permanently removed. This action cannot be undone.
+          </p>
+        </div>
+      </template>
+
+      <p v-else-if="mode.startsWith('Delete')" class="muted">
         Remove this {{ mode.replace("Delete ", "") }}?
         {{
           mode === "Delete pot"
             ? "Money reserved in this pot will become available again."
             : mode === "Delete transaction"
               ? "Your balance and budget totals will update."
-              : "Existing transactions will be kept."
+              : "Existing entries will be kept."
         }}
       </p>
 
@@ -346,42 +502,112 @@ function onDateInput() {
         </span>
       </label>
 
-      <label
-        v-if="
-          [
-            'Add transaction',
-            'Edit transaction',
-            'Add pot',
-            'Add bill',
-            'Edit bill',
-            'Add budget',
-            'Edit budget',
-          ].includes(mode)
-        "
+      <!-- Delete Account trigger in Edit Account mode -->
+      <div
+        v-if="mode === 'Edit account' && selected !== 'acc-default-checking'"
+        style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--color-border); display: flex; justify-content: flex-end;"
       >
-        Name
-        <input
-          v-model="form.name"
-          :required="!['Add budget', 'Edit budget'].includes(mode)"
-          maxlength="80"
-          :placeholder="
-            mode.includes('budget')
-              ? 'e.g. Work Lunches or Groceries'
-              : mode.includes('bill')
-                ? 'e.g. Rent or Internet'
-                : 'e.g. Weekly groceries'
-          "
-        />
-      </label>
+        <button
+          type="button"
+          class="text-link danger small"
+          style="color: var(--color-danger, #c94736); display: inline-flex; align-items: center; gap: 0.35rem;"
+          @click="open('Delete account', selected)"
+        >
+          🗑 Delete account...
+        </button>
+      </div>
 
+      <!-- Transaction Type -->
       <label v-if="mode === 'Add transaction' || mode === 'Edit transaction'">
-        Type
-        <select v-model="form.type">
-          <option>Expense</option>
-          <option>Income</option>
+        Transaction Type
+        <select v-model="form.type" @change="onTransactionTypeChange">
+          <option value="Expense">Expense</option>
+          <option value="Income">Income</option>
+          <option value="Transfer">Transfer between Cash Accounts</option>
+          <option value="Credit Card Payment">Credit Card Payment</option>
         </select>
       </label>
 
+      <!-- Transfer Account Selectors (Cash to Cash) -->
+      <template v-if="(mode === 'Add transaction' || mode === 'Edit transaction') && form.type === 'Transfer'">
+        <label>
+          From Account (Cash Source)
+          <select v-model="form.accountId" required>
+            <option v-for="a in activeCashAccounts" :key="a.id" :value="a.id">
+              {{ a.name }} ({{ a.type === 'checking' ? 'Checking' : 'Savings' }}) — {{ money(getAccountBalance(a)) }}
+            </option>
+          </select>
+        </label>
+        <label>
+          To Account (Cash Destination)
+          <select v-model="form.targetAccountId" required>
+            <option
+              v-for="a in activeCashAccounts"
+              :key="a.id"
+              :value="a.id"
+              :disabled="a.id === form.accountId"
+            >
+              {{ a.name }} ({{ a.type === 'checking' ? 'Checking' : 'Savings' }}) — {{ money(getAccountBalance(a)) }}{{ a.id === form.accountId ? ' (Source account)' : '' }}
+            </option>
+          </select>
+          <small class="muted">
+            Transfers move funds between checking and savings without counting as income or expense.
+          </small>
+        </label>
+      </template>
+
+      <!-- Credit Card Payment Account Selectors (Cash to Credit Card) -->
+      <template v-if="(mode === 'Add transaction' || mode === 'Edit transaction') && form.type === 'Credit Card Payment'">
+        <label>
+          Pay From (Cash Account)
+          <select v-model="form.accountId" required>
+            <option v-for="a in activeCashAccounts" :key="a.id" :value="a.id">
+              {{ a.name }} ({{ a.type === 'checking' ? 'Checking' : 'Savings' }}) — {{ money(getAccountBalance(a)) }}
+            </option>
+          </select>
+        </label>
+        <label>
+          Pay To (Credit Card)
+          <select v-model="form.targetAccountId" required>
+            <option v-for="a in activeCreditAccounts" :key="a.id" :value="a.id">
+              {{ a.name }} — Owed: {{ money(getAccountBalance(a)) }} (Limit: {{ money(a.creditLimit || 0) }})
+            </option>
+          </select>
+          <small v-if="activeCreditAccounts.length === 0" style="color: var(--color-danger); display: block;">
+            No active credit cards available. Create a credit card in Accounts first.
+          </small>
+          <small v-else class="muted">
+            Reduces your cash balance and card balance owed, freeing up available credit without creating a spending expense.
+          </small>
+        </label>
+      </template>
+
+      <!-- Standard Expense or Income Account Selector -->
+      <template v-if="(mode === 'Add transaction' || mode === 'Edit transaction') && (form.type === 'Expense' || form.type === 'Income')">
+        <label>
+          Account
+          <select v-model="form.accountId" required>
+            <optgroup label="Cash Accounts (Assets)">
+              <option v-for="a in activeCashAccounts" :key="a.id" :value="a.id">
+                {{ a.name }} ({{ a.type === 'checking' ? 'Checking' : 'Savings' }}) — {{ money(getAccountBalance(a)) }}
+              </option>
+            </optgroup>
+            <optgroup v-if="activeCreditAccounts.length > 0" label="Credit Cards (Liabilities)">
+              <option v-for="a in activeCreditAccounts" :key="a.id" :value="a.id">
+                {{ a.name }} (Credit Card) — Owed: {{ money(getAccountBalance(a)) }}
+              </option>
+            </optgroup>
+          </select>
+          <small v-if="isCreditCardSelected && form.type === 'Expense'" style="color: #a63223; font-weight: 500; display: block;">
+            💳 Charges on this credit card increase the balance owed and reduce available credit. They do NOT decrease your cash balance.
+          </small>
+          <small v-else-if="isCreditCardSelected && form.type === 'Income'" style="color: #1b5e4f; font-weight: 500; display: block;">
+            💳 Statement credits or refunds reduce the balance owed on this card and restore available credit.
+          </small>
+        </label>
+      </template>
+
+      <!-- Amount -->
       <label
         v-if="
           [
@@ -408,6 +634,59 @@ function onDateInput() {
         />
       </label>
 
+      <!-- Date -->
+      <label v-if="mode === 'Add transaction' || mode === 'Edit transaction'">
+        Date
+        <input type="date" v-model="form.date" @input="onDateInput" required />
+        <small v-if="form.date > today()">
+          Transactions dated in the future should be scheduled until they occur.
+        </small>
+      </label>
+
+      <!-- Payee or Description (Name) -->
+      <label
+        v-if="
+          [
+            'Add transaction',
+            'Edit transaction',
+            'Add pot',
+            'Add bill',
+            'Edit bill',
+            'Add budget',
+            'Edit budget',
+          ].includes(mode)
+        "
+      >
+        {{
+          (mode === 'Add transaction' || mode === 'Edit transaction')
+            ? (form.type === 'Transfer' || form.type === 'Credit Card Payment' ? 'Description (Optional)' : form.type === 'Income' ? 'Payer / Description' : 'Payee / Description')
+            : mode.includes('budget')
+              ? 'Name'
+              : 'Name'
+        }}
+        <input
+          v-model="form.name"
+          :required="
+            !['Add budget', 'Edit budget'].includes(mode) &&
+            !(
+              (mode === 'Add transaction' || mode === 'Edit transaction') &&
+              (form.type === 'Transfer' || form.type === 'Credit Card Payment')
+            )
+          "
+          maxlength="80"
+          :placeholder="
+            (mode === 'Add transaction' || mode === 'Edit transaction')
+              ? (form.type === 'Transfer' ? 'e.g. Transfer to Savings' : form.type === 'Credit Card Payment' ? 'e.g. April Card Payment' : form.type === 'Income' ? 'e.g. Paycheck' : 'e.g. Weekly groceries')
+              : mode.includes('budget')
+                ? 'e.g. Work Lunches or Groceries'
+                : mode.includes('bill')
+                  ? 'e.g. Rent or Internet'
+                  : 'e.g. Weekly groceries'
+          "
+        />
+      </label>
+
+      <!-- Category (Expenses and Budgets only) -->
       <label
         v-if="
           ((mode === 'Add transaction' || mode === 'Edit transaction') &&
@@ -422,6 +701,8 @@ function onDateInput() {
             v-for="c in categories.filter(
               (cat) =>
                 cat !== 'Income' &&
+                cat !== 'Transfer' &&
+                cat !== 'Payment' &&
                 (!(mode === 'Add budget' || mode === 'Edit budget') ||
                   cat !== 'Bills'),
             )"
@@ -433,6 +714,7 @@ function onDateInput() {
         </select>
       </label>
 
+      <!-- Custom category name -->
       <label
         v-if="
           form.category === '__custom__' &&
@@ -452,14 +734,7 @@ function onDateInput() {
         <small>Use specific names like Electricity or Utilities for variable bills.</small>
       </label>
 
-      <label v-if="mode === 'Add transaction' || mode === 'Edit transaction'">
-        Date
-        <input type="date" v-model="form.date" @input="onDateInput" required />
-        <small v-if="form.date > today()">
-          Transactions dated in the future should be scheduled until they occur.
-        </small>
-      </label>
-
+      <!-- Status (Add / Edit transaction) -->
       <label v-if="mode === 'Add transaction' || mode === 'Edit transaction'">
         Status
         <select v-model="form.status">
@@ -470,13 +745,13 @@ function onDateInput() {
           </option>
         </select>
         <small v-if="form.status === 'scheduled'">
-          Scheduled transactions do not affect your current bank balance.
+          Scheduled transactions do not affect your current account balance.
         </small>
         <small v-else-if="form.status === 'pending'">
-          Pending transactions immediately update your current cash ledger.
+          Pending transactions immediately update your current ledger balance.
         </small>
         <small v-else-if="form.status === 'cleared'">
-          Cleared transactions are confirmed against your bank.
+          Cleared transactions are confirmed against your statement.
         </small>
       </label>
 
@@ -577,7 +852,17 @@ function onDateInput() {
 
       <p class="form-error" v-if="error" role="alert">{{ error }}</p>
 
+      <template v-if="mode === 'Delete account' && currentAccountBlockReason">
+        <button
+          class="primary full"
+          type="button"
+          @click="archiveFromDeleteDialog"
+        >
+          Archive account instead
+        </button>
+      </template>
       <button
+        v-else
         class="primary full"
         :class="{
           danger: mode.startsWith('Delete') || mode === 'Start fresh',
@@ -587,17 +872,19 @@ function onDateInput() {
         {{
           mode === "Start fresh"
             ? "Confirm and start fresh"
-            : mode.startsWith("Delete")
-              ? "Confirm removal"
-              : mode === "Adjust balance"
-                ? "Update balance"
-                : mode === "Settle bill" || (mode === "Pay bill" && payMethod === "settled")
-                  ? "Confirm settlement"
-                  : mode === "Pay bill"
-                    ? "Confirm payment"
-                    : mode.startsWith("Edit")
-                      ? "Save changes"
-                      : "Save"
+            : mode === "Delete account"
+              ? "Confirm permanent deletion"
+              : mode.startsWith("Delete")
+                ? "Confirm removal"
+                : mode === "Adjust balance"
+                  ? "Update balance"
+                  : mode === "Settle bill" || (mode === "Pay bill" && payMethod === "settled")
+                    ? "Confirm settlement"
+                    : mode === "Pay bill"
+                      ? "Confirm payment"
+                      : mode.startsWith("Edit")
+                        ? "Save changes"
+                        : "Save"
         }}
       </button>
     </form>

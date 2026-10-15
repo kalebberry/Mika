@@ -10,6 +10,7 @@ import {
   isBillPaid,
   settleBillOccurrence,
   type TransactionStatus,
+  type TransactionKind,
 } from "../model";
 import { useBudget } from "./useBudget";
 import { useToast } from "./useToast";
@@ -35,6 +36,8 @@ export interface ModalFormState {
   dueDay?: number;
   minPayment?: string;
   includeInSafeToSpend?: boolean;
+  accountId?: string;
+  targetAccountId?: string;
 }
 
 const dialogRef = ref<HTMLDialogElement | null>(null);
@@ -65,6 +68,8 @@ const form = ref<ModalFormState>({
   dueDay: 1,
   minPayment: "",
   includeInSafeToSpend: true,
+  accountId: "acc-default-checking",
+  targetAccountId: "",
 });
 
 export function useModal() {
@@ -117,6 +122,12 @@ export function useModal() {
         : colors[state.value.pots.length % colors.length]!;
     }
 
+    const defaultAcc =
+      (state.value.accounts || []).find(
+        (a) => !a.archived && a.id === "acc-default-checking",
+      ) || (state.value.accounts || []).find((a) => !a.archived);
+    const defaultAccountId = defaultAcc ? defaultAcc.id : "acc-default-checking";
+
     form.value = {
       name: "",
       amount: "",
@@ -132,6 +143,8 @@ export function useModal() {
       status: "cleared",
       customCategory: "",
       customColor: initialColor,
+      accountId: defaultAccountId,
+      targetAccountId: "",
     };
 
     if (m === "Edit transaction") {
@@ -144,14 +157,22 @@ export function useModal() {
             : rawStatus === "cleared"
               ? "cleared"
               : "pending";
+        let type = t.amount > 0 ? "Income" : "Expense";
+        if (t.kind === "transfer") {
+          type = "Transfer";
+        } else if (t.kind === "payment") {
+          type = "Credit Card Payment";
+        }
         form.value = {
           ...form.value,
           name: t.name,
           amount: String(Math.abs(t.amount) / 100),
           category: t.category,
           date: t.date,
-          type: t.amount > 0 ? "Income" : "Expense",
+          type,
           status: normalizedStatus,
+          accountId: t.accountId || defaultAccountId,
+          targetAccountId: t.targetAccountId || "",
         };
       }
     } else if (m === "Edit budget") {
@@ -211,6 +232,15 @@ export function useModal() {
           ...form.value,
           name: acc.name,
           amount: String(Math.abs(bal) / 100),
+          accountType: acc.type,
+        };
+      }
+    } else if (m === "Delete account") {
+      const acc = (state.value.accounts || []).find((item) => item.id === id);
+      if (acc) {
+        form.value = {
+          ...form.value,
+          name: acc.name,
           accountType: acc.type,
         };
       }
@@ -324,8 +354,13 @@ export function useModal() {
     }
 
     if (mode.value === "Delete account") {
-      deleteAccount(selected.value);
-      close();
+      const ok = deleteAccount(selected.value);
+      if (ok) {
+        close();
+      } else {
+        error.value =
+          "Cannot delete account. The balance must be $0.00 with no linked transactions. Archive it instead.";
+      }
       return;
     }
 
@@ -348,8 +383,6 @@ export function useModal() {
 
     if (
       [
-        "Add transaction",
-        "Edit transaction",
         "Add pot",
         "Add bill",
         "Edit bill",
@@ -371,38 +404,131 @@ export function useModal() {
           "Future-dated transactions cannot be marked as Cleared. Use Scheduled or Pending until confirmed by your bank.";
         return;
       }
+
+      if (f.type === "Transfer") {
+        if (!f.accountId || !f.targetAccountId) {
+          error.value = "Select both a source and destination cash account.";
+          return;
+        }
+        if (f.accountId === f.targetAccountId) {
+          error.value =
+            "Transfers between the same account are not permitted. Choose different accounts.";
+          return;
+        }
+        const src = (state.value.accounts || []).find((a) => a.id === f.accountId);
+        const dest = (state.value.accounts || []).find((a) => a.id === f.targetAccountId);
+        if (src?.type === "credit" || dest?.type === "credit") {
+          error.value =
+            "Transfers can only be made between cash accounts (checking and savings). For credit cards, choose 'Credit Card Payment'.";
+          return;
+        }
+      } else if (f.type === "Credit Card Payment") {
+        if (!f.accountId || !f.targetAccountId) {
+          error.value =
+            "Select both a payment source (checking/savings) and destination credit card.";
+          return;
+        }
+        const src = (state.value.accounts || []).find((a) => a.id === f.accountId);
+        const dest = (state.value.accounts || []).find((a) => a.id === f.targetAccountId);
+        if (src?.type === "credit") {
+          error.value = "Payments cannot originate from a credit card.";
+          return;
+        }
+        if (dest?.type !== "credit") {
+          error.value = "Payment destination must be a credit card account.";
+          return;
+        }
+      } else {
+        if (!f.accountId) {
+          error.value = "Select an account.";
+          return;
+        }
+        if (!name) {
+          error.value = "Enter a name or payee.";
+          return;
+        }
+        if (
+          f.type === "Expense" &&
+          f.category === "__custom__" &&
+          !f.customCategory?.trim()
+        ) {
+          error.value = "Enter a custom category name.";
+          return;
+        }
+      }
     }
 
-    if (mode.value === "Add transaction") {
+    if (mode.value === "Add transaction" || mode.value === "Edit transaction") {
       const isFuture = f.date > today();
       const status: TransactionStatus =
         f.status || (isFuture ? "scheduled" : "cleared");
-      state.value.transactions.unshift({
-        id: uid(),
-        name,
-        amount: f.type === "Income" ? amount : -amount,
-        category: f.type === "Income" ? "Income" : (resolvedCategory || "General"),
-        date: f.date,
-        status,
-        postedDate: status !== "scheduled" ? f.date : undefined,
-      });
-    } else if (mode.value === "Edit transaction") {
-      const existing = state.value.transactions.find(
-        (t) => t.id === selected.value,
-      );
-      if (existing) {
-        const isFuture = f.date > today();
-        const status: TransactionStatus =
-          f.status || (isFuture ? "scheduled" : "cleared");
+      const kind: TransactionKind =
+        f.type === "Transfer"
+          ? "transfer"
+          : f.type === "Credit Card Payment"
+            ? "payment"
+            : "standard";
 
-        Object.assign(existing, {
-          name,
-          amount: f.type === "Income" ? amount : -amount,
-          category: f.type === "Income" ? "Income" : (resolvedCategory || "General"),
+      let txName = name;
+      let txCategory = resolvedCategory || "General";
+      let txAmount = -amount;
+
+      if (f.type === "Transfer") {
+        const dest = (state.value.accounts || []).find(
+          (a) => a.id === f.targetAccountId,
+        );
+        txName = name || (dest ? `Transfer to ${dest.name}` : "Transfer");
+        txCategory = "Transfer";
+        txAmount = -amount;
+      } else if (f.type === "Credit Card Payment") {
+        const dest = (state.value.accounts || []).find(
+          (a) => a.id === f.targetAccountId,
+        );
+        txName =
+          name || (dest ? `Payment to ${dest.name}` : "Credit Card Payment");
+        txCategory = "Payment";
+        txAmount = -amount;
+      } else if (f.type === "Income") {
+        txName = name;
+        txCategory = "Income";
+        txAmount = amount;
+      }
+
+      if (mode.value === "Add transaction") {
+        state.value.transactions.unshift({
+          id: uid(),
+          name: txName,
+          amount: txAmount,
+          category: txCategory,
           date: f.date,
           status,
-          postedDate: status !== "scheduled" ? existing.postedDate || f.date : undefined,
+          postedDate: status !== "scheduled" ? f.date : undefined,
+          accountId: f.accountId,
+          kind,
+          targetAccountId:
+            kind !== "standard" ? f.targetAccountId : undefined,
         });
+      } else if (mode.value === "Edit transaction") {
+        const existing = state.value.transactions.find(
+          (t) => t.id === selected.value,
+        );
+        if (existing) {
+          Object.assign(existing, {
+            name: txName,
+            amount: txAmount,
+            category: txCategory,
+            date: f.date,
+            status,
+            postedDate:
+              status !== "scheduled"
+                ? existing.postedDate || f.date
+                : undefined,
+            accountId: f.accountId,
+            kind,
+            targetAccountId:
+              kind !== "standard" ? f.targetAccountId : undefined,
+          });
+        }
       }
     } else if (mode.value === "Post transaction") {
       postTransaction(selected.value);
@@ -571,6 +697,8 @@ export function useModal() {
               billDueDate: due,
               status: "posted",
               postedDate: today(),
+              accountId: "acc-default-checking",
+              kind: "standard",
             });
           }
         }

@@ -1,4 +1,5 @@
 export type TransactionStatus = "scheduled" | "pending" | "cleared" | "posted";
+export type TransactionKind = "standard" | "transfer" | "payment";
 
 export function isLedgerStatus(status?: string): boolean {
   return status === "pending" || status === "cleared" || status === "posted";
@@ -14,6 +15,9 @@ export type Transaction = {
   billDueDate?: string;
   status?: TransactionStatus;
   postedDate?: string;
+  accountId?: string;
+  kind?: TransactionKind;
+  targetAccountId?: string;
 };
 
 export type Budget = {
@@ -127,12 +131,115 @@ export function getFollowingPayday(s: { payday: string; followingPayday?: string
   return s.followingPayday || addDays(s.payday, 14);
 }
 
+export function hasAccountLedgerActivity(account: Account, s: State): boolean {
+  if (!s.transactions || !Array.isArray(s.transactions)) return false;
+  return s.transactions.some((t) => {
+    if (!isLedgerStatus(t.status)) return false;
+    if (account.id === "acc-default-checking" && !t.accountId) return true;
+    return t.accountId === account.id || t.targetAccountId === account.id;
+  });
+}
+
+export function getAccountTransactionCount(account: Account | string, s: State): number {
+  if (!s.transactions || !Array.isArray(s.transactions)) return 0;
+  const accId = typeof account === "string" ? account : account.id;
+  return s.transactions.filter(
+    (t) =>
+      t.accountId === accId ||
+      t.targetAccountId === accId ||
+      (!t.accountId && accId === "acc-default-checking"),
+  ).length;
+}
+
+export type DeletionBlockReason =
+  | "primary_checking"
+  | "has_balance"
+  | "has_transactions"
+  | null;
+
+export function getAccountDeletionBlockReason(
+  account: Account | string,
+  s: State,
+): DeletionBlockReason {
+  const accId = typeof account === "string" ? account : account.id;
+  if (accId === "acc-default-checking") return "primary_checking";
+  const acc = (s.accounts || []).find((a) => a.id === accId);
+  if (!acc) return null;
+  if (getAccountBalance(acc, s) !== 0) return "has_balance";
+  if (getAccountTransactionCount(accId, s) > 0) return "has_transactions";
+  return null;
+}
+
+export function canDeleteAccount(account: Account | string, s: State): boolean {
+  return getAccountDeletionBlockReason(account, s) === null;
+}
+
+export function getAccountLedgerDelta(account: Account, s: State): number {
+  if (!s.transactions || !Array.isArray(s.transactions)) return 0;
+
+  let delta = 0;
+  for (const t of s.transactions) {
+    if (!isLedgerStatus(t.status)) continue;
+    const kind = t.kind || "standard";
+    const absAmt = Math.abs(t.amount);
+
+    if (account.type === "credit") {
+      // Credit card: balance represents debt owed
+      if (kind === "standard") {
+        const isThisAccount =
+          t.accountId === account.id ||
+          (!t.accountId && account.id === "acc-default-checking");
+        if (isThisAccount) {
+          if (t.amount < 0) {
+            delta += absAmt; // Expense / purchase increases debt owed
+          } else {
+            delta -= absAmt; // Refund / credit reduces debt owed
+          }
+        }
+      } else if (kind === "payment") {
+        if (t.targetAccountId === account.id) {
+          delta -= absAmt; // Payment to this card reduces debt owed
+        }
+      }
+    } else {
+      // Cash accounts (checking / savings): balance represents cash assets
+      if (kind === "standard") {
+        const isThisAccount =
+          t.accountId === account.id ||
+          (!t.accountId && account.id === "acc-default-checking");
+        if (isThisAccount) {
+          delta += t.amount;
+        }
+      } else if (kind === "transfer") {
+        if (t.accountId === account.id) {
+          delta -= absAmt; // Outflow from source
+        }
+        if (t.targetAccountId === account.id) {
+          delta += absAmt; // Inflow to destination
+        }
+      } else if (kind === "payment") {
+        if (t.accountId === account.id) {
+          delta -= absAmt; // Cash payment outflow
+        }
+      }
+    }
+  }
+  return delta;
+}
+
 export function getAccountBalance(account: Account, s: State): number {
+  const delta = getAccountLedgerDelta(account, s);
   if (account.id === "acc-default-checking") {
-    const ledgerSum = s.transactions
-      .filter((t) => isLedgerStatus(t.status))
-      .reduce((n, t) => n + t.amount, 0);
-    return account.opening + ledgerSum;
+    const opening =
+      account.opening !== 0
+        ? account.opening
+        : s && typeof s.opening === "number"
+          ? s.opening
+          : account.opening;
+    return opening + delta;
+  }
+  if (hasAccountLedgerActivity(account, s)) {
+    return account.opening + delta;
   }
   return account.balance !== undefined ? account.balance : account.opening;
 }
@@ -196,7 +303,7 @@ export function demo(): State {
   const d = today();
   const payday = nextPayday();
   return {
-    version: 2,
+    version: 3,
     demo: true,
     opening: 285675,
     payday,
@@ -209,6 +316,8 @@ export function demo(): State {
         category: "Income",
         date: d,
         status: "posted",
+        accountId: "acc-default-checking",
+        kind: "standard",
       },
       {
         id: "t2",
@@ -217,6 +326,8 @@ export function demo(): State {
         category: "Groceries",
         date: d,
         status: "posted",
+        accountId: "acc-default-checking",
+        kind: "standard",
       },
       {
         id: "t3",
@@ -225,6 +336,8 @@ export function demo(): State {
         category: "Dining Out",
         date: d,
         status: "posted",
+        accountId: "acc-default-checking",
+        kind: "standard",
       },
       {
         id: "t4",
@@ -234,6 +347,8 @@ export function demo(): State {
         date: d,
         billId: "b2",
         status: "posted",
+        accountId: "acc-default-checking",
+        kind: "standard",
       },
       {
         id: "t5",
@@ -242,6 +357,8 @@ export function demo(): State {
         category: "Entertainment",
         date: d,
         status: "posted",
+        accountId: "acc-default-checking",
+        kind: "standard",
       },
       {
         id: "t6",
@@ -250,6 +367,8 @@ export function demo(): State {
         category: "Dining Out",
         date: d,
         status: "posted",
+        accountId: "acc-default-checking",
+        kind: "standard",
       },
     ],
     budgets: [
@@ -355,6 +474,7 @@ export const spent = (
         (t) =>
           isLedgerStatus(t.status) &&
           t.amount < 0 &&
+          (t.kind === "standard" || !t.kind) &&
           t.category === category &&
           t.date.startsWith(month),
       )
@@ -583,7 +703,11 @@ export function getUncoveredScheduledExpenses(s: State, now = today()): number {
   const scheduledExpensesByCategory = new Map<string, number>();
 
   for (const t of s.transactions) {
-    if (t.status === "scheduled" && t.amount < 0) {
+    if (
+      t.status === "scheduled" &&
+      t.amount < 0 &&
+      (t.kind === "standard" || !t.kind)
+    ) {
       if (t.date > currentPaydayEnd) continue;
       if (t.billId) continue;
       if (t.category.toLowerCase() === "bills") continue;
@@ -625,16 +749,25 @@ export function totals(s: State, now = today()) {
     (t) => t.status === "scheduled",
   );
 
+  const eligibleCashAccounts = (s.accounts || []).filter(
+    (a) =>
+      !a.archived &&
+      (a.type === "checking" || a.type === "savings") &&
+      a.includeInSafeToSpend,
+  );
+
   const balance =
-    s.opening + ledgerTransactions.reduce((n, t) => n + t.amount, 0);
+    eligibleCashAccounts.length > 0
+      ? eligibleCashAccounts.reduce((sum, a) => sum + getAccountBalance(a, s), 0)
+      : s.opening + ledgerTransactions.reduce((n, t) => n + t.amount, 0);
 
   const scheduledIncome = scheduledTransactions
-    .filter((t) => t.amount > 0)
+    .filter((t) => (t.kind === "standard" || !t.kind) && t.amount > 0)
     .reduce((n, t) => n + t.amount, 0);
 
   const scheduledExpenses = Math.abs(
     scheduledTransactions
-      .filter((t) => t.amount < 0)
+      .filter((t) => (t.kind === "standard" || !t.kind) && t.amount < 0)
       .reduce((n, t) => n + t.amount, 0),
   );
 
@@ -689,16 +822,29 @@ export function migrateState(raw: any, now = today()): State {
         } else {
           status = isFuture ? "scheduled" : "pending";
         }
+        const kind: TransactionKind =
+          t.kind === "transfer" || t.kind === "payment" ? t.kind : "standard";
+
         return {
           id: String(t.id || uid()),
           name: String(t.name || ""),
           amount: Number(t.amount) || 0,
-          category: String(t.category || "General"),
+          category: String(
+            t.category ||
+              (kind === "transfer"
+                ? "Transfer"
+                : kind === "payment"
+                  ? "Payment"
+                  : "General"),
+          ),
           date: String(t.date || now),
           billId: t.billId ? String(t.billId) : undefined,
           billDueDate: t.billDueDate ? String(t.billDueDate) : undefined,
           status,
           postedDate: t.postedDate ? String(t.postedDate) : undefined,
+          accountId: t.accountId ? String(t.accountId) : "acc-default-checking",
+          kind,
+          targetAccountId: t.targetAccountId ? String(t.targetAccountId) : undefined,
         };
       })
     : [];
@@ -759,11 +905,20 @@ export function migrateState(raw: any, now = today()): State {
       const isPrimaryChecking = a.id === "acc-default-checking";
       const type: AccountType =
         a.type === "savings" || a.type === "credit" ? a.type : "checking";
+
+      const opening = isPrimaryChecking
+        ? rawOpening
+        : a.opening !== undefined
+          ? Number(a.opening)
+          : a.balance !== undefined
+            ? Number(a.balance)
+            : 0;
+
       const acc: Account = {
         id: String(a.id || uid()),
         name: String(a.name || (isCredit ? "Credit Card" : "Account")),
         type,
-        opening: isPrimaryChecking ? rawOpening : Number(a.opening) || 0,
+        opening,
         includeInSafeToSpend: isCredit
           ? false
           : a.includeInSafeToSpend !== undefined
@@ -781,7 +936,7 @@ export function migrateState(raw: any, now = today()): State {
         if (a.dueDay) {
           acc.dueDay = Math.min(31, Math.max(1, Number(a.dueDay)));
         }
-        if (a.minPayment) {
+        if (a.minPayment !== undefined) {
           acc.minPayment = Number(a.minPayment);
         }
       }
@@ -803,9 +958,11 @@ export function migrateState(raw: any, now = today()): State {
     ];
   }
 
-  // Ensure there is at least one primary checking or safe-to-spend cash account
-  if (!accounts.some((a) => a.includeInSafeToSpend)) {
-    const primary = accounts.find((a) => a.type === "checking");
+  // Ensure there is at least one safe-to-spend cash account
+  if (!accounts.some((a) => a.includeInSafeToSpend && !a.archived && a.type !== "credit")) {
+    const primary =
+      accounts.find((a) => a.type === "checking" && !a.archived) ||
+      accounts.find((a) => a.type === "checking");
     if (primary) {
       primary.includeInSafeToSpend = true;
     }

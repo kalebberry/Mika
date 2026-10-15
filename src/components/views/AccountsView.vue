@@ -179,6 +179,14 @@ const creditAccounts = computed(() =>
             >
               {{ acc.archived ? "Restore" : "Archive" }}
             </button>
+            <button
+              v-if="acc.id !== 'acc-default-checking'"
+              class="text-link small danger-link"
+              @click="open('Delete account', acc.id)"
+              title="Delete account"
+            >
+              Delete
+            </button>
           </div>
         </article>
       </div>
@@ -277,6 +285,13 @@ const creditAccounts = computed(() =>
               @click="toggleArchiveAccount(acc.id)"
             >
               {{ acc.archived ? "Restore" : "Archive" }}
+            </button>
+            <button
+              class="text-link small danger-link"
+              @click="open('Delete account', acc.id)"
+              title="Delete account"
+            >
+              Delete
             </button>
           </div>
         </article>
@@ -479,6 +494,14 @@ const creditAccounts = computed(() =>
 .badge.archived {
   background: #eee;
   color: #777;
+}
+
+.danger-link {
+  color: var(--color-muted);
+  transition: color 0.15s ease;
+}
+.danger-link:hover {
+  color: var(--color-danger, #c94736) !important;
 }
 
 @media (max-width: 768px) {

@@ -10,12 +10,24 @@ const {
   sort,
   category,
   categories,
+  accountFilter,
+  accounts,
   statusFilter,
   list,
   sum,
   postTransaction,
 } = useBudget();
 const { open } = useModal();
+
+function getAccountName(id?: string): string {
+  if (!id || id === "acc-default-checking") {
+    const acc = (state.value.accounts || []).find((a) => a.id === "acc-default-checking");
+    return acc ? acc.name : "Primary Checking";
+  }
+  const acc = (state.value.accounts || []).find((a) => a.id === id);
+  if (!acc) return "Account";
+  return acc.archived ? `${acc.name} (Archived)` : acc.name;
+}
 </script>
 
 <template>
@@ -42,6 +54,15 @@ const { open } = useModal();
         <span class="sr-only">Search transactions</span>
         <input v-model="search" placeholder="Search transactions" />
         <span>⌕</span>
+      </label>
+      <label>
+        Account
+        <select v-model="accountFilter">
+          <option value="All">All accounts</option>
+          <option v-for="a in accounts" :key="a.id" :value="a.id">
+            {{ a.name }}{{ a.archived ? " (Archived)" : "" }}
+          </option>
+        </select>
       </label>
       <label>
         Status
@@ -88,26 +109,43 @@ const { open } = useModal();
                   class="avatar"
                   :style="{
                     background:
-                      colors[
-                        categories.indexOf(t.category) % colors.length
-                      ],
+                      t.kind === 'transfer'
+                        ? '#597c7c'
+                        : t.kind === 'payment'
+                          ? '#2655a6'
+                          : colors[
+                              categories.indexOf(t.category) % colors.length
+                            ],
                   }"
                 >
-                  {{ t.name.slice(0, 1).toUpperCase() }}
+                  {{ t.kind === 'transfer' ? '⇄' : t.kind === 'payment' ? '💳' : t.name.slice(0, 1).toUpperCase() }}
                 </span>
                 <div>
-                  <strong>{{ t.name }}</strong>
-                  <span
-                    class="badge"
-                    :class="{
-                      'status-scheduled': t.status === 'scheduled',
-                      'status-pending': t.status === 'pending' || t.status === 'posted',
-                      'status-cleared': t.status === 'cleared' || !t.status,
-                    }"
-                    style="display: inline-block; margin-left: 0.375rem; font-size: 0.7rem; font-weight: 600;"
-                  >
-                    {{ t.status === 'scheduled' ? 'Scheduled' : (t.status === 'pending' || t.status === 'posted') ? 'Pending' : 'Cleared' }}
-                  </span>
+                  <div style="display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap;">
+                    <strong>{{ t.name }}</strong>
+                    <span
+                      class="badge"
+                      :class="{
+                        'status-scheduled': t.status === 'scheduled',
+                        'status-pending': t.status === 'pending' || t.status === 'posted',
+                        'status-cleared': t.status === 'cleared' || !t.status,
+                      }"
+                      style="font-size: 0.7rem; font-weight: 600;"
+                    >
+                      {{ t.status === 'scheduled' ? 'Scheduled' : (t.status === 'pending' || t.status === 'posted') ? 'Pending' : 'Cleared' }}
+                    </span>
+                  </div>
+                  <div style="font-size: 0.75rem; color: var(--color-muted); margin-top: 0.125rem;">
+                    <span v-if="t.kind === 'transfer'">
+                      ⇄ {{ getAccountName(t.accountId) }} → {{ getAccountName(t.targetAccountId) }}
+                    </span>
+                    <span v-else-if="t.kind === 'payment'">
+                      💳 {{ getAccountName(t.accountId) }} → {{ getAccountName(t.targetAccountId) }}
+                    </span>
+                    <span v-else>
+                      {{ getAccountName(t.accountId) }}
+                    </span>
+                  </div>
                 </div>
               </div>
             </td>

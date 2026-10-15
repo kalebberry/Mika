@@ -20,8 +20,14 @@ import {
   accountTotals,
   getAccountBalance,
   getAvailableCredit,
+  getAccountLedgerDelta,
+  getAccountTransactionCount,
+  canDeleteAccount,
+  getAccountDeletionBlockReason,
+  type DeletionBlockReason,
   uid,
 } from "../model";
+import { money } from "../utils/format";
 import { useToast } from "./useToast";
 
 export type PageName =
@@ -78,6 +84,7 @@ const collapsed = ref(false);
 
 const search = ref("");
 const category = ref("All");
+const accountFilter = ref("All");
 const sort = ref("Latest");
 const statusFilter = ref<"All" | "Scheduled" | "Pending" | "Cleared">("All");
 
@@ -90,13 +97,15 @@ const monthly = computed(() =>
 );
 
 const income = computed(() =>
-  monthly.value.filter((t) => t.amount > 0).reduce((n, t) => n + t.amount, 0),
+  monthly.value
+    .filter((t) => (t.kind === "standard" || !t.kind) && t.amount > 0)
+    .reduce((n, t) => n + t.amount, 0),
 );
 
 const expenses = computed(
   () =>
     -monthly.value
-      .filter((t) => t.amount < 0)
+      .filter((t) => (t.kind === "standard" || !t.kind) && t.amount < 0)
       .reduce((n, t) => n + t.amount, 0),
 );
 
@@ -105,6 +114,7 @@ const scheduledIncome = computed(() =>
     .filter(
       (t) =>
         t.status === "scheduled" &&
+        (t.kind === "standard" || !t.kind) &&
         t.amount > 0 &&
         t.date.startsWith(month.value),
     )
@@ -116,6 +126,7 @@ const scheduledExpenses = computed(() =>
     .filter(
       (t) =>
         t.status === "scheduled" &&
+        (t.kind === "standard" || !t.kind) &&
         t.amount < 0 &&
         t.date.startsWith(month.value),
     )
@@ -146,6 +157,10 @@ const list = computed(() =>
       (t) =>
         t.name.toLowerCase().includes(search.value.toLowerCase()) &&
         (category.value === "All" || t.category === category.value) &&
+        (accountFilter.value === "All" ||
+          t.accountId === accountFilter.value ||
+          t.targetAccountId === accountFilter.value ||
+          (!t.accountId && accountFilter.value === "acc-default-checking")) &&
         (statusFilter.value === "All" ||
           (statusFilter.value === "Scheduled" && t.status === "scheduled") ||
           (statusFilter.value === "Pending" && (t.status === "pending" || t.status === "posted")) ||
@@ -453,16 +468,13 @@ export function useBudget() {
     const acc = (state.value.accounts || []).find((a) => a.id === id);
     if (!acc) return false;
 
+    const delta = getAccountLedgerDelta(acc, state.value);
+    acc.opening = newBalanceCents - delta;
+    acc.balance = newBalanceCents;
+    acc.updatedAt = today();
+
     if (acc.id === "acc-default-checking") {
-      const postedSum = state.value.transactions
-        .filter((t) => isLedgerStatus(t.status))
-        .reduce((n, t) => n + t.amount, 0);
-      state.value.opening = newBalanceCents - postedSum;
-      acc.opening = state.value.opening;
-      acc.updatedAt = today();
-    } else {
-      acc.balance = newBalanceCents;
-      acc.updatedAt = today();
+      state.value.opening = acc.opening;
     }
     toast(`Balance for ${acc.name} adjusted.`);
     return true;
@@ -481,16 +493,34 @@ export function useBudget() {
     return true;
   }
 
-  function deleteAccount(id: string) {
+  function deleteAccount(id: string): boolean {
     if (id === "acc-default-checking") {
       toast("The primary checking account cannot be deleted.");
       return false;
     }
+    const acc = (state.value.accounts || []).find((a) => a.id === id);
+    if (!acc) return false;
+
+    const bal = getAccountBalance(acc, state.value);
+    if (bal !== 0) {
+      toast(
+        `Cannot delete ${acc.name} because it has a remaining balance of ${money(bal)}. Accounts must have a $0.00 balance to be deleted. Adjust its balance to $0.00 or archive it instead.`,
+      );
+      return false;
+    }
+
+    const count = getAccountTransactionCount(id, state.value);
+    if (count > 0) {
+      toast(
+        `Cannot delete ${acc.name} because it has ${count} linked transaction${count === 1 ? "" : "s"}. Archive it instead to preserve financial history.`,
+      );
+      return false;
+    }
+
     const idx = (state.value.accounts || []).findIndex((a) => a.id === id);
     if (idx !== -1) {
-      const name = state.value.accounts[idx]?.name || "Account";
       state.value.accounts.splice(idx, 1);
-      toast(`Deleted ${name}.`);
+      toast(`Permanently deleted ${acc.name}.`);
       return true;
     }
     return false;
@@ -530,6 +560,7 @@ export function useBudget() {
     collapsed,
     search,
     category,
+    accountFilter,
     sort,
     statusFilter,
     sum,
@@ -567,6 +598,12 @@ export function useBudget() {
     adjustAccountBalance,
     toggleArchiveAccount,
     deleteAccount,
+    getAccountTransactionCount: (accOrId: Account | string) =>
+      getAccountTransactionCount(accOrId, state.value),
+    canDeleteAccount: (accOrId: Account | string) =>
+      canDeleteAccount(accOrId, state.value),
+    getAccountDeletionBlockReason: (accOrId: Account | string) =>
+      getAccountDeletionBlockReason(accOrId, state.value),
     getAccountBalance: (a: Account) => getAccountBalance(a, state.value),
     getAvailableCredit: (a: Account) => getAvailableCredit(a, state.value),
     registerModelContext,

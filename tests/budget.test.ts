@@ -4,6 +4,7 @@ import {
   type State,
   type Bill,
   type Transaction,
+  type TransactionKind,
   blank,
   totals,
   reserveBillsBreakdown,
@@ -25,6 +26,10 @@ import {
   accountTotals,
   getAccountBalance,
   getAvailableCredit,
+  getAccountLedgerDelta,
+  getAccountTransactionCount,
+  canDeleteAccount,
+  getAccountDeletionBlockReason,
 } from "../src/model.ts";
 
 test("Test A — Future paycheck: income remains scheduled until confirmed/posted", () => {
@@ -1086,6 +1091,792 @@ test("Test R — Edge cases: zero balances, credit limit exceeded, and negative 
 
   // Zero limit card has 0 available credit
   assert.equal(getAvailableCredit(zeroLimitCard, state), 0);
+});
+
+// ============================================================================
+// Phase 2A: Account-Aware Transactions Test Suite (Tests 2A.1 through 2A.14)
+// ============================================================================
+
+test("Test 2A.1 — Checking account income and expenses", () => {
+  const state: State = blank();
+  const checking: Account = {
+    id: "acc-checking-1",
+    name: "Main Checking",
+    type: "checking",
+    opening: 200000, // $2,000.00
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  state.accounts = [checking];
+
+  // 1. Initial balance
+  assert.equal(getAccountBalance(checking, state), 200000);
+
+  // 2. Clear income transaction: $500.00
+  state.transactions.push({
+    id: "tx-inc",
+    name: "Consulting Pay",
+    amount: 50000,
+    category: "Income",
+    date: "2026-10-14",
+    status: "cleared",
+    accountId: checking.id,
+    kind: "standard",
+  });
+  assert.equal(getAccountBalance(checking, state), 250000, "Income increases checking balance to $2,500");
+
+  // 3. Clear expense transaction: $150.00
+  state.transactions.push({
+    id: "tx-exp",
+    name: "Target Supplies",
+    amount: -15000,
+    category: "Groceries",
+    date: "2026-10-14",
+    status: "cleared",
+    accountId: checking.id,
+    kind: "standard",
+  });
+  assert.equal(getAccountBalance(checking, state), 235000, "Expense decreases checking balance to $2,350");
+  assert.equal(accountTotals(state).totalCashAssets, 235000);
+});
+
+test("Test 2A.2 — Credit card purchases and refunds", () => {
+  const state: State = blank();
+  const checking: Account = {
+    id: "acc-checking-1",
+    name: "Main Checking",
+    type: "checking",
+    opening: 200000, // $2,000.00 cash
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  const card: Account = {
+    id: "acc-card-1",
+    name: "Freedom Card",
+    type: "credit",
+    opening: 30000, // $300.00 balance owed
+    creditLimit: 100000, // $1,000.00 limit
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  state.accounts = [checking, card];
+
+  // Starting state
+  assert.equal(getAccountBalance(card, state), 30000, "Initial debt owed is $300");
+  assert.equal(getAvailableCredit(card, state), 70000, "Initial available credit is $700");
+  assert.equal(getAccountBalance(checking, state), 200000, "Cash balance is $2,000");
+
+  // 1. Credit card purchase of $80.00
+  state.transactions.push({
+    id: "tx-card-buy",
+    name: "Online Bookstore",
+    amount: -8000,
+    category: "Entertainment",
+    date: "2026-10-14",
+    status: "cleared",
+    accountId: card.id,
+    kind: "standard",
+  });
+
+  assert.equal(getAccountBalance(card, state), 38000, "Purchase increases card balance owed to $380");
+  assert.equal(getAvailableCredit(card, state), 62000, "Available credit decreases to $620");
+  assert.equal(getAccountBalance(checking, state), 200000, "Credit card purchase must NOT decrease cash balance");
+  assert.equal(accountTotals(state).totalCashAssets, 200000);
+
+  // 2. Merchant refund on credit card of $30.00
+  state.transactions.push({
+    id: "tx-card-refund",
+    name: "Bookstore Return",
+    amount: 3000,
+    category: "Entertainment",
+    date: "2026-10-14",
+    status: "cleared",
+    accountId: card.id,
+    kind: "standard",
+  });
+
+  assert.equal(getAccountBalance(card, state), 35000, "Refund decreases card balance owed to $350");
+  assert.equal(getAvailableCredit(card, state), 65000, "Available credit restored to $650");
+  assert.equal(getAccountBalance(checking, state), 200000, "Cash balance remains untouched by card refund");
+});
+
+test("Test 2A.3 — Credit card payments (cash to credit card)", () => {
+  const state: State = blank();
+  const checking: Account = {
+    id: "acc-checking-1",
+    name: "Checking",
+    type: "checking",
+    opening: 200000, // $2,000.00
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  const card: Account = {
+    id: "acc-card-1",
+    name: "Visa Card",
+    type: "credit",
+    opening: 50000, // $500.00 balance owed
+    creditLimit: 150000, // $1,500.00 limit
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  state.accounts = [checking, card];
+
+  // User records $200.00 payment from Checking to Credit Card
+  state.transactions.push({
+    id: "tx-cc-pay",
+    name: "Card Monthly Payment",
+    amount: -20000, // $200.00
+    category: "Payment",
+    date: "2026-10-14",
+    status: "cleared",
+    accountId: checking.id,
+    kind: "payment",
+    targetAccountId: card.id,
+  });
+
+  assert.equal(getAccountBalance(checking, state), 180000, "Checking balance decreases to $1,800");
+  assert.equal(getAccountBalance(card, state), 30000, "Credit card balance owed decreases to $300");
+  assert.equal(getAvailableCredit(card, state), 120000, "Available credit increases by $200 to $1,200");
+
+  // Payment must not count as a spending category expense
+  assert.equal(spent(state, "Payment"), 0, "Credit card payment does not reduce category spending");
+  assert.equal(spent(state, "General"), 0);
+});
+
+test("Test 2A.4 — Checking-to-savings transfers", () => {
+  const state: State = blank();
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 200000, // $2,000.00
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  const savings: Account = {
+    id: "acc-sav",
+    name: "Savings",
+    type: "savings",
+    opening: 100000, // $1,000.00
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  state.accounts = [checking, savings];
+
+  // Transfer $300 from checking to savings
+  state.transactions.push({
+    id: "tx-xfer-1",
+    name: "Transfer to Savings",
+    amount: -30000, // $300.00
+    category: "Transfer",
+    date: "2026-10-14",
+    status: "cleared",
+    accountId: checking.id,
+    kind: "transfer",
+    targetAccountId: savings.id,
+  });
+
+  assert.equal(getAccountBalance(checking, state), 170000, "Checking balance decreases to $1,700");
+  assert.equal(getAccountBalance(savings, state), 130000, "Savings balance increases to $1,300");
+});
+
+test("Test 2A.5 — Transfers that do not change total cash assets", () => {
+  const state: State = blank();
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 200000,
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  const savings: Account = {
+    id: "acc-sav",
+    name: "Savings",
+    type: "savings",
+    opening: 100000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  state.accounts = [checking, savings];
+
+  const beforeSummary = accountTotals(state);
+  assert.equal(beforeSummary.totalCashAssets, 300000, "Total cash assets before transfer: $3,000");
+
+  state.transactions.push({
+    id: "tx-xfer-2",
+    name: "Emergency Fund Top-up",
+    amount: -30000,
+    category: "Transfer",
+    date: "2026-10-14",
+    status: "cleared",
+    accountId: checking.id,
+    kind: "transfer",
+    targetAccountId: savings.id,
+  });
+
+  const afterSummary = accountTotals(state);
+  assert.equal(afterSummary.totalCashAssets, 300000, "Total cash assets after transfer must remain exactly $3,000");
+  assert.equal(spent(state, "Transfer"), 0, "Transfers must not count as spending");
+});
+
+test("Test 2A.6 — Pending-to-cleared transitions without duplicate balance changes", () => {
+  const state: State = blank();
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000, // $1,000.00
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  state.accounts = [checking];
+
+  // 1. Transaction entered as Pending
+  const tx: Transaction = {
+    id: "tx-pending-1",
+    name: "Grocery Store",
+    amount: -10000, // -$100.00
+    category: "Groceries",
+    date: "2026-10-14",
+    status: "pending",
+    accountId: checking.id,
+    kind: "standard",
+  };
+  state.transactions.push(tx);
+
+  assert.equal(getAccountBalance(checking, state), 90000, "Pending transaction reflects in balance ($900)");
+
+  // 2. Transition from Pending to Cleared
+  tx.status = "cleared";
+  assert.equal(getAccountBalance(checking, state), 90000, "Transitioning from pending to cleared must NOT deduct balance twice");
+});
+
+test("Test 2A.7 — Scheduled transactions not changing current balances", () => {
+  const state: State = blank();
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000,
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  const savings: Account = {
+    id: "acc-sav",
+    name: "Savings",
+    type: "savings",
+    opening: 50000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Card",
+    type: "credit",
+    opening: 20000,
+    creditLimit: 100000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  state.accounts = [checking, savings, card];
+
+  // Add scheduled transactions
+  state.transactions.push(
+    { id: "s1", name: "Future Paycheck", amount: 50000, category: "Income", date: "2026-10-25", status: "scheduled", accountId: checking.id, kind: "standard" },
+    { id: "s2", name: "Future Expense", amount: -25000, category: "General", date: "2026-10-25", status: "scheduled", accountId: checking.id, kind: "standard" },
+    { id: "s3", name: "Scheduled Transfer", amount: -30000, category: "Transfer", date: "2026-10-25", status: "scheduled", accountId: checking.id, kind: "transfer", targetAccountId: savings.id },
+    { id: "s4", name: "Scheduled Card Payment", amount: -15000, category: "Payment", date: "2026-10-25", status: "scheduled", accountId: checking.id, kind: "payment", targetAccountId: card.id },
+  );
+
+  assert.equal(getAccountBalance(checking, state), 100000, "Checking balance unchanged by scheduled items");
+  assert.equal(getAccountBalance(savings, state), 50000, "Savings balance unchanged by scheduled items");
+  assert.equal(getAccountBalance(card, state), 20000, "Credit card debt unchanged by scheduled items");
+});
+
+test("Test 2A.8 — Transaction editing and deletion", () => {
+  const state: State = blank();
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000, // $1,000.00
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  state.accounts = [checking];
+
+  // 1. Add transaction: $100
+  const tx: Transaction = {
+    id: "tx-edit",
+    name: "Dining",
+    amount: -10000,
+    category: "Dining Out",
+    date: "2026-10-14",
+    status: "cleared",
+    accountId: checking.id,
+    kind: "standard",
+  };
+  state.transactions.push(tx);
+  assert.equal(getAccountBalance(checking, state), 90000, "Balance is $900 after $100 expense");
+
+  // 2. Edit amount to $150
+  tx.amount = -15000;
+  assert.equal(getAccountBalance(checking, state), 85000, "Balance correctly updates to $850 after edit");
+
+  // 3. Delete transaction
+  state.transactions = state.transactions.filter((t) => t.id !== "tx-edit");
+  assert.equal(getAccountBalance(checking, state), 100000, "Balance correctly reverts to $1,000 after deletion");
+});
+
+test("Test 2A.9 — Safe to Spend using only eligible cash accounts", () => {
+  const simulatedToday = "2026-10-14";
+  const state: State = blank();
+
+  const checking: Account = {
+    id: "acc-chk-main",
+    name: "Primary Checking",
+    type: "checking",
+    opening: 200000, // $2,000.00
+    includeInSafeToSpend: true,
+    createdAt: simulatedToday,
+    updatedAt: simulatedToday,
+  };
+  const savings: Account = {
+    id: "acc-sav-hysa",
+    name: "High-Yield Savings",
+    type: "savings",
+    opening: 1000000, // $10,000.00
+    includeInSafeToSpend: false,
+    createdAt: simulatedToday,
+    updatedAt: simulatedToday,
+  };
+  const card: Account = {
+    id: "acc-crd-visa",
+    name: "Credit Card",
+    type: "credit",
+    opening: 40000, // $400.00 debt owed
+    creditLimit: 500000, // $5,000.00 limit
+    includeInSafeToSpend: false,
+    createdAt: simulatedToday,
+    updatedAt: simulatedToday,
+  };
+  state.accounts = [checking, savings, card];
+
+  // Pot with $500 saved
+  state.pots.push({ id: "p1", name: "Vacation", saved: 50000, target: 100000, color: "#277c78" });
+
+  const t = totals(state, simulatedToday);
+
+  // Safe to Spend must strictly be Checking ($2,000) minus Pot ($500) = $1,500.00
+  // Savings ($10k) and Credit Card ($5k limit / $400 debt) must NOT be included!
+  assert.equal(t.balance, 200000, "Totals balance strictly equals eligible checking cash balance");
+  assert.equal(t.pots, 50000);
+  assert.equal(t.safe, 150000, "Safe to spend is $1,500.00 (eligible cash minus pot)");
+});
+
+test("Test 2A.10 — Existing pots and recurring bills remaining intact", () => {
+  const simulatedToday = "2026-10-14";
+  const state: State = blank();
+  state.payday = "2026-10-28";
+  state.followingPayday = "2026-11-11";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 500000,
+    includeInSafeToSpend: true,
+    createdAt: simulatedToday,
+    updatedAt: simulatedToday,
+  };
+  const savings: Account = {
+    id: "acc-sav",
+    name: "Savings",
+    type: "savings",
+    opening: 200000,
+    includeInSafeToSpend: false,
+    createdAt: simulatedToday,
+    updatedAt: simulatedToday,
+  };
+  state.accounts = [checking, savings];
+
+  // Pot: $500 saved
+  state.pots.push({ id: "pot-1", name: "Car Maintenance", saved: 50000, target: 150000, color: "#277c78" });
+
+  // Bill: Internet $100 due on the 20th (within current cycle)
+  state.bills.push({ id: "bill-net", name: "Internet", amount: 10000, day: 20, protected: false, settledDueDates: [] });
+
+  const beforeTotals = totals(state, simulatedToday);
+  assert.equal(beforeTotals.pots, 50000);
+  assert.equal(beforeTotals.bills, 10000);
+
+  // Perform checking-to-savings transfer
+  state.transactions.push({
+    id: "tx-xfer",
+    name: "Transfer to Savings",
+    amount: -100000,
+    category: "Transfer",
+    date: simulatedToday,
+    status: "cleared",
+    accountId: checking.id,
+    kind: "transfer",
+    targetAccountId: savings.id,
+  });
+
+  const afterTotals = totals(state, simulatedToday);
+  assert.equal(afterTotals.pots, 50000, "Pots remain intact");
+  assert.equal(afterTotals.bills, 10000, "Bill reservations remain intact");
+  assert.equal(afterTotals.balance, 400000, "Checking balance reduced by transfer");
+  assert.equal(afterTotals.safe, 340000, "Safe to spend correctly updates ($4,000 - $500 - $100 = $3,400)");
+});
+
+test("Test 2A.11 — Legacy transaction migration without double-counting", () => {
+  const simulatedToday = "2026-10-14";
+  const legacyV2 = {
+    version: 2,
+    demo: false,
+    opening: 150000, // $1,500.00
+    payday: "2026-10-28",
+    transactions: [
+      { id: "leg-1", name: "Freelance", amount: 50000, category: "Income", date: "2026-10-10", status: "posted" },
+      { id: "leg-2", name: "Groceries", amount: -20000, category: "Groceries", date: "2026-10-11", status: "posted" },
+    ],
+    budgets: [],
+    pots: [],
+    bills: [],
+  };
+
+  const migrated1 = migrateState(legacyV2, simulatedToday);
+  const checking1 = migrated1.accounts.find((a) => a.id === "acc-default-checking")!;
+  assert.ok(checking1, "Primary checking created");
+  assert.equal(checking1.includeInSafeToSpend, true);
+  assert.equal(migrated1.transactions[0]!.accountId, "acc-default-checking");
+  assert.equal(migrated1.transactions[0]!.kind, "standard");
+
+  // Balance: opening $1,500 + $500 - $200 = $1,800
+  assert.equal(getAccountBalance(checking1, migrated1), 180000, "Authoritative balance is $1,800");
+
+  // Idempotent migration: running again must not apply transactions twice
+  const migrated2 = migrateState(migrated1, simulatedToday);
+  const checking2 = migrated2.accounts.find((a) => a.id === "acc-default-checking")!;
+  assert.equal(getAccountBalance(checking2, migrated2), 180000, "Idempotent re-migration preserves exact balance without double-counting");
+});
+
+test("Test 2A.12 — Backup export/import round trips", () => {
+  const simulatedToday = "2026-10-14";
+  const state: State = blank();
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 300000,
+    includeInSafeToSpend: true,
+    createdAt: simulatedToday,
+    updatedAt: simulatedToday,
+  };
+  const savings: Account = {
+    id: "acc-sav",
+    name: "Savings",
+    type: "savings",
+    opening: 100000,
+    includeInSafeToSpend: false,
+    createdAt: simulatedToday,
+    updatedAt: simulatedToday,
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Mika Card",
+    type: "credit",
+    opening: 25000,
+    creditLimit: 200000,
+    includeInSafeToSpend: false,
+    createdAt: simulatedToday,
+    updatedAt: simulatedToday,
+  };
+  state.accounts = [checking, savings, card];
+
+  state.transactions.push(
+    { id: "t1", name: "Transfer to Savings", amount: -50000, category: "Transfer", date: simulatedToday, status: "cleared", accountId: checking.id, kind: "transfer", targetAccountId: savings.id },
+    { id: "t2", name: "Card Payment", amount: -10000, category: "Payment", date: simulatedToday, status: "cleared", accountId: checking.id, kind: "payment", targetAccountId: card.id },
+  );
+
+  const exported = JSON.stringify(state);
+  const imported = migrateState(JSON.parse(exported), simulatedToday);
+
+  assert.equal(imported.accounts.length, 3);
+  assert.equal(imported.transactions.length, 2);
+
+  const impChecking = imported.accounts.find((a) => a.id === checking.id)!;
+  const impSavings = imported.accounts.find((a) => a.id === savings.id)!;
+  const impCard = imported.accounts.find((a) => a.id === card.id)!;
+
+  assert.equal(getAccountBalance(impChecking, imported), 240000, "Checking balance preserved ($3,000 - $500 - $100 = $2,400)");
+  assert.equal(getAccountBalance(impSavings, imported), 150000, "Savings balance preserved ($1,000 + $500 = $1,500)");
+  assert.equal(getAccountBalance(impCard, imported), 15000, "Card debt preserved ($250 - $100 = $150)");
+  assert.equal(getAvailableCredit(impCard, imported), 185000, "Available credit preserved ($2,000 - $150 = $1,850)");
+});
+
+test("Test 2A.13 — Balance adjustments after transaction history exists", () => {
+  const state: State = blank();
+  const checking: Account = {
+    id: "acc-default-checking",
+    name: "Primary Checking",
+    type: "checking",
+    opening: 100000, // $1,000.00
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  state.accounts = [checking];
+
+  // Historical transactions: +$200 income, -$50 expense
+  state.transactions.push(
+    { id: "tx-hist-1", name: "Side gig", amount: 20000, category: "Income", date: "2026-10-10", status: "cleared", accountId: checking.id, kind: "standard" },
+    { id: "tx-hist-2", name: "Snacks", amount: -5000, category: "Groceries", date: "2026-10-11", status: "cleared", accountId: checking.id, kind: "standard" },
+  );
+
+  assert.equal(getAccountBalance(checking, state), 115000, "Current balance with history is $1,150.00");
+
+  // Adjust balance to $1,500.00
+  const targetBalance = 150000;
+  const currentDelta = getAccountLedgerDelta(checking, state); // +15000
+  checking.opening = targetBalance - currentDelta; // $1,500 - $150 = $1,350
+  state.opening = checking.opening;
+
+  assert.equal(getAccountBalance(checking, state), 150000, "Adjusted balance is immediately $1,500.00");
+
+  // Subsequent transaction: -$100 expense
+  state.transactions.push({
+    id: "tx-subsequent",
+    name: "Gas Station",
+    amount: -10000,
+    category: "Transport",
+    date: "2026-10-14",
+    status: "cleared",
+    accountId: checking.id,
+    kind: "standard",
+  });
+
+  assert.equal(getAccountBalance(checking, state), 140000, "New transaction applies from adjusted baseline ($1,500 - $100 = $1,400)");
+});
+
+test("Test 2A.14 — Insufficient funds, invalid transfers, and missing or archived accounts", () => {
+  const state: State = blank();
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000,
+    includeInSafeToSpend: true,
+    archived: false,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  const savings: Account = {
+    id: "acc-sav",
+    name: "Savings",
+    type: "savings",
+    opening: 50000,
+    includeInSafeToSpend: false,
+    archived: false,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Card",
+    type: "credit",
+    opening: 150000, // $1,500 owed
+    creditLimit: 100000, // $1,000 limit (over-limit)
+    includeInSafeToSpend: false,
+    archived: false,
+    createdAt: "2026-10-14",
+    updatedAt: "2026-10-14",
+  };
+  state.accounts = [checking, savings, card];
+
+  // 1. Over-limit card available credit remains clamped to 0
+  assert.equal(getAvailableCredit(card, state), 0, "Available credit clamped to 0 when over limit");
+
+  // 2. Archive savings account
+  savings.archived = true;
+  const summary = accountTotals(state);
+  assert.equal(summary.totalCashAssets, 100000, "Archived account cash excluded from active totals");
+
+  // 3. Transactions on archived accounts do not crash and remain calculated
+  state.transactions.push({
+    id: "tx-archived-hist",
+    name: "Old Interest",
+    amount: 500,
+    category: "Income",
+    date: "2026-10-14",
+    status: "cleared",
+    accountId: savings.id,
+    kind: "standard",
+  });
+  assert.equal(getAccountBalance(savings, state), 50500, "Archived account balance continues calculating accurately");
+
+  // 4. Missing / unmatched account reference does not crash
+  state.transactions.push({
+    id: "tx-orphan",
+    name: "Unknown Transaction",
+    amount: -2500,
+    category: "General",
+    date: "2026-10-14",
+    status: "cleared",
+    accountId: "acc-non-existent",
+    kind: "standard",
+  });
+  assert.equal(getAccountBalance(checking, state), 100000, "Orphan transaction does not alter existing checking balance");
+});
+
+test("Test 2A.15 — Account deletion guards: $0 balance and 0 linked transactions required; archiving preserves history", () => {
+  const simulatedToday = "2026-10-14";
+  const state: State = blank();
+
+  const checking: Account = {
+    id: "acc-default-checking",
+    name: "Primary Checking",
+    type: "checking",
+    opening: 200000, // $2,000.00
+    includeInSafeToSpend: true,
+    archived: false,
+    createdAt: simulatedToday,
+    updatedAt: simulatedToday,
+  };
+
+  const cleanSavings: Account = {
+    id: "acc-clean-sav",
+    name: "Vacation Fund",
+    type: "savings",
+    opening: 0, // $0.00 balance
+    includeInSafeToSpend: false,
+    archived: false,
+    createdAt: simulatedToday,
+    updatedAt: simulatedToday,
+  };
+
+  const fundedSavings: Account = {
+    id: "acc-funded-sav",
+    name: "Rainy Day",
+    type: "savings",
+    opening: 50000, // $500.00 balance, but 0 transactions
+    includeInSafeToSpend: false,
+    archived: false,
+    createdAt: simulatedToday,
+    updatedAt: simulatedToday,
+  };
+
+  const transferSavings: Account = {
+    id: "acc-transfer-sav",
+    name: "Emergency Savings",
+    type: "savings",
+    opening: 0,
+    includeInSafeToSpend: false,
+    archived: false,
+    createdAt: simulatedToday,
+    updatedAt: simulatedToday,
+  };
+
+  const creditCard: Account = {
+    id: "acc-rewards-visa",
+    name: "Mika Visa",
+    type: "credit",
+    opening: 0,
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    archived: false,
+    createdAt: simulatedToday,
+    updatedAt: simulatedToday,
+  };
+
+  state.accounts = [checking, cleanSavings, fundedSavings, transferSavings, creditCard];
+
+  // Rule 1 & 5: Primary checking cannot be deleted
+  assert.equal(canDeleteAccount(checking, state), false, "Primary checking cannot be deleted");
+  assert.equal(getAccountDeletionBlockReason(checking, state), "primary_checking", "Block reason is primary_checking");
+
+  // Rule 1: Permanent deletion allowed ONLY when account has $0 balance and 0 linked transactions
+  assert.equal(getAccountBalance(cleanSavings, state), 0, "Clean savings balance is $0");
+  assert.equal(getAccountTransactionCount(cleanSavings, state), 0, "Clean savings has 0 transactions");
+  assert.equal(canDeleteAccount(cleanSavings, state), true, "Clean savings can be deleted");
+  assert.equal(getAccountDeletionBlockReason(cleanSavings, state), null, "Block reason is null");
+
+  // Rule 4: Nonzero balance blocks deletion even with 0 transactions
+  assert.equal(getAccountTransactionCount(fundedSavings, state), 0, "Funded savings has 0 transactions");
+  assert.equal(getAccountBalance(fundedSavings, state), 50000, "Funded savings has $500 balance");
+  assert.equal(canDeleteAccount(fundedSavings, state), false, "Funded savings cannot be deleted");
+  assert.equal(getAccountDeletionBlockReason(fundedSavings, state), "has_balance", "Block reason is has_balance");
+
+  // Rule 1 & 2: Linked transfers block deletion
+  state.transactions.push({
+    id: "tx-transfer-1",
+    name: "Transfer to Emergency",
+    amount: -30000,
+    category: "Transfer",
+    date: simulatedToday,
+    status: "cleared",
+    accountId: checking.id,
+    kind: "transfer",
+    targetAccountId: transferSavings.id,
+  });
+
+  assert.equal(getAccountTransactionCount(transferSavings, state), 1, "Transfer savings has 1 linked transfer");
+  assert.equal(canDeleteAccount(transferSavings, state), false, "Transfer savings cannot be deleted due to linked transfer");
+  assert.equal(getAccountDeletionBlockReason(transferSavings, state), "has_balance", "Balance is now $300 (nonzero)");
+
+  // Even if balance were brought to $0, linked transaction blocks deletion
+  transferSavings.opening = -30000; // Offsets the +$300 transfer to make balance $0
+  assert.equal(getAccountBalance(transferSavings, state), 0, "Balance adjusted to $0");
+  assert.equal(canDeleteAccount(transferSavings, state), false, "Account with 0 balance but linked transfer cannot be deleted");
+  assert.equal(getAccountDeletionBlockReason(transferSavings, state), "has_transactions", "Block reason is has_transactions");
+
+  // Rule 1 & 2: Linked credit card payments block deletion
+  state.transactions.push({
+    id: "tx-payment-1",
+    name: "Visa Payment",
+    amount: -10000,
+    category: "Payment",
+    date: simulatedToday,
+    status: "cleared",
+    accountId: checking.id,
+    kind: "payment",
+    targetAccountId: creditCard.id,
+  });
+
+  assert.equal(getAccountTransactionCount(creditCard, state), 1, "Credit card has 1 linked payment");
+  assert.equal(canDeleteAccount(creditCard, state), false, "Credit card cannot be deleted due to linked payment");
+
+  // Rule 3: Transactions must NEVER be deleted, modified, or reassigned when checking deletion
+  const txCountBefore = state.transactions.length;
+  assert.equal(txCountBefore, 2, "2 transactions exist");
+  assert.equal(canDeleteAccount(transferSavings, state), false);
+  assert.equal(state.transactions.length, txCountBefore, "Transaction list is completely untouched");
+  assert.equal(state.transactions[0]!.targetAccountId, transferSavings.id, "Transfer targetAccountId is unchanged");
+
+  // Rule 6 & 7: Archiving preserves accounts for reporting and reconciliation without breaking balance math
+  transferSavings.archived = true;
+  assert.equal(transferSavings.archived, true, "Account is successfully archived");
+  // Checking remains accurate ($2,000 - $300 transfer - $100 payment = $1,600)
+  assert.equal(getAccountBalance(checking, state), 160000, "Checking balance intact with archived accounts");
+  // Archived account balance remains accurate ($0 opening + $300 transfer delta = $300)
+  transferSavings.opening = 0;
+  assert.equal(getAccountBalance(transferSavings, state), 30000, "Archived account balance reconciles accurately");
 });
 
 
