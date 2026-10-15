@@ -113,3 +113,91 @@ npm run build
 
 3. **How does the chronological reservation ledger prevent historical payments from consuming future reserves?**
    - *Answer*: Transactions and manual reservations are sorted chronologically by date and creation timestamp into an event timeline. A payment event only consumes reservations that were in the reserve pool at the moment the payment occurred. A manual reserve assigned on October 14 cannot travel backward in time to fund an uncovered payment recorded on October 10.
+
+---
+
+## Phase 3A.1 — Smart Payday Planning Engine & Schema v5 Migration (October 15, 2026)
+
+### 1. Overview and Scope
+Phase 3A.1 implements the foundational payday calculation engine and schema v5 migration for Smart Payday Planning. It introduces typed recurring payday schedules (weekly, biweekly, semimonthly, monthly, and manual), pure deterministic projection functions with explicit `asOf` reference dates, weekend adjustment rules, and a validated one-time override system.
+
+**Scope constraints honored**:
+- Financial calculations (`totals`, `reserveBillsBreakdown`, `getUncoveredScheduledExpenses`, Covered Credit, Safe to Spend) were not altered.
+- Recurring bill overdue tracking and bill settlement models were unchanged.
+- No UI changes were made in this increment (Settings and Overview UI updates deferred to Phase 3A.2+).
+- Migrated existing v4 users default to `manual` mode, ensuring zero financial drift.
+
+---
+
+### 2. Schedule Data Model and Schema v5 Migration
+1. **Model Architecture**:
+   - `PaydayFrequency`: `"manual" | "weekly" | "biweekly" | "semimonthly" | "monthly"`
+   - `WeekendRule`: `"exact"` (default) or `"preceding_friday"`
+   - `PaydayOverride`: `{ id, scheduledDate, overrideDate, note?, createdAt }`
+   - `PaydaySchedule`:
+     - `frequency`: cadence type.
+     - `anchorDate`: baseline ISO date (`YYYY-MM-DD`).
+     - `dayOfMonth?`: target day for monthly schedules (1–31, clamped to month length).
+     - `firstDay?`, `secondDay?`: target days for semimonthly schedules (e.g. 15 and 31, clamped).
+     - `weekendRule`: weekend handling policy.
+     - `manualFollowingPayday?`: explicit following payday for manual mode.
+     - `overrides`: historical and upcoming one-time adjustments.
+2. **Schema v5 Migration**:
+   - `State.version` bumped to 5 (preserving `version: 2` for legacy v1/v2 states and `version: 4` for v3 migration tests).
+   - If `raw.paydaySchedule` is missing (as in v4 states), it is initialized with `frequency: "manual"`, `anchorDate: raw.payday`, `manualFollowingPayday: raw.followingPayday || addDays(raw.payday, 14)`, `weekendRule: "exact"`, and `overrides: []`.
+   - Legacy `payday` and `followingPayday` fields on `State` remain populated so all existing consumers, views, and bill reservation engines experience 0% drift.
+   - Idempotent: repeated migrations preserve exact state and serialized JSON representation without introducing phantom or undefined keys.
+
+---
+
+### 3. Key Functions Implemented
+- `daysBetween(dateA, dateB)`: Calculates exact integer day difference using UTC timestamps, eliminating DST artifacts.
+- `getDaysInMonth(year, month)`: Deterministic calendar day count for leap and non-leap years.
+- `adjustForWeekend(dateStr, rule)`: Shifts Saturday to Friday (-1 day) and Sunday to Friday (-2 days) when `rule === "preceding_friday"`; leaves dates untouched when `"exact"`.
+- `getUpcomingPaydays(schedule, asOf, count)`: Pure projection returning the next $N$ paydays $\ge asOf$ in strict ascending order, applying weekend rules and nominal override substitutions.
+- `getNextPayday(schedule, asOf)` & `getFollowingPaydayDate(schedule, asOf)`: Convenience helpers for primary and secondary upcoming paydays.
+- `validatePaydayOverride(schedule, scheduledDate, overrideDate)`:
+  - Validates ISO format for both dates.
+  - Confirms `scheduledDate` corresponds to a genuine nominal occurrence for the active cadence.
+  - Enforces sequence bounds: $D_{prev} < overrideDate < D_{next}$ (prevents chronology inversion and crossing adjacent paydays).
+  - Rejects collisions with other active overrides or scheduled paydays.
+- `applyPaydayOverride(schedule, override)`: Validates and upserts an override into `schedule.overrides`.
+- `removePaydayOverride(schedule, scheduledDateOrId)`: Removes an override and reverts the occurrence to its nominal date.
+
+---
+
+### 4. Tradeoffs and Design Decisions
+1. **Pure Calculations vs Stored Next Payday Fields**:
+   - *Decision*: Next and following paydays are computed purely on-demand using explicit `asOf` dates rather than caching derived dates in state.
+   - *Rationale*: Storing derived future dates invites drift across calendar days and requires persistent background state invalidation. Pure calculation with explicit `asOf` dates is testable and completely deterministic.
+2. **Defaulting Migrated Users to Manual**:
+   - *Decision*: Existing v4 users migrate to `frequency: "manual"` using their existing `payday` and `followingPayday` dates.
+   - *Rationale*: Silently inferring biweekly recurrence would risk miscalculating bills for monthly, semimonthly, or irregularly paid users. Users must explicitly opt into automated recurrence in Settings.
+3. **Sequence Bounds on Overrides**:
+   - *Decision*: Overrides cannot cross adjacent paydays ($D_{prev} < overrideDate < D_{next}$).
+   - *Rationale*: Shifting a paycheck beyond adjacent cycles creates cycle overlap, double-paycheck periods, or inverted time horizons that would invalidate bill planning horizons.
+
+---
+
+### 5. Test Suite Verification
+All 73 unit and integration tests pass cleanly (`npm test`):
+- **Test 3A.1**: Schema v5 migration idempotence, manual mode defaulting, and exact financial number preservation.
+- **Test 3A.2**: Biweekly cadence crossing month and year boundaries (e.g. Dec 18, 2026 -> Jan 1, 2027) with automatic `asOf` cycle advancement.
+- **Test 3A.3**: Weekly, monthly (day 31 clamped in Feb 28 non-leap, Feb 29 leap, Apr 30), and semimonthly (15th and clamped end-of-month) cadences.
+- **Test 3A.4**: Weekend adjustment rules (`exact` vs `preceding_friday`).
+- **Test 3A.5**: One-time override substitution, nominal validation, sequence bound violations rejection, collision rejection, upsert behavior, and removal restoration.
+- **Test 3A.6**: Backup export and JSON import round-trip with schema v5.
+- Complete regression coverage across all 67 prior tests (Phase 1, Phase 2A, Phase 2B Covered Credit).
+
+Production build (`npm run build`) succeeded with 0 errors.
+
+---
+
+### 6. Learning Questions
+1. **Why does the schedule engine calculate nominal dates first before applying weekend rules and overrides?**
+   - *Answer*: Nominal dates represent the true underlying cadence rhythm (e.g. $anchorDate + 14k$ or the 15th/31st of each month). If adjustments were applied before generating the sequence, leap days or weekend shifts would accumulate and permanently drift the schedule away from the employer's payroll cycle.
+2. **Why must override validation reject dates on or beyond adjacent paydays ($overrideDate \le D_{prev}$ or $overrideDate \ge D_{next}$)?**
+   - *Answer*: Allowing an override to cross an adjacent payday would invert the chronological order of paychecks or cause two paydays to collide on the same date. A budget cycle relies on an orderly sequence of cycles; if an employer genuinely changes their cadence, the user should update the schedule anchor rather than creating an inverted override.
+3. **How does Phase 3A.1 ensure existing users experience zero financial disruption upon migration?**
+   - *Answer*: By defaulting existing users to `frequency: "manual"` with their existing `payday` and `followingPayday` dates, and continuing to use those authoritative fields for `reserveBillsBreakdown` and `getUncoveredScheduledExpenses`, the cash allocations and Safe to Spend calculations remain 100% identical.
+

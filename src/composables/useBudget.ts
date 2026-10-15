@@ -69,7 +69,8 @@ try {
         (parsed.version === 1 ||
           parsed.version === 2 ||
           parsed.version === 3 ||
-          parsed.version === 4) &&
+          parsed.version === 4 ||
+          parsed.version === 5) &&
         Array.isArray(parsed.transactions) &&
         Array.isArray(parsed.pots) &&
         Array.isArray(parsed.bills) &&

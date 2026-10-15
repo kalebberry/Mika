@@ -80,12 +80,46 @@ export interface Account {
   coveredCreditBaselineAt?: string; // ISO timestamp of baseline
 }
 
+export type PaydayFrequency =
+  | "manual"
+  | "weekly"
+  | "biweekly"
+  | "semimonthly"
+  | "monthly";
+
+export type WeekendRule = "exact" | "preceding_friday";
+
+export interface PaydayOverride {
+  id: string;
+  scheduledDate: string; // YYYY-MM-DD (nominal scheduled occurrence)
+  overrideDate: string; // YYYY-MM-DD (actual substitute payday date)
+  note?: string;
+  createdAt: string; // ISO timestamp
+}
+
+export interface PaydaySchedule {
+  frequency: PaydayFrequency;
+  anchorDate: string; // YYYY-MM-DD
+  dayOfMonth?: number; // 1-31 (monthly)
+  firstDay?: number; // 1-31 (semimonthly)
+  secondDay?: number; // 1-31 (semimonthly)
+  weekendRule: WeekendRule; // "exact" (default) | "preceding_friday"
+  manualFollowingPayday?: string; // YYYY-MM-DD (manual mode)
+  overrides: PaydayOverride[];
+}
+
+export interface OverrideValidationResult {
+  valid: boolean;
+  error?: string;
+}
+
 export type State = {
-  version: 2 | 3 | 4;
+  version: 2 | 3 | 4 | 5;
   demo: boolean;
   opening: number;
   payday: string;
   followingPayday?: string;
+  paydaySchedule: PaydaySchedule;
   transactions: Transaction[];
   budgets: Budget[];
   pots: Pot[];
@@ -135,11 +169,565 @@ export function addDays(dateStr: string, days: number): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+export function daysBetween(dateA: string, dateB: string): number {
+  const [y1, m1, d1] = dateA.split("-").map(Number);
+  const [y2, m2, d2] = dateB.split("-").map(Number);
+  const utc1 = Date.UTC(y1!, m1! - 1, d1!);
+  const utc2 = Date.UTC(y2!, m2! - 1, d2!);
+  return Math.round((utc2 - utc1) / 86400000);
+}
+
+export function getDaysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+export function formatYMD(year: number, month: number, day: number): string {
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+export function isValidDateString(dateStr: string): boolean {
+  if (typeof dateStr !== "string") return false;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
+  const [y, m, d] = dateStr.split("-").map(Number);
+  if (!y || !m || !d) return false;
+  if (m < 1 || m > 12) return false;
+  const maxDays = getDaysInMonth(y, m);
+  return d >= 1 && d <= maxDays;
+}
+
+export function adjustForWeekend(
+  dateStr: string,
+  rule: WeekendRule = "exact",
+): string {
+  if (rule === "exact") return dateStr;
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const dayOfWeek = new Date(Date.UTC(y!, m! - 1, d!)).getUTCDay();
+  // 0 is Sunday, 6 is Saturday
+  if (dayOfWeek === 6) {
+    return addDays(dateStr, -1);
+  }
+  if (dayOfWeek === 0) {
+    return addDays(dateStr, -2);
+  }
+  return dateStr;
+}
+
+export function isNominalOccurrence(
+  schedule: PaydaySchedule,
+  dateStr: string,
+): boolean {
+  if (!isValidDateString(dateStr)) return false;
+  const [y, m, d] = dateStr.split("-").map(Number);
+
+  if (schedule.frequency === "manual") {
+    return (
+      dateStr === schedule.anchorDate ||
+      dateStr === schedule.manualFollowingPayday
+    );
+  }
+
+  if (schedule.frequency === "weekly") {
+    const diff = daysBetween(schedule.anchorDate, dateStr);
+    return ((diff % 7) + 7) % 7 === 0;
+  }
+
+  if (schedule.frequency === "biweekly") {
+    const diff = daysBetween(schedule.anchorDate, dateStr);
+    return ((diff % 14) + 14) % 14 === 0;
+  }
+
+  if (schedule.frequency === "monthly") {
+    const targetDay =
+      schedule.dayOfMonth !== undefined
+        ? schedule.dayOfMonth
+        : Number(schedule.anchorDate.split("-")[2]);
+    const maxDays = getDaysInMonth(y!, m!);
+    return d === Math.min(targetDay, maxDays);
+  }
+
+  if (schedule.frequency === "semimonthly") {
+    const firstDay = Math.min(
+      schedule.firstDay !== undefined ? schedule.firstDay : 15,
+      schedule.secondDay !== undefined ? schedule.secondDay : 31,
+    );
+    const secondDay = Math.max(
+      schedule.firstDay !== undefined ? schedule.firstDay : 15,
+      schedule.secondDay !== undefined ? schedule.secondDay : 31,
+    );
+    const maxDays = getDaysInMonth(y!, m!);
+    return d === Math.min(firstDay, maxDays) || d === Math.min(secondDay, maxDays);
+  }
+
+  return false;
+}
+
+export function resolveNominalOccurrenceDate(
+  schedule: PaydaySchedule,
+  dateStr: string,
+): string | null {
+  if (isNominalOccurrence(schedule, dateStr)) {
+    return dateStr;
+  }
+  if (schedule.weekendRule === "preceding_friday") {
+    const candSat = addDays(dateStr, 1);
+    if (
+      isNominalOccurrence(schedule, candSat) &&
+      adjustForWeekend(candSat, "preceding_friday") === dateStr
+    ) {
+      return candSat;
+    }
+    const candSun = addDays(dateStr, 2);
+    if (
+      isNominalOccurrence(schedule, candSun) &&
+      adjustForWeekend(candSun, "preceding_friday") === dateStr
+    ) {
+      return candSun;
+    }
+  }
+  return null;
+}
+
+export function getAdjacentOccurrences(
+  schedule: PaydaySchedule,
+  nominalDate: string,
+): { prev: string; next: string } {
+  const [y, m, d] = nominalDate.split("-").map(Number);
+
+  if (schedule.frequency === "weekly") {
+    return {
+      prev: addDays(nominalDate, -7),
+      next: addDays(nominalDate, 7),
+    };
+  }
+
+  if (schedule.frequency === "biweekly") {
+    return {
+      prev: addDays(nominalDate, -14),
+      next: addDays(nominalDate, 14),
+    };
+  }
+
+  if (schedule.frequency === "monthly") {
+    const targetDay =
+      schedule.dayOfMonth !== undefined
+        ? schedule.dayOfMonth
+        : Number(schedule.anchorDate.split("-")[2]);
+
+    let prevY = y!;
+    let prevM = m! - 1;
+    if (prevM < 1) {
+      prevM = 12;
+      prevY--;
+    }
+    const prev = formatYMD(
+      prevY,
+      prevM,
+      Math.min(targetDay, getDaysInMonth(prevY, prevM)),
+    );
+
+    let nextY = y!;
+    let nextM = m! + 1;
+    if (nextM > 12) {
+      nextM = 1;
+      nextY++;
+    }
+    const next = formatYMD(
+      nextY,
+      nextM,
+      Math.min(targetDay, getDaysInMonth(nextY, nextM)),
+    );
+
+    return { prev, next };
+  }
+
+  if (schedule.frequency === "semimonthly") {
+    const day1 = Math.min(
+      schedule.firstDay !== undefined ? schedule.firstDay : 15,
+      schedule.secondDay !== undefined ? schedule.secondDay : 31,
+    );
+    const day2 = Math.max(
+      schedule.firstDay !== undefined ? schedule.firstDay : 15,
+      schedule.secondDay !== undefined ? schedule.secondDay : 31,
+    );
+    const maxDaysCurr = getDaysInMonth(y!, m!);
+    const isFirst = d === Math.min(day1, maxDaysCurr);
+
+    if (isFirst) {
+      let prevY = y!;
+      let prevM = m! - 1;
+      if (prevM < 1) {
+        prevM = 12;
+        prevY--;
+      }
+      const prev = formatYMD(
+        prevY,
+        prevM,
+        Math.min(day2, getDaysInMonth(prevY, prevM)),
+      );
+      const next = formatYMD(y!, m!, Math.min(day2, maxDaysCurr));
+      return { prev, next };
+    } else {
+      const prev = formatYMD(y!, m!, Math.min(day1, maxDaysCurr));
+      let nextY = y!;
+      let nextM = m! + 1;
+      if (nextM > 12) {
+        nextM = 1;
+        nextY++;
+      }
+      const next = formatYMD(
+        nextY,
+        nextM,
+        Math.min(day1, getDaysInMonth(nextY, nextM)),
+      );
+      return { prev, next };
+    }
+  }
+
+  // Manual mode:
+  const first = schedule.anchorDate;
+  const second = schedule.manualFollowingPayday || addDays(first, 14);
+  const diff = daysBetween(first, second) || 14;
+  if (nominalDate === first) {
+    return {
+      prev: addDays(first, -diff),
+      next: second,
+    };
+  } else {
+    return {
+      prev: first,
+      next: addDays(second, diff),
+    };
+  }
+}
+
+export function getUpcomingPaydays(
+  schedule: PaydaySchedule,
+  asOf: string = today(),
+  count: number = 3,
+): string[] {
+  if (count <= 0) return [];
+
+  const overrideMap = new Map<string, string>();
+  for (const o of schedule.overrides || []) {
+    overrideMap.set(o.scheduledDate, o.overrideDate);
+  }
+
+  const weekendRule = schedule.weekendRule || "exact";
+
+  if (schedule.frequency === "manual") {
+    const list: string[] = [];
+    const firstNominal = schedule.anchorDate || asOf;
+    const secondNominal =
+      schedule.manualFollowingPayday || addDays(firstNominal, 14);
+    const stepDays = Math.max(
+      1,
+      Math.abs(daysBetween(firstNominal, secondNominal)) || 14,
+    );
+
+    let currNominal = firstNominal;
+    if (currNominal < asOf && secondNominal < asOf) {
+      const diff = daysBetween(currNominal, asOf);
+      const steps = Math.floor(diff / stepDays);
+      currNominal = addDays(currNominal, steps * stepDays);
+    }
+
+    let attempts = 0;
+    while (list.length < count && attempts < 100) {
+      attempts++;
+      const adjusted = adjustForWeekend(currNominal, weekendRule);
+      const effective = overrideMap.get(currNominal) || adjusted;
+      if (effective >= asOf && !list.includes(effective)) {
+        list.push(effective);
+      }
+      currNominal = addDays(currNominal, stepDays);
+    }
+    return list.slice(0, count);
+  }
+
+  if (schedule.frequency === "weekly") {
+    const list: string[] = [];
+    const anchor = schedule.anchorDate || asOf;
+    const diff = daysBetween(anchor, asOf);
+    let k = Math.floor((diff - 14) / 7);
+    let attempts = 0;
+    while (list.length < count && attempts < 200) {
+      attempts++;
+      const nominal = addDays(anchor, k * 7);
+      k++;
+      const adjusted = adjustForWeekend(nominal, weekendRule);
+      const effective = overrideMap.get(nominal) || adjusted;
+      if (effective >= asOf && !list.includes(effective)) {
+        list.push(effective);
+      }
+    }
+    return list.slice(0, count);
+  }
+
+  if (schedule.frequency === "biweekly") {
+    const list: string[] = [];
+    const anchor = schedule.anchorDate || asOf;
+    const diff = daysBetween(anchor, asOf);
+    let k = Math.floor((diff - 28) / 14);
+    let attempts = 0;
+    while (list.length < count && attempts < 200) {
+      attempts++;
+      const nominal = addDays(anchor, k * 14);
+      k++;
+      const adjusted = adjustForWeekend(nominal, weekendRule);
+      const effective = overrideMap.get(nominal) || adjusted;
+      if (effective >= asOf && !list.includes(effective)) {
+        list.push(effective);
+      }
+    }
+    return list.slice(0, count);
+  }
+
+  if (schedule.frequency === "monthly") {
+    const list: string[] = [];
+    const anchorDay = schedule.anchorDate
+      ? Number(schedule.anchorDate.split("-")[2])
+      : 1;
+    const targetDay =
+      schedule.dayOfMonth !== undefined ? schedule.dayOfMonth : anchorDay;
+
+    const [asOfY, asOfM] = asOf.split("-").map(Number);
+    let currY = asOfY!;
+    let currM = asOfM! - 1;
+    if (currM < 1) {
+      currM = 12;
+      currY--;
+    }
+
+    let attempts = 0;
+    while (list.length < count && attempts < 100) {
+      attempts++;
+      const maxDays = getDaysInMonth(currY, currM);
+      const clampedDay = Math.min(targetDay, maxDays);
+      const nominal = formatYMD(currY, currM, clampedDay);
+
+      currM++;
+      if (currM > 12) {
+        currM = 1;
+        currY++;
+      }
+
+      const adjusted = adjustForWeekend(nominal, weekendRule);
+      const effective = overrideMap.get(nominal) || adjusted;
+      if (effective >= asOf && !list.includes(effective)) {
+        list.push(effective);
+      }
+    }
+    return list.slice(0, count);
+  }
+
+  if (schedule.frequency === "semimonthly") {
+    const list: string[] = [];
+    const firstTarget =
+      schedule.firstDay !== undefined ? schedule.firstDay : 15;
+    const secondTarget =
+      schedule.secondDay !== undefined ? schedule.secondDay : 31;
+    const day1 = Math.min(firstTarget, secondTarget);
+    const day2 = Math.max(firstTarget, secondTarget);
+
+    const [asOfY, asOfM] = asOf.split("-").map(Number);
+    let currY = asOfY!;
+    let currM = asOfM! - 1;
+    if (currM < 1) {
+      currM = 12;
+      currY--;
+    }
+
+    let attempts = 0;
+    while (list.length < count && attempts < 100) {
+      attempts++;
+      const maxDays = getDaysInMonth(currY, currM);
+      const clamped1 = Math.min(day1, maxDays);
+      const clamped2 = Math.min(day2, maxDays);
+
+      const nominal1 = formatYMD(currY, currM, clamped1);
+      const nominal2 = formatYMD(currY, currM, clamped2);
+
+      currM++;
+      if (currM > 12) {
+        currM = 1;
+        currY++;
+      }
+
+      for (const nom of [nominal1, nominal2]) {
+        if (list.length >= count) break;
+        const adjusted = adjustForWeekend(nom, weekendRule);
+        const effective = overrideMap.get(nom) || adjusted;
+        if (effective >= asOf && !list.includes(effective)) {
+          list.push(effective);
+        }
+      }
+    }
+    return list.slice(0, count);
+  }
+
+  return [];
+}
+
+export function getNextPayday(
+  schedule: PaydaySchedule,
+  asOf: string = today(),
+): string {
+  const paydays = getUpcomingPaydays(schedule, asOf, 1);
+  return paydays[0] || schedule.anchorDate || asOf;
+}
+
+export function getFollowingPaydayDate(
+  schedule: PaydaySchedule,
+  asOf: string = today(),
+): string {
+  const paydays = getUpcomingPaydays(schedule, asOf, 2);
+  return paydays[1] || addDays(getNextPayday(schedule, asOf), 14);
+}
+
+export function validatePaydayOverride(
+  schedule: PaydaySchedule,
+  scheduledDate: string,
+  overrideDate: string,
+): OverrideValidationResult {
+  if (!isValidDateString(scheduledDate)) {
+    return {
+      valid: false,
+      error: "Scheduled date must be a valid date in YYYY-MM-DD format.",
+    };
+  }
+  if (!isValidDateString(overrideDate)) {
+    return {
+      valid: false,
+      error: "Override date must be a valid date in YYYY-MM-DD format.",
+    };
+  }
+
+  const resolvedNominal = resolveNominalOccurrenceDate(schedule, scheduledDate);
+  if (!resolvedNominal) {
+    return {
+      valid: false,
+      error: `Date ${scheduledDate} is not a valid scheduled occurrence for this payday schedule.`,
+    };
+  }
+
+  // Collision check against other active overrides
+  const otherOverrides = (schedule.overrides || []).filter(
+    (o) => o.scheduledDate !== resolvedNominal,
+  );
+  if (otherOverrides.some((o) => o.overrideDate === overrideDate)) {
+    return {
+      valid: false,
+      error: `Override date ${overrideDate} collides with another payday override.`,
+    };
+  }
+
+  // Ordering bounds check (cannot cross adjacent occurrences)
+  const adjacent = getAdjacentOccurrences(schedule, resolvedNominal);
+  const prevOverride = otherOverrides.find(
+    (o) => o.scheduledDate === adjacent.prev,
+  );
+  const effectivePrev = prevOverride
+    ? prevOverride.overrideDate
+    : adjustForWeekend(adjacent.prev, schedule.weekendRule);
+
+  const nextOverride = otherOverrides.find(
+    (o) => o.scheduledDate === adjacent.next,
+  );
+  const effectiveNext = nextOverride
+    ? nextOverride.overrideDate
+    : adjustForWeekend(adjacent.next, schedule.weekendRule);
+
+  if (overrideDate <= effectivePrev) {
+    return {
+      valid: false,
+      error: `Override date cannot be on or before the preceding payday (${effectivePrev}).`,
+    };
+  }
+
+  if (overrideDate >= effectiveNext) {
+    return {
+      valid: false,
+      error: `Override date cannot be on or after the following payday (${effectiveNext}).`,
+    };
+  }
+
+  return { valid: true };
+}
+
+export function applyPaydayOverride(
+  schedule: PaydaySchedule,
+  override: Omit<PaydayOverride, "id" | "createdAt"> & {
+    id?: string;
+    createdAt?: string;
+  },
+): { success: boolean; error?: string; schedule: PaydaySchedule } {
+  const resolvedNominal = resolveNominalOccurrenceDate(
+    schedule,
+    override.scheduledDate,
+  );
+  const validation = validatePaydayOverride(
+    schedule,
+    override.scheduledDate,
+    override.overrideDate,
+  );
+  if (!validation.valid) {
+    return { success: false, error: validation.error, schedule };
+  }
+
+  const nominalKey = resolvedNominal || override.scheduledDate;
+  const id = override.id || uid();
+  const createdAt = override.createdAt || new Date().toISOString();
+  const entry: PaydayOverride = {
+    id,
+    scheduledDate: nominalKey,
+    overrideDate: override.overrideDate,
+    note: override.note,
+    createdAt,
+  };
+
+  const nextOverrides = (schedule.overrides || []).filter(
+    (o) => o.scheduledDate !== nominalKey,
+  );
+  nextOverrides.push(entry);
+  nextOverrides.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate));
+
+  return {
+    success: true,
+    schedule: {
+      ...schedule,
+      overrides: nextOverrides,
+    },
+  };
+}
+
+export function removePaydayOverride(
+  schedule: PaydaySchedule,
+  scheduledDateOrId: string,
+): PaydaySchedule {
+  return {
+    ...schedule,
+    overrides: (schedule.overrides || []).filter(
+      (o) =>
+        o.id !== scheduledDateOrId && o.scheduledDate !== scheduledDateOrId,
+    ),
+  };
+}
+
 export function nextPayday() {
   return addDays(today(), 14);
 }
 
-export function getFollowingPayday(s: { payday: string; followingPayday?: string }): string {
+export function getFollowingPayday(
+  s: {
+    payday: string;
+    followingPayday?: string;
+    paydaySchedule?: PaydaySchedule;
+  },
+  asOf?: string,
+): string {
+  if (s.paydaySchedule && s.paydaySchedule.frequency !== "manual" && asOf) {
+    return getFollowingPaydayDate(s.paydaySchedule, asOf);
+  }
   return s.followingPayday || addDays(s.payday, 14);
 }
 
@@ -603,12 +1191,20 @@ export function releaseCardPaymentReserve(
 export function blank(): State {
   const payday = nextPayday();
   const d = today();
+  const followingPayday = addDays(payday, 14);
   return {
-    version: 4,
+    version: 5,
     demo: false,
     opening: 0,
     payday,
-    followingPayday: addDays(payday, 14),
+    followingPayday,
+    paydaySchedule: {
+      frequency: "manual",
+      anchorDate: payday,
+      manualFollowingPayday: followingPayday,
+      weekendRule: "exact",
+      overrides: [],
+    },
     transactions: [],
     budgets: [],
     pots: [],
@@ -632,12 +1228,19 @@ export function blank(): State {
 export function demo(): State {
   const d = today();
   const payday = nextPayday();
+  const followingPayday = addDays(payday, 14);
   return {
-    version: 4,
+    version: 5,
     demo: true,
     opening: 285675,
     payday,
-    followingPayday: addDays(payday, 14),
+    followingPayday,
+    paydaySchedule: {
+      frequency: "biweekly",
+      anchorDate: payday,
+      weekendRule: "exact",
+      overrides: [],
+    },
     transactions: [
       {
         id: "t1",
@@ -1198,7 +1801,7 @@ export function migrateState(raw: any, now = today()): State {
     return blank();
   }
 
-  const isV4 = raw.version === 4;
+  const hasCoveredCredit = raw.version === 4 || raw.version === 5;
   const creditAccountIds = new Set<string>();
   if (Array.isArray(raw.accounts)) {
     for (const a of raw.accounts) {
@@ -1229,7 +1832,7 @@ export function migrateState(raw: any, now = today()): State {
 
         const accountId = t.accountId ? String(t.accountId) : "acc-default-checking";
         const isCreditTx = creditAccountIds.has(accountId);
-        const isLegacyDebt = isV4 ? Boolean(t.isLegacyDebt) : isCreditTx;
+        const isLegacyDebt = hasCoveredCredit ? Boolean(t.isLegacyDebt) : isCreditTx;
 
         return {
           id: String(t.id || uid()),
@@ -1304,6 +1907,76 @@ export function migrateState(raw: any, now = today()): State {
       ? raw.followingPayday
       : addDays(payday, 14);
 
+  let paydaySchedule: PaydaySchedule;
+  if (raw.paydaySchedule && typeof raw.paydaySchedule === "object") {
+    const rawSched = raw.paydaySchedule;
+    const validFreqs: PaydayFrequency[] = [
+      "manual",
+      "weekly",
+      "biweekly",
+      "semimonthly",
+      "monthly",
+    ];
+    const frequency: PaydayFrequency = validFreqs.includes(rawSched.frequency)
+      ? rawSched.frequency
+      : "manual";
+
+    const anchorDate =
+      typeof rawSched.anchorDate === "string" && rawSched.anchorDate
+        ? rawSched.anchorDate
+        : payday;
+
+    const weekendRule: WeekendRule =
+      rawSched.weekendRule === "preceding_friday" ? "preceding_friday" : "exact";
+
+    const overrides: PaydayOverride[] = Array.isArray(rawSched.overrides)
+      ? rawSched.overrides
+          .filter(
+            (o: any) =>
+              o &&
+              typeof o.scheduledDate === "string" &&
+              typeof o.overrideDate === "string",
+          )
+          .map((o: any) => ({
+            id: String(o.id || uid()),
+            scheduledDate: String(o.scheduledDate),
+            overrideDate: String(o.overrideDate),
+            note: o.note ? String(o.note) : undefined,
+            createdAt: o.createdAt ? String(o.createdAt) : now,
+          }))
+      : [];
+
+    paydaySchedule = {
+      frequency,
+      anchorDate,
+      weekendRule,
+      overrides,
+    };
+    if (typeof rawSched.dayOfMonth === "number") {
+      paydaySchedule.dayOfMonth = Math.min(31, Math.max(1, rawSched.dayOfMonth));
+    }
+    if (typeof rawSched.firstDay === "number") {
+      paydaySchedule.firstDay = Math.min(31, Math.max(1, rawSched.firstDay));
+    }
+    if (typeof rawSched.secondDay === "number") {
+      paydaySchedule.secondDay = Math.min(31, Math.max(1, rawSched.secondDay));
+    }
+    if (typeof rawSched.manualFollowingPayday === "string") {
+      paydaySchedule.manualFollowingPayday = rawSched.manualFollowingPayday;
+    } else if (frequency === "manual") {
+      paydaySchedule.manualFollowingPayday = followingPayday;
+    }
+  } else {
+    // Schema v5 Migration: Preserves existing v4 payday values and defaults to manual mode
+    paydaySchedule = {
+      frequency: "manual",
+      anchorDate: payday,
+      manualFollowingPayday: followingPayday,
+      weekendRule: "exact",
+      overrides: [],
+    };
+  }
+
   const rawOpening = Number(raw.opening) || 0;
   let accounts: Account[] = [];
 
@@ -1347,8 +2020,8 @@ export function migrateState(raw: any, now = today()): State {
         if (a.minPayment !== undefined) {
           acc.minPayment = Number(a.minPayment);
         }
-        acc.assignedPaymentReserve = isV4 ? (Number(a.assignedPaymentReserve) || 0) : 0;
-        acc.paymentReservations = (isV4 && Array.isArray(a.paymentReservations))
+        acc.assignedPaymentReserve = hasCoveredCredit ? (Number(a.assignedPaymentReserve) || 0) : 0;
+        acc.paymentReservations = (hasCoveredCredit && Array.isArray(a.paymentReservations))
           ? a.paymentReservations.map((pr: any) => ({
               id: String(pr.id || uid()),
               amount: Number(pr.amount) || 0,
@@ -1356,7 +2029,7 @@ export function migrateState(raw: any, now = today()): State {
               createdAt: String(pr.createdAt || now),
             }))
           : [];
-        acc.coveredCreditBaselineAt = (isV4 && a.coveredCreditBaselineAt)
+        acc.coveredCreditBaselineAt = (hasCoveredCredit && a.coveredCreditBaselineAt)
           ? String(a.coveredCreditBaselineAt)
           : now;
       }
@@ -1388,7 +2061,7 @@ export function migrateState(raw: any, now = today()): State {
     }
   }
 
-  const version: 2 | 3 | 4 = (raw.version === 1 || raw.version === 2) ? 2 : 4;
+  const version: 2 | 3 | 4 | 5 = (raw.version === 1 || raw.version === 2) ? 2 : (raw.version === 3 ? 4 : 5);
 
   return {
     version,
@@ -1396,6 +2069,7 @@ export function migrateState(raw: any, now = today()): State {
     opening: rawOpening,
     payday,
     followingPayday,
+    paydaySchedule,
     transactions,
     budgets,
     pots,
@@ -1411,6 +2085,11 @@ export function resetWorkspace(current: State, keepPlan: boolean): State {
     fresh.budgets = current.budgets.map((b) => ({ ...b }));
     fresh.bills = current.bills.map((b) => ({ ...b }));
     fresh.accounts = (current.accounts || []).map((a) => ({ ...a }));
+    if (current.paydaySchedule) {
+      fresh.paydaySchedule = JSON.parse(JSON.stringify(current.paydaySchedule));
+      fresh.payday = current.payday;
+      fresh.followingPayday = current.followingPayday;
+    }
   }
   return fresh;
 }

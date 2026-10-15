@@ -35,6 +35,20 @@ import {
   getCreditCardCoverage,
   assignCardPaymentReserve,
   releaseCardPaymentReserve,
+  type PaydaySchedule,
+  type PaydayOverride,
+  type PaydayFrequency,
+  type WeekendRule,
+  daysBetween,
+  getDaysInMonth,
+  adjustForWeekend,
+  isValidDateString,
+  getUpcomingPaydays,
+  getNextPayday,
+  getFollowingPaydayDate,
+  validatePaydayOverride,
+  applyPaydayOverride,
+  removePaydayOverride,
 } from "../src/model.ts";
 import { useBudget } from "../src/composables/useBudget.ts";
 import { useModal } from "../src/composables/useModal.ts";
@@ -2384,7 +2398,7 @@ test("Test 2B.7 — Schema v4 migration idempotence: Pre-baseline transactions m
 
   // Re-export and re-import round trip preserves state identically
   const reImported = migrateState(JSON.parse(JSON.stringify(migrated)), simulatedToday);
-  assert.equal(reImported.version, 4);
+  assert.ok(reImported.version === 4 || reImported.version === 5);
   const reCov = getCreditCardCoverage(reImported.accounts.find((a) => a.id === "acc-cc")!, reImported, simulatedToday);
   assert.equal(reCov.readyToPay, 0);
   assert.equal(reCov.uncoveredDebt, 7500);
@@ -3397,13 +3411,13 @@ test("Test 2B.21 — State persistence and backup restoration with schema v4 com
 
   // Parse and restore via migrateState
   const parsed = JSON.parse(jsonExport);
-  assert.equal(parsed.version, 4);
+  assert.ok(parsed.version === 4 || parsed.version === 5);
   const restored = migrateState(parsed, simulatedToday);
 
   // Load restored state back into composable
   b.state.value = restored;
 
-  assert.equal(b.state.value.version, 4);
+  assert.ok(b.state.value.version === 4 || b.state.value.version === 5);
   assert.equal(b.creditCardSummary.value.totalOwed, origSummary.totalOwed);
   assert.equal(b.creditCardSummary.value.readyToPay, origSummary.readyToPay);
   assert.equal(b.creditCardSummary.value.uncoveredDebt, origSummary.uncoveredDebt);
@@ -4151,6 +4165,418 @@ test("Test 2B.27 — Comprehensive Phase 2B Verification: Partial budget split, 
   assert.equal(b.getAccountBalance(checking), 84000, "Checking cash reduced to $840");
   assert.equal(b.sum.value.safe, 84000, "Safe to Spend is $840");
 });
+
+test("Test 3A.1 — Schema v5 migration: preserves v4 payday values, defaults to manual schedule, and preserves financial numbers identically", () => {
+  const simulatedToday = "2026-10-15";
+  const rawV4State = {
+    version: 4,
+    demo: false,
+    opening: 500000,
+    payday: "2026-10-21",
+    followingPayday: "2026-11-04",
+    accounts: [
+      {
+        id: "acc-default-checking",
+        name: "Primary Checking",
+        type: "checking",
+        opening: 500000,
+        includeInSafeToSpend: true,
+        createdAt: "2026-10-01",
+        updatedAt: "2026-10-01",
+      },
+      {
+        id: "acc-cc-v4",
+        name: "Credit Card",
+        type: "credit",
+        opening: 0,
+        creditLimit: 300000,
+        includeInSafeToSpend: false,
+        assignedPaymentReserve: 5000,
+        paymentReservations: [
+          {
+            id: "res-1",
+            amount: 5000,
+            date: "2026-10-10",
+            createdAt: "2026-10-10T12:00:00.000Z",
+          },
+        ],
+        coveredCreditBaselineAt: "2026-10-01",
+        createdAt: "2026-10-01",
+        updatedAt: "2026-10-10",
+      },
+    ],
+    budgets: [
+      {
+        id: "b-groc",
+        category: "Groceries",
+        limit: 20000,
+        color: "#277c78",
+      },
+    ],
+    pots: [
+      {
+        id: "p-vac",
+        name: "Vacation",
+        saved: 30000,
+        target: 100000,
+        color: "#82c9d7",
+      },
+    ],
+    bills: [
+      {
+        id: "b-elec",
+        name: "Electricity",
+        amount: 8000,
+        day: 18,
+        protected: false,
+        settledDueDates: [],
+      },
+      {
+        id: "b-rent",
+        name: "Rent",
+        amount: 120000,
+        day: 1,
+        protected: true,
+        settledDueDates: [],
+      },
+    ],
+    transactions: [
+      {
+        id: "tx-groc",
+        name: "Grocery run",
+        amount: -5000,
+        category: "Groceries",
+        date: "2026-10-12",
+        status: "cleared",
+        accountId: "acc-cc-v4",
+        kind: "standard",
+        createdAt: "2026-10-12T10:00:00.000Z",
+      },
+    ],
+  };
+
+  const migrated = migrateState(rawV4State, simulatedToday);
+
+  // 1. Version is bumped to 5
+  assert.equal(migrated.version, 5, "Version must be 5");
+
+  // 2. Payday and followingPayday fields are preserved identically
+  assert.equal(migrated.payday, "2026-10-21");
+  assert.equal(migrated.followingPayday, "2026-11-04");
+
+  // 3. Defaults to manual schedule
+  assert.ok(migrated.paydaySchedule, "paydaySchedule must be created");
+  assert.equal(migrated.paydaySchedule.frequency, "manual");
+  assert.equal(migrated.paydaySchedule.anchorDate, "2026-10-21");
+  assert.equal(migrated.paydaySchedule.manualFollowingPayday, "2026-11-04");
+  assert.equal(migrated.paydaySchedule.weekendRule, "exact");
+  assert.equal(migrated.paydaySchedule.overrides.length, 0);
+
+  // 4. Financial totals are completely unchanged
+  const t = totals(migrated, simulatedToday);
+  assert.equal(t.balance, 500000);
+  assert.equal(t.pots, 30000);
+  assert.equal(t.budgets, 15000);
+  assert.equal(t.bills, 128000);
+  assert.equal(t.totalReadyToPay, 5000);
+  assert.equal(t.safe, 322000, "Safe to spend must be 100% identical post-migration");
+
+  // 5. Idempotent round trip: migrating again preserves state
+  const reMigrated = migrateState(JSON.parse(JSON.stringify(migrated)), simulatedToday);
+  assert.equal(reMigrated.version, 5);
+  assert.deepEqual(reMigrated, migrated, "Idempotent migration must preserve exact state");
+});
+
+test("Test 3A.2 — Biweekly schedule sequence crossing month and year boundaries", () => {
+  const sched: PaydaySchedule = {
+    frequency: "biweekly",
+    anchorDate: "2026-12-18",
+    weekendRule: "exact",
+    overrides: [],
+  };
+
+  // As of 2026-12-18 (payday is today)
+  const paydays1 = getUpcomingPaydays(sched, "2026-12-18", 4);
+  assert.deepEqual(paydays1, [
+    "2026-12-18",
+    "2027-01-01",
+    "2027-01-15",
+    "2027-01-29",
+  ]);
+  assert.equal(getNextPayday(sched, "2026-12-18"), "2026-12-18");
+  assert.equal(getFollowingPaydayDate(sched, "2026-12-18"), "2027-01-01");
+
+  // As of 2026-12-19 (day after payday, next cycle advances automatically)
+  const paydays2 = getUpcomingPaydays(sched, "2026-12-19", 3);
+  assert.deepEqual(paydays2, [
+    "2027-01-01",
+    "2027-01-15",
+    "2027-01-29",
+  ]);
+  assert.equal(getNextPayday(sched, "2026-12-19"), "2027-01-01");
+  assert.equal(getFollowingPaydayDate(sched, "2026-12-19"), "2027-01-15");
+
+  // As of 2027-01-02 (after New Year payday)
+  assert.equal(getNextPayday(sched, "2027-01-02"), "2027-01-15");
+  assert.equal(getFollowingPaydayDate(sched, "2027-01-02"), "2027-01-29");
+});
+
+test("Test 3A.3 — Weekly, Monthly, and Semimonthly cadences with calendar clamping", () => {
+  // 1. Weekly schedule (every Friday)
+  const weeklySched: PaydaySchedule = {
+    frequency: "weekly",
+    anchorDate: "2026-10-09",
+    weekendRule: "exact",
+    overrides: [],
+  };
+  const weeklyPaydays = getUpcomingPaydays(weeklySched, "2026-10-14", 3);
+  assert.deepEqual(weeklyPaydays, [
+    "2026-10-16",
+    "2026-10-23",
+    "2026-10-30",
+  ]);
+  assert.equal(daysBetween(weeklyPaydays[0]!, weeklyPaydays[1]!), 7);
+  assert.equal(daysBetween(weeklyPaydays[1]!, weeklyPaydays[2]!), 7);
+
+  // 2. Monthly on the 31st in non-leap year (2026)
+  const monthlySched: PaydaySchedule = {
+    frequency: "monthly",
+    anchorDate: "2026-01-31",
+    dayOfMonth: 31,
+    weekendRule: "exact",
+    overrides: [],
+  };
+  const monthly2026 = getUpcomingPaydays(monthlySched, "2026-01-15", 4);
+  assert.deepEqual(monthly2026, [
+    "2026-01-31",
+    "2026-02-28", // Clamped to 28 in non-leap year Feb
+    "2026-03-31",
+    "2026-04-30", // Clamped to 30 in April
+  ]);
+
+  // 3. Monthly on the 31st in leap year (2028)
+  const leapMonthly: PaydaySchedule = {
+    frequency: "monthly",
+    anchorDate: "2028-01-31",
+    dayOfMonth: 31,
+    weekendRule: "exact",
+    overrides: [],
+  };
+  const monthly2028 = getUpcomingPaydays(leapMonthly, "2028-02-01", 3);
+  assert.deepEqual(monthly2028, [
+    "2028-02-29", // Clamped to 29 in leap year Feb!
+    "2028-03-31",
+    "2028-04-30",
+  ]);
+
+  // 4. Semimonthly on 15th and 31st (15th and end-of-month)
+  const semimonthlySched: PaydaySchedule = {
+    frequency: "semimonthly",
+    anchorDate: "2026-02-01",
+    firstDay: 15,
+    secondDay: 31,
+    weekendRule: "exact",
+    overrides: [],
+  };
+  const semiPaydays = getUpcomingPaydays(semimonthlySched, "2026-02-01", 6);
+  assert.deepEqual(semiPaydays, [
+    "2026-02-15",
+    "2026-02-28", // Clamped Feb end of month
+    "2026-03-15",
+    "2026-03-31",
+    "2026-04-15",
+    "2026-04-30", // Clamped Apr end of month
+  ]);
+});
+
+test("Test 3A.4 — Weekend rule adjustments: Exact date vs Preceding Friday", () => {
+  // 2026-10-17 is Saturday, 2026-10-31 is Saturday
+  const schedExact: PaydaySchedule = {
+    frequency: "biweekly",
+    anchorDate: "2026-10-17",
+    weekendRule: "exact",
+    overrides: [],
+  };
+  assert.deepEqual(getUpcomingPaydays(schedExact, "2026-10-10", 2), [
+    "2026-10-17",
+    "2026-10-31",
+  ]);
+
+  const schedFriday: PaydaySchedule = {
+    frequency: "biweekly",
+    anchorDate: "2026-10-17",
+    weekendRule: "preceding_friday",
+    overrides: [],
+  };
+  // Saturday shifted -1 day to Friday (Oct 16 and Oct 30)
+  assert.deepEqual(getUpcomingPaydays(schedFriday, "2026-10-10", 2), [
+    "2026-10-16",
+    "2026-10-30",
+  ]);
+
+  // Sunday occurrence (e.g. 2026-10-18) shifted -2 days to Friday
+  assert.equal(adjustForWeekend("2026-10-18", "preceding_friday"), "2026-10-16");
+  assert.equal(adjustForWeekend("2026-10-18", "exact"), "2026-10-18");
+
+  // Weekday occurrence (e.g. 2026-10-16 Friday) unchanged
+  assert.equal(adjustForWeekend("2026-10-16", "preceding_friday"), "2026-10-16");
+});
+
+test("Test 3A.5 — One-time overrides: Substitution, ordering sequence bounds, and collision rejection", () => {
+  const sched: PaydaySchedule = {
+    frequency: "biweekly",
+    anchorDate: "2026-10-07", // Occurrences: Oct 7, Oct 21, Nov 4, Nov 18
+    weekendRule: "exact",
+    overrides: [],
+  };
+
+  // 1. Valid override: Shift Oct 21 to Oct 20 (Tuesday before nominal Wednesday payday)
+  const valValid = validatePaydayOverride(sched, "2026-10-21", "2026-10-20");
+  assert.equal(valValid.valid, true);
+
+  const applied = applyPaydayOverride(sched, {
+    scheduledDate: "2026-10-21",
+    overrideDate: "2026-10-20",
+    note: "Early deposit for holiday",
+  });
+  assert.equal(applied.success, true);
+  assert.equal(applied.schedule.overrides.length, 1);
+
+  // In upcoming paydays, Oct 20 substitutes for Oct 21
+  const paydays = getUpcomingPaydays(applied.schedule, "2026-10-15", 3);
+  assert.deepEqual(paydays, [
+    "2026-10-20",
+    "2026-11-04",
+    "2026-11-18",
+  ]);
+
+  // 2. Scheduled date validation: 2026-10-22 is not a biweekly occurrence from Oct 7
+  const valInvalidSched = validatePaydayOverride(sched, "2026-10-22", "2026-10-23");
+  assert.equal(valInvalidSched.valid, false);
+  assert.match(valInvalidSched.error!, /not a valid scheduled occurrence/);
+
+  // 3. Sequence bounds / Ordering checks:
+  // For Oct 21 occurrence, predecessor is Oct 7, successor is Nov 4
+  // A. Moving on or before Oct 7 is rejected
+  const valTooEarly1 = validatePaydayOverride(sched, "2026-10-21", "2026-10-07");
+  assert.equal(valTooEarly1.valid, false);
+  assert.match(valTooEarly1.error!, /cannot be on or before the preceding payday/);
+
+  const valTooEarly2 = validatePaydayOverride(sched, "2026-10-21", "2026-10-06");
+  assert.equal(valTooEarly2.valid, false);
+  assert.match(valTooEarly2.error!, /cannot be on or before the preceding payday/);
+
+  // B. Moving on or after Nov 4 is rejected
+  const valTooLate1 = validatePaydayOverride(sched, "2026-10-21", "2026-11-04");
+  assert.equal(valTooLate1.valid, false);
+  assert.match(valTooLate1.error!, /cannot be on or after the following payday/);
+
+  const valTooLate2 = validatePaydayOverride(sched, "2026-10-21", "2026-11-05");
+  assert.equal(valTooLate2.valid, false);
+  assert.match(valTooLate2.error!, /cannot be on or after the following payday/);
+
+  // 4. Collision check against another active override
+  const schedWithTwo: PaydaySchedule = {
+    ...sched,
+    overrides: [
+      { id: "ov-1", scheduledDate: "2026-11-04", overrideDate: "2026-11-03", createdAt: "2026-10-15" },
+    ],
+  };
+  const valCollision = validatePaydayOverride(schedWithTwo, "2026-10-21", "2026-11-03");
+  assert.equal(valCollision.valid, false);
+  assert.match(valCollision.error!, /collides with another payday override/);
+
+  // 5. Upsert: Applying another override on the same scheduled occurrence updates it
+  const updated = applyPaydayOverride(applied.schedule, {
+    scheduledDate: "2026-10-21",
+    overrideDate: "2026-10-19",
+    note: "Updated to Monday",
+  });
+  assert.equal(updated.success, true);
+  assert.equal(updated.schedule.overrides.length, 1, "Must update existing override without duplicating");
+  assert.equal(updated.schedule.overrides[0]!.overrideDate, "2026-10-19");
+
+  // 6. Removal: removePaydayOverride restores nominal scheduled date
+  const removed = removePaydayOverride(updated.schedule, "2026-10-21");
+  assert.equal(removed.overrides.length, 0);
+  assert.deepEqual(getUpcomingPaydays(removed, "2026-10-15", 3), [
+    "2026-10-21",
+    "2026-11-04",
+    "2026-11-18",
+  ]);
+});
+
+test("Test 3A.6 — JSON backup export and import round trip with schema v5", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  state.version = 5;
+  state.payday = "2026-10-21";
+  state.followingPayday = "2026-11-04";
+  state.paydaySchedule = {
+    frequency: "biweekly",
+    anchorDate: "2026-10-21",
+    weekendRule: "preceding_friday",
+    overrides: [
+      {
+        id: "ov-nov",
+        scheduledDate: "2026-11-04",
+        overrideDate: "2026-11-03",
+        note: "Pre-election bank holiday",
+        createdAt: "2026-10-15T12:00:00.000Z",
+      },
+    ],
+  };
+
+  const checking: Account = {
+    id: "acc-chk-v5",
+    name: "Checking",
+    type: "checking",
+    opening: 450000,
+    includeInSafeToSpend: true,
+    createdAt: simulatedToday,
+    updatedAt: simulatedToday,
+  };
+  const card: Account = {
+    id: "acc-crd-v5",
+    name: "Visa",
+    type: "credit",
+    opening: 0,
+    creditLimit: 200000,
+    includeInSafeToSpend: false,
+    assignedPaymentReserve: 15000,
+    paymentReservations: [
+      { id: "pr-1", amount: 15000, date: simulatedToday, createdAt: `${simulatedToday}T10:00:00.000Z` },
+    ],
+    coveredCreditBaselineAt: simulatedToday,
+    createdAt: simulatedToday,
+    updatedAt: simulatedToday,
+  };
+  state.accounts = [checking, card];
+
+  // Export to JSON string
+  const exported = JSON.stringify(state, null, 2);
+  const parsed = JSON.parse(exported);
+  assert.equal(parsed.version, 5);
+
+  // Restore via migrateState
+  const restored = migrateState(parsed, simulatedToday);
+  assert.equal(restored.version, 5);
+  assert.equal(restored.paydaySchedule.frequency, "biweekly");
+  assert.equal(restored.paydaySchedule.anchorDate, "2026-10-21");
+  assert.equal(restored.paydaySchedule.weekendRule, "preceding_friday");
+  assert.equal(restored.paydaySchedule.overrides.length, 1);
+  assert.equal(restored.paydaySchedule.overrides[0]!.overrideDate, "2026-11-03");
+
+  // Verify accounts and covered credit reservations preserved identically
+  const restoredCard = restored.accounts.find((a) => a.id === card.id)!;
+  assert.equal(restoredCard.assignedPaymentReserve, 15000);
+  assert.equal(restoredCard.paymentReservations?.length, 1);
+  assert.equal(restoredCard.paymentReservations?.[0]?.amount, 15000);
+
+  // Verify Safe to Spend is identical
+  assert.equal(totals(restored, simulatedToday).safe, totals(state, simulatedToday).safe);
+});
+
 
 
 
