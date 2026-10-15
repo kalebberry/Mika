@@ -229,10 +229,6 @@ export function isNominalOccurrence(
       const diff = daysBetween(second, dateStr);
       return diff % interval === 0;
     }
-    if (dateStr < first) {
-      const diff = daysBetween(dateStr, first);
-      return diff % interval === 0;
-    }
     return false;
   }
 
@@ -468,10 +464,6 @@ export function getUpcomingPaydays(
     const rawDiff = daysBetween(first, second);
     const interval = rawDiff > 0 ? rawDiff : 14;
 
-    const lookbackSteps = Math.ceil(90 / interval) + 2;
-    for (let i = lookbackSteps; i >= 1; i--) {
-      nominals.add(addDays(first, -i * interval));
-    }
     nominals.add(first);
     nominals.add(second);
 

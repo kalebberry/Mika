@@ -203,7 +203,9 @@ Following independent review of the initial Phase 3A.1 push, four specific corre
    - Rather than pushing occurrences into an array during sequential nominal iteration (which could produce non-chronological results when overrides shift occurrences across month boundaries or earlier in time), `getUpcomingPaydays` now generates candidate nominals across an expanded window (including all active override targets), resolves their effective dates via `getEffectiveOccurrenceDate`, deduplicates them via `Set<string>`, filters for $\ge asOf$, and sorts them in strictly ascending chronological order.
 2. **Explicit Manual Schedule Dates & Irregular Intervals**:
    - Corrected manual schedule generation to strictly respect `anchorDate` (first payday) and `manualFollowingPayday` (second payday), regardless of the interval between them (e.g. 5-day gaps, 23-day gaps). If user manually configured a weekend date, it is preserved exactly.
+   - Eliminated generation of hypothetical paydays before the configured `anchorDate`: when evaluating as of a date prior to the first configured payday, `getUpcomingPaydays` returns `anchorDate`, `manualFollowingPayday`, and subsequent interval projections without inventing any pre-anchor dates.
    - Future projections beyond the second payday step by `daysBetween(first, second)`.
+   - Existing one-time overrides on configured manual paydays continue to work as expected.
 3. **Hardened Schema v5 Migration and Import Sanitization**:
    - `isValidDateString` was converted into a TypeScript type guard (`dateStr is string`) that validates genuine calendar dates (rejecting `2026-02-31`, out-of-range months, or invalid strings) and safely falls back to standard defaults without throwing.
    - Schedule days (`dayOfMonth`, `firstDay`, `secondDay`) and bill days are safely rounded to integers and clamped (`Math.min(31, Math.max(1, Math.round(n)))`). Semimonthly days are swapped if necessary so $firstDay < secondDay$.

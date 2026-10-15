@@ -4761,6 +4761,45 @@ test("Test 3A.8 — Issue 2: Manual schedule generation respecting explicitly co
   // b1 due May 4 is <= payday May 1? No, due May 4 > payday May 1, but <= followingPayday May 24, so protectedCycleBills
   assert.ok(breakdown.protectedCycleBills > 0);
   assert.equal(totals(stateV4Compat, "2026-05-01").bills, breakdown.total);
+
+  // Scenario E: Evaluating a manual schedule before its first configured payday
+  // (No hypothetical paydays invented before anchorDate)
+  const schedFuture: PaydaySchedule = {
+    frequency: "manual",
+    anchorDate: "2026-05-01",
+    manualFollowingPayday: "2026-05-15",
+    weekendRule: "exact",
+    overrides: [],
+  };
+
+  // Evaluated on April 10 (21 days prior to first configured payday)
+  const resPreAnchor = getUpcomingPaydays(schedFuture, "2026-04-10", 3);
+  assert.deepEqual(
+    resPreAnchor,
+    ["2026-05-01", "2026-05-15", "2026-05-29"],
+    "Must not invent any hypothetical paydays before the configured anchorDate",
+  );
+  assert.equal(getNextPayday(schedFuture, "2026-04-10"), "2026-05-01");
+  assert.equal(getFollowingPaydayDate(schedFuture, "2026-04-10"), "2026-05-15");
+
+  // Valid one-time override on first configured payday moving earlier (e.g. to April 30)
+  const schedWithPreOverride: PaydaySchedule = {
+    ...schedFuture,
+    overrides: [
+      {
+        id: "ov-pre-anchor",
+        scheduledDate: "2026-05-01",
+        overrideDate: "2026-04-30",
+        createdAt: "2026-04-01",
+      },
+    ],
+  };
+  const resOverridePre = getUpcomingPaydays(schedWithPreOverride, "2026-04-10", 3);
+  assert.deepEqual(
+    resOverridePre,
+    ["2026-04-30", "2026-05-15", "2026-05-29"],
+    "Existing one-time overrides on anchorDate continue to work",
+  );
 });
 
 test("Test 3A.9 — Issue 3: Schema v5 migration and import sanitization of invalid dates, non-integer days, duplicate overrides, and sequence collisions", () => {
