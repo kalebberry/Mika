@@ -185,7 +185,7 @@ export function formatYMD(year: number, month: number, day: number): string {
   return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
-export function isValidDateString(dateStr: string): boolean {
+export function isValidDateString(dateStr?: string | null): dateStr is string {
   if (typeof dateStr !== "string") return false;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
   const [y, m, d] = dateStr.split("-").map(Number);
@@ -220,10 +220,20 @@ export function isNominalOccurrence(
   const [y, m, d] = dateStr.split("-").map(Number);
 
   if (schedule.frequency === "manual") {
-    return (
-      dateStr === schedule.anchorDate ||
-      dateStr === schedule.manualFollowingPayday
-    );
+    const first = schedule.anchorDate;
+    const second = schedule.manualFollowingPayday || addDays(first, 14);
+    if (dateStr === first || dateStr === second) return true;
+    const rawDiff = daysBetween(first, second);
+    const interval = rawDiff > 0 ? rawDiff : 14;
+    if (dateStr > second) {
+      const diff = daysBetween(second, dateStr);
+      return diff % interval === 0;
+    }
+    if (dateStr < first) {
+      const diff = daysBetween(dateStr, first);
+      return diff % interval === 0;
+    }
+    return false;
   }
 
   if (schedule.frequency === "weekly") {
@@ -386,18 +396,47 @@ export function getAdjacentOccurrences(
   // Manual mode:
   const first = schedule.anchorDate;
   const second = schedule.manualFollowingPayday || addDays(first, 14);
-  const diff = daysBetween(first, second) || 14;
+  const rawDiff = daysBetween(first, second);
+  const diff = rawDiff > 0 ? rawDiff : 14;
   if (nominalDate === first) {
     return {
       prev: addDays(first, -diff),
       next: second,
     };
-  } else {
+  }
+  if (nominalDate === second) {
     return {
       prev: first,
       next: addDays(second, diff),
     };
   }
+  if (nominalDate > second) {
+    return {
+      prev: addDays(nominalDate, -diff),
+      next: addDays(nominalDate, diff),
+    };
+  }
+  return {
+    prev: addDays(nominalDate, -diff),
+    next: addDays(nominalDate, diff),
+  };
+}
+
+export function getEffectiveOccurrenceDate(
+  schedule: PaydaySchedule,
+  nominal: string,
+  overrides: PaydayOverride[] = schedule.overrides || [],
+): string {
+  const ov = overrides.find((o) => o.scheduledDate === nominal);
+  if (ov) return ov.overrideDate;
+  if (
+    schedule.frequency === "manual" &&
+    (nominal === schedule.anchorDate ||
+      nominal === schedule.manualFollowingPayday)
+  ) {
+    return nominal;
+  }
+  return adjustForWeekend(nominal, schedule.weekendRule);
 }
 
 export function getUpcomingPaydays(
@@ -407,165 +446,121 @@ export function getUpcomingPaydays(
 ): string[] {
   if (count <= 0) return [];
 
-  const overrideMap = new Map<string, string>();
-  for (const o of schedule.overrides || []) {
-    overrideMap.set(o.scheduledDate, o.overrideDate);
-  }
+  const effectiveAsOf = isValidDateString(asOf) ? asOf : today();
+  const nominals = new Set<string>();
 
-  const weekendRule = schedule.weekendRule || "exact";
+  // Include any scheduledDate explicitly overridden
+  for (const o of schedule.overrides || []) {
+    if (o && isValidDateString(o.scheduledDate)) {
+      nominals.add(o.scheduledDate);
+    }
+  }
 
   if (schedule.frequency === "manual") {
-    const list: string[] = [];
-    const firstNominal = schedule.anchorDate || asOf;
-    const secondNominal =
-      schedule.manualFollowingPayday || addDays(firstNominal, 14);
-    const stepDays = Math.max(
-      1,
-      Math.abs(daysBetween(firstNominal, secondNominal)) || 14,
+    const first = isValidDateString(schedule.anchorDate)
+      ? schedule.anchorDate
+      : effectiveAsOf;
+    const manualSecond = schedule.manualFollowingPayday;
+    const second: string =
+      isValidDateString(manualSecond) && manualSecond > first
+        ? manualSecond
+        : addDays(first, 14);
+    const rawDiff = daysBetween(first, second);
+    const interval = rawDiff > 0 ? rawDiff : 14;
+
+    const lookbackSteps = Math.ceil(90 / interval) + 2;
+    for (let i = lookbackSteps; i >= 1; i--) {
+      nominals.add(addDays(first, -i * interval));
+    }
+    nominals.add(first);
+    nominals.add(second);
+
+    const forwardSteps = Math.max(
+      count + 5,
+      Math.ceil(daysBetween(second, effectiveAsOf) / interval) + count + 10,
     );
-
-    let currNominal = firstNominal;
-    if (currNominal < asOf && secondNominal < asOf) {
-      const diff = daysBetween(currNominal, asOf);
-      const steps = Math.floor(diff / stepDays);
-      currNominal = addDays(currNominal, steps * stepDays);
+    for (let i = 1; i <= forwardSteps; i++) {
+      nominals.add(addDays(second, i * interval));
     }
-
-    let attempts = 0;
-    while (list.length < count && attempts < 100) {
-      attempts++;
-      const adjusted = adjustForWeekend(currNominal, weekendRule);
-      const effective = overrideMap.get(currNominal) || adjusted;
-      if (effective >= asOf && !list.includes(effective)) {
-        list.push(effective);
-      }
-      currNominal = addDays(currNominal, stepDays);
+  } else if (schedule.frequency === "weekly") {
+    const anchor = isValidDateString(schedule.anchorDate)
+      ? schedule.anchorDate
+      : effectiveAsOf;
+    const diff = daysBetween(anchor, effectiveAsOf);
+    const kCenter = Math.floor(diff / 7);
+    for (let k = kCenter - 14; k <= kCenter + count + 20; k++) {
+      nominals.add(addDays(anchor, k * 7));
     }
-    return list.slice(0, count);
-  }
-
-  if (schedule.frequency === "weekly") {
-    const list: string[] = [];
-    const anchor = schedule.anchorDate || asOf;
-    const diff = daysBetween(anchor, asOf);
-    let k = Math.floor((diff - 14) / 7);
-    let attempts = 0;
-    while (list.length < count && attempts < 200) {
-      attempts++;
-      const nominal = addDays(anchor, k * 7);
-      k++;
-      const adjusted = adjustForWeekend(nominal, weekendRule);
-      const effective = overrideMap.get(nominal) || adjusted;
-      if (effective >= asOf && !list.includes(effective)) {
-        list.push(effective);
-      }
+  } else if (schedule.frequency === "biweekly") {
+    const anchor = isValidDateString(schedule.anchorDate)
+      ? schedule.anchorDate
+      : effectiveAsOf;
+    const diff = daysBetween(anchor, effectiveAsOf);
+    const kCenter = Math.floor(diff / 14);
+    for (let k = kCenter - 8; k <= kCenter + count + 15; k++) {
+      nominals.add(addDays(anchor, k * 14));
     }
-    return list.slice(0, count);
-  }
-
-  if (schedule.frequency === "biweekly") {
-    const list: string[] = [];
-    const anchor = schedule.anchorDate || asOf;
-    const diff = daysBetween(anchor, asOf);
-    let k = Math.floor((diff - 28) / 14);
-    let attempts = 0;
-    while (list.length < count && attempts < 200) {
-      attempts++;
-      const nominal = addDays(anchor, k * 14);
-      k++;
-      const adjusted = adjustForWeekend(nominal, weekendRule);
-      const effective = overrideMap.get(nominal) || adjusted;
-      if (effective >= asOf && !list.includes(effective)) {
-        list.push(effective);
-      }
-    }
-    return list.slice(0, count);
-  }
-
-  if (schedule.frequency === "monthly") {
-    const list: string[] = [];
-    const anchorDay = schedule.anchorDate
+  } else if (schedule.frequency === "monthly") {
+    const anchorDay = isValidDateString(schedule.anchorDate)
       ? Number(schedule.anchorDate.split("-")[2])
       : 1;
     const targetDay =
       schedule.dayOfMonth !== undefined ? schedule.dayOfMonth : anchorDay;
-
-    const [asOfY, asOfM] = asOf.split("-").map(Number);
-    let currY = asOfY!;
-    let currM = asOfM! - 1;
-    if (currM < 1) {
-      currM = 12;
-      currY--;
-    }
-
-    let attempts = 0;
-    while (list.length < count && attempts < 100) {
-      attempts++;
-      const maxDays = getDaysInMonth(currY, currM);
+    const [asOfY, asOfM] = effectiveAsOf.split("-").map(Number);
+    for (let offset = -4; offset <= count + 12; offset++) {
+      let m = asOfM! + offset;
+      let y = asOfY!;
+      while (m < 1) {
+        m += 12;
+        y -= 1;
+      }
+      while (m > 12) {
+        m -= 12;
+        y += 1;
+      }
+      const maxDays = getDaysInMonth(y, m);
       const clampedDay = Math.min(targetDay, maxDays);
-      const nominal = formatYMD(currY, currM, clampedDay);
-
-      currM++;
-      if (currM > 12) {
-        currM = 1;
-        currY++;
-      }
-
-      const adjusted = adjustForWeekend(nominal, weekendRule);
-      const effective = overrideMap.get(nominal) || adjusted;
-      if (effective >= asOf && !list.includes(effective)) {
-        list.push(effective);
-      }
+      nominals.add(formatYMD(y, m, clampedDay));
     }
-    return list.slice(0, count);
-  }
-
-  if (schedule.frequency === "semimonthly") {
-    const list: string[] = [];
-    const firstTarget =
+  } else if (schedule.frequency === "semimonthly") {
+    const targetFirst =
       schedule.firstDay !== undefined ? schedule.firstDay : 15;
-    const secondTarget =
+    const targetSecond =
       schedule.secondDay !== undefined ? schedule.secondDay : 31;
-    const day1 = Math.min(firstTarget, secondTarget);
-    const day2 = Math.max(firstTarget, secondTarget);
-
-    const [asOfY, asOfM] = asOf.split("-").map(Number);
-    let currY = asOfY!;
-    let currM = asOfM! - 1;
-    if (currM < 1) {
-      currM = 12;
-      currY--;
-    }
-
-    let attempts = 0;
-    while (list.length < count && attempts < 100) {
-      attempts++;
-      const maxDays = getDaysInMonth(currY, currM);
-      const clamped1 = Math.min(day1, maxDays);
-      const clamped2 = Math.min(day2, maxDays);
-
-      const nominal1 = formatYMD(currY, currM, clamped1);
-      const nominal2 = formatYMD(currY, currM, clamped2);
-
-      currM++;
-      if (currM > 12) {
-        currM = 1;
-        currY++;
+    const day1 = Math.min(targetFirst, targetSecond);
+    const day2 = Math.max(targetFirst, targetSecond);
+    const [asOfY, asOfM] = effectiveAsOf.split("-").map(Number);
+    for (let offset = -4; offset <= count + 12; offset++) {
+      let m = asOfM! + offset;
+      let y = asOfY!;
+      while (m < 1) {
+        m += 12;
+        y -= 1;
       }
-
-      for (const nom of [nominal1, nominal2]) {
-        if (list.length >= count) break;
-        const adjusted = adjustForWeekend(nom, weekendRule);
-        const effective = overrideMap.get(nom) || adjusted;
-        if (effective >= asOf && !list.includes(effective)) {
-          list.push(effective);
-        }
+      while (m > 12) {
+        m -= 12;
+        y += 1;
       }
+      const maxDays = getDaysInMonth(y, m);
+      nominals.add(formatYMD(y, m, Math.min(day1, maxDays)));
+      nominals.add(formatYMD(y, m, Math.min(day2, maxDays)));
     }
-    return list.slice(0, count);
   }
 
-  return [];
+  const candidates = new Set<string>();
+  for (const nom of nominals) {
+    const effective = getEffectiveOccurrenceDate(
+      schedule,
+      nom,
+      schedule.overrides,
+    );
+    if (isValidDateString(effective) && effective >= effectiveAsOf) {
+      candidates.add(effective);
+    }
+  }
+
+  const sorted = Array.from(candidates).sort((a, b) => a.localeCompare(b));
+  return sorted.slice(0, count);
 }
 
 export function getNextPayday(
@@ -623,19 +618,16 @@ export function validatePaydayOverride(
 
   // Ordering bounds check (cannot cross adjacent occurrences)
   const adjacent = getAdjacentOccurrences(schedule, resolvedNominal);
-  const prevOverride = otherOverrides.find(
-    (o) => o.scheduledDate === adjacent.prev,
+  const effectivePrev = getEffectiveOccurrenceDate(
+    schedule,
+    adjacent.prev,
+    otherOverrides,
   );
-  const effectivePrev = prevOverride
-    ? prevOverride.overrideDate
-    : adjustForWeekend(adjacent.prev, schedule.weekendRule);
-
-  const nextOverride = otherOverrides.find(
-    (o) => o.scheduledDate === adjacent.next,
+  const effectiveNext = getEffectiveOccurrenceDate(
+    schedule,
+    adjacent.next,
+    otherOverrides,
   );
-  const effectiveNext = nextOverride
-    ? nextOverride.overrideDate
-    : adjustForWeekend(adjacent.next, schedule.weekendRule);
 
   if (overrideDate <= effectivePrev) {
     return {
@@ -1865,7 +1857,7 @@ export function migrateState(raw: any, now = today()): State {
         id: String(b.id || uid()),
         name: String(b.name || ""),
         amount: Number(b.amount) || 0,
-        day: Number(b.day) || 1,
+        day: Math.min(31, Math.max(1, Math.round(Number(b.day)) || 1)),
         protected: Boolean(b.protected),
         settledDueDates: Array.isArray(b.settledDueDates)
           ? b.settledDueDates.map(String)
@@ -1901,9 +1893,9 @@ export function migrateState(raw: any, now = today()): State {
       }))
     : [];
 
-  const payday = typeof raw.payday === "string" ? raw.payday : nextPayday();
+  const payday = isValidDateString(raw.payday) ? raw.payday : nextPayday();
   const followingPayday =
-    typeof raw.followingPayday === "string"
+    isValidDateString(raw.followingPayday) && raw.followingPayday > payday
       ? raw.followingPayday
       : addDays(payday, 14);
 
@@ -1921,51 +1913,145 @@ export function migrateState(raw: any, now = today()): State {
       ? rawSched.frequency
       : "manual";
 
-    const anchorDate =
-      typeof rawSched.anchorDate === "string" && rawSched.anchorDate
-        ? rawSched.anchorDate
-        : payday;
+    const anchorDate = isValidDateString(rawSched.anchorDate)
+      ? rawSched.anchorDate
+      : payday;
 
     const weekendRule: WeekendRule =
       rawSched.weekendRule === "preceding_friday" ? "preceding_friday" : "exact";
 
-    const overrides: PaydayOverride[] = Array.isArray(rawSched.overrides)
-      ? rawSched.overrides
-          .filter(
-            (o: any) =>
-              o &&
-              typeof o.scheduledDate === "string" &&
-              typeof o.overrideDate === "string",
-          )
-          .map((o: any) => ({
-            id: String(o.id || uid()),
-            scheduledDate: String(o.scheduledDate),
-            overrideDate: String(o.overrideDate),
-            note: o.note ? String(o.note) : undefined,
-            createdAt: o.createdAt ? String(o.createdAt) : now,
-          }))
-      : [];
+    let manualFollowingPayday: string | undefined;
+    if (
+      isValidDateString(rawSched.manualFollowingPayday) &&
+      rawSched.manualFollowingPayday > anchorDate
+    ) {
+      manualFollowingPayday = rawSched.manualFollowingPayday;
+    } else if (frequency === "manual") {
+      manualFollowingPayday =
+        followingPayday > anchorDate
+          ? followingPayday
+          : addDays(anchorDate, 14);
+    }
 
-    paydaySchedule = {
+    const sanitizeScheduleDay = (val: any): number | undefined => {
+      if (val === undefined || val === null || val === "") return undefined;
+      const num = typeof val === "number" ? val : Number(val);
+      if (!Number.isFinite(num)) return undefined;
+      const rounded = Math.round(num);
+      return Math.min(31, Math.max(1, rounded));
+    };
+
+    let dayOfMonth: number | undefined;
+    if (rawSched.dayOfMonth !== undefined) {
+      dayOfMonth = sanitizeScheduleDay(rawSched.dayOfMonth);
+    } else if (frequency === "monthly") {
+      dayOfMonth = Number(anchorDate.split("-")[2]) || 1;
+    }
+
+    let firstDay: number | undefined;
+    let secondDay: number | undefined;
+    if (rawSched.firstDay !== undefined || rawSched.secondDay !== undefined) {
+      firstDay = sanitizeScheduleDay(rawSched.firstDay);
+      secondDay = sanitizeScheduleDay(rawSched.secondDay);
+    }
+    if (frequency === "semimonthly") {
+      firstDay = firstDay ?? 15;
+      secondDay = secondDay ?? 31;
+    }
+    if (firstDay !== undefined && secondDay !== undefined) {
+      if (firstDay > secondDay) {
+        const tmp = firstDay;
+        firstDay = secondDay;
+        secondDay = tmp;
+      }
+      if (firstDay === secondDay) {
+        if (secondDay < 31) secondDay++;
+        else firstDay--;
+      }
+    }
+
+    const baseSchedule: PaydaySchedule = {
       frequency,
       anchorDate,
       weekendRule,
-      overrides,
+      overrides: [],
     };
-    if (typeof rawSched.dayOfMonth === "number") {
-      paydaySchedule.dayOfMonth = Math.min(31, Math.max(1, rawSched.dayOfMonth));
+    if (dayOfMonth !== undefined) baseSchedule.dayOfMonth = dayOfMonth;
+    if (firstDay !== undefined) baseSchedule.firstDay = firstDay;
+    if (secondDay !== undefined) baseSchedule.secondDay = secondDay;
+    if (manualFollowingPayday !== undefined) {
+      baseSchedule.manualFollowingPayday = manualFollowingPayday;
     }
-    if (typeof rawSched.firstDay === "number") {
-      paydaySchedule.firstDay = Math.min(31, Math.max(1, rawSched.firstDay));
+
+    const sanitizedOverrides: PaydayOverride[] = [];
+    if (Array.isArray(rawSched.overrides)) {
+      for (const o of rawSched.overrides) {
+        if (!o || typeof o !== "object") continue;
+        const scheduledDate = String(o.scheduledDate || "");
+        const overrideDate = String(o.overrideDate || "");
+
+        // Reject invalid calendar dates
+        if (
+          !isValidDateString(scheduledDate) ||
+          !isValidDateString(overrideDate)
+        ) {
+          continue;
+        }
+
+        // Must resolve to a valid nominal occurrence
+        const resolvedNominal = resolveNominalOccurrenceDate(
+          baseSchedule,
+          scheduledDate,
+        );
+        if (!resolvedNominal) {
+          continue;
+        }
+
+        // Reject duplicate overrides for the same nominal scheduledDate
+        if (
+          sanitizedOverrides.some((so) => so.scheduledDate === resolvedNominal)
+        ) {
+          continue;
+        }
+
+        // Reject duplicate overrideDate (collision)
+        if (
+          sanitizedOverrides.some((so) => so.overrideDate === overrideDate)
+        ) {
+          continue;
+        }
+
+        // Reject invalid sequence bounds using validatePaydayOverride
+        const scheduleWithCurrent: PaydaySchedule = {
+          ...baseSchedule,
+          overrides: sanitizedOverrides,
+        };
+        const valResult = validatePaydayOverride(
+          scheduleWithCurrent,
+          resolvedNominal,
+          overrideDate,
+        );
+        if (!valResult.valid) {
+          continue;
+        }
+
+        sanitizedOverrides.push({
+          id: String(o.id || uid()),
+          scheduledDate: resolvedNominal,
+          overrideDate,
+          note: o.note ? String(o.note) : undefined,
+          createdAt: o.createdAt ? String(o.createdAt) : now,
+        });
+      }
+      sanitizedOverrides.sort((a, b) =>
+        a.scheduledDate.localeCompare(b.scheduledDate),
+      );
     }
-    if (typeof rawSched.secondDay === "number") {
-      paydaySchedule.secondDay = Math.min(31, Math.max(1, rawSched.secondDay));
-    }
-    if (typeof rawSched.manualFollowingPayday === "string") {
-      paydaySchedule.manualFollowingPayday = rawSched.manualFollowingPayday;
-    } else if (frequency === "manual") {
-      paydaySchedule.manualFollowingPayday = followingPayday;
-    }
+
+    paydaySchedule = {
+      ...baseSchedule,
+      overrides: sanitizedOverrides,
+    };
   } else {
     // Schema v5 Migration: Preserves existing v4 payday values and defaults to manual mode
     paydaySchedule = {

@@ -180,24 +180,63 @@ Phase 3A.1 implements the foundational payday calculation engine and schema v5 m
 ---
 
 ### 5. Test Suite Verification
-All 73 unit and integration tests pass cleanly (`npm test`):
+All 77 unit and integration tests pass cleanly (`npm test`):
 - **Test 3A.1**: Schema v5 migration idempotence, manual mode defaulting, and exact financial number preservation.
 - **Test 3A.2**: Biweekly cadence crossing month and year boundaries (e.g. Dec 18, 2026 -> Jan 1, 2027) with automatic `asOf` cycle advancement.
 - **Test 3A.3**: Weekly, monthly (day 31 clamped in Feb 28 non-leap, Feb 29 leap, Apr 30), and semimonthly (15th and clamped end-of-month) cadences.
 - **Test 3A.4**: Weekend adjustment rules (`exact` vs `preceding_friday`).
 - **Test 3A.5**: One-time override substitution, nominal validation, sequence bound violations rejection, collision rejection, upsert behavior, and removal restoration.
 - **Test 3A.6**: Backup export and JSON import round-trip with schema v5.
+- **Test 3A.7**: Chronological, unique effective dates crossing month boundaries and approaching adjacent paydays (Issue 1).
+- **Test 3A.8**: Manual schedule generation respecting explicitly configured first and second paydays, including irregular intervals and weekend dates (Issue 2).
+- **Test 3A.9**: Schema v5 migration and import sanitization of invalid dates, non-integer days, duplicate overrides, and sequence collisions with zero financial corruption (Issue 3).
+- **Test 3A.10**: JSON backup round trips and migration idempotence across valid and normalized states (Issue 4).
 - Complete regression coverage across all 67 prior tests (Phase 1, Phase 2A, Phase 2B Covered Credit).
 
 Production build (`npm run build`) succeeded with 0 errors.
 
 ---
 
-### 6. Learning Questions
+### 6. Independent Review Corrections (Phase 3A.1)
+Following independent review of the initial Phase 3A.1 push, four specific corrections were implemented:
+1. **Strictly Chronological & Unique Effective Dates (`getUpcomingPaydays`)**:
+   - Rather than pushing occurrences into an array during sequential nominal iteration (which could produce non-chronological results when overrides shift occurrences across month boundaries or earlier in time), `getUpcomingPaydays` now generates candidate nominals across an expanded window (including all active override targets), resolves their effective dates via `getEffectiveOccurrenceDate`, deduplicates them via `Set<string>`, filters for $\ge asOf$, and sorts them in strictly ascending chronological order.
+2. **Explicit Manual Schedule Dates & Irregular Intervals**:
+   - Corrected manual schedule generation to strictly respect `anchorDate` (first payday) and `manualFollowingPayday` (second payday), regardless of the interval between them (e.g. 5-day gaps, 23-day gaps). If user manually configured a weekend date, it is preserved exactly.
+   - Future projections beyond the second payday step by `daysBetween(first, second)`.
+3. **Hardened Schema v5 Migration and Import Sanitization**:
+   - `isValidDateString` was converted into a TypeScript type guard (`dateStr is string`) that validates genuine calendar dates (rejecting `2026-02-31`, out-of-range months, or invalid strings) and safely falls back to standard defaults without throwing.
+   - Schedule days (`dayOfMonth`, `firstDay`, `secondDay`) and bill days are safely rounded to integers and clamped (`Math.min(31, Math.max(1, Math.round(n)))`). Semimonthly days are swapped if necessary so $firstDay < secondDay$.
+   - Overrides in imported state are progressively validated: duplicate scheduled dates are discarded, colliding override dates are discarded, and sequence bounds ($D_{prev} < overrideDate < D_{next}$) are enforced.
+   - All financial state (accounts, assigned reserves, payment reservations, transactions, budgets, pots) remains 100% uncorrupted.
+4. **Targeted Regression Tests**:
+   - Added unit tests 3A.7 through 3A.10 covering each review correction, backup round-trip, and migration idempotence.
+
+---
+
+### 7. Actual Functions Changed
+- `isValidDateString(dateStr?: string | null): dateStr is string` ([`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts)): Type guard for calendar date validation.
+- `isNominalOccurrence(schedule, dateStr)` ([`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts)): Added irregular interval support for manual mode.
+- `getAdjacentOccurrences(schedule, nominalDate)` ([`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts)): Bounded occurrences in manual mode using exact interval between `first` and `second`.
+- `getEffectiveOccurrenceDate(schedule, nominal, overrides)` ([`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts)): Single source of truth for effective date resolution.
+- `getUpcomingPaydays(schedule, asOf, count)` ([`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts)): Candidate window collection, deduplication, and strictly chronological sorting.
+- `validatePaydayOverride(schedule, scheduledDate, overrideDate)` ([`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts)): Uses `getEffectiveOccurrenceDate` for accurate boundary evaluation.
+- `migrateState(raw, now)` ([`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts)): Sanitizes calendar dates, non-integer days, duplicate/colliding overrides, and sequence bounds while preserving financial data.
+
+---
+
+### 8. Learning Questions
 1. **Why does the schedule engine calculate nominal dates first before applying weekend rules and overrides?**
    - *Answer*: Nominal dates represent the true underlying cadence rhythm (e.g. $anchorDate + 14k$ or the 15th/31st of each month). If adjustments were applied before generating the sequence, leap days or weekend shifts would accumulate and permanently drift the schedule away from the employer's payroll cycle.
 2. **Why must override validation reject dates on or beyond adjacent paydays ($overrideDate \le D_{prev}$ or $overrideDate \ge D_{next}$)?**
    - *Answer*: Allowing an override to cross an adjacent payday would invert the chronological order of paychecks or cause two paydays to collide on the same date. A budget cycle relies on an orderly sequence of cycles; if an employer genuinely changes their cadence, the user should update the schedule anchor rather than creating an inverted override.
 3. **How does Phase 3A.1 ensure existing users experience zero financial disruption upon migration?**
    - *Answer*: By defaulting existing users to `frequency: "manual"` with their existing `payday` and `followingPayday` dates, and continuing to use those authoritative fields for `reserveBillsBreakdown` and `getUncoveredScheduledExpenses`, the cash allocations and Safe to Spend calculations remain 100% identical.
+4. **Why must candidate effective dates be collected across an expanded window and sorted rather than emitted sequentially during nominal loop advancement?**
+   - *Answer*: An override can move a nominal occurrence earlier in time or across a month boundary. If dates are pushed directly during a forward sequential loop over nominal dates, an earlier effective date from a later nominal could be appended after a later effective date, breaking strict chronological ordering. By collecting candidates across a window, deduplicating with a `Set`, and sorting with `localeCompare`, strictly chronological and unique effective dates are guaranteed.
+5. **Why must manual schedule mode respect configured first and second payday dates independently rather than forcing an artificial regular cadence?**
+   - *Answer*: In manual mode, users explicitly choose their specific pay dates (e.g. following irregular shift work, gig income, or seasonal bonuses where intervals might be 5 days or 23 days). Imposing a fixed 14-day assumption on manual mode would override explicit user input and cause bill reservations in the following cycle to compute against an incorrect planning horizon.
+6. **How does progressive override sanitization prevent schema v5 migration or backup import from corrupting financial state?**
+   - *Answer*: If imported JSON contains malformed or conflicting overrides (such as duplicate keys, colliding target dates, or non-calendar strings), progressive sanitization validates each entry against the schedule and preceding accepted overrides. Conflicting entries are dropped while preserving valid entries. The user's accounts, transactions, and budget allocations are processed completely independently, ensuring zero financial corruption.
+
 
