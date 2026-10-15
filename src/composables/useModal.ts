@@ -11,10 +11,11 @@ import {
   settleBillOccurrence,
   type TransactionStatus,
   type TransactionKind,
-} from "../model";
-import { useBudget } from "./useBudget";
-import { useToast } from "./useToast";
-import { useCompanion } from "./useCompanion";
+} from "../model.ts";
+import { useBudget } from "./useBudget.ts";
+import { useToast } from "./useToast.ts";
+import { useCompanion } from "./useCompanion.ts";
+import { money } from "../utils/format.ts";
 
 export interface ModalFormState {
   name: string;
@@ -38,6 +39,7 @@ export interface ModalFormState {
   includeInSafeToSpend?: boolean;
   accountId?: string;
   targetAccountId?: string;
+  reserveAction?: "reserve" | "release";
 }
 
 const dialogRef = ref<HTMLDialogElement | null>(null);
@@ -70,6 +72,7 @@ const form = ref<ModalFormState>({
   includeInSafeToSpend: true,
   accountId: "acc-default-checking",
   targetAccountId: "",
+  reserveAction: "reserve",
 });
 
 export function useModal() {
@@ -84,6 +87,9 @@ export function useModal() {
     adjustAccountBalance,
     deleteAccount,
     getAccountBalance,
+    assignCardPaymentReserve,
+    releaseCardPaymentReserve,
+    getCreditCardCoverage,
   } = useBudget();
   const { toast } = useToast();
   const { showCompanion } = useCompanion();
@@ -100,7 +106,10 @@ export function useModal() {
     mode.value = m;
     selected.value = id;
     error.value = "";
-    focusBefore.value = document.activeElement as HTMLElement;
+    focusBefore.value =
+      typeof document !== "undefined"
+        ? (document.activeElement as HTMLElement)
+        : null;
     payMethod.value = m === "Settle bill" ? "settled" : "transaction";
 
     let initialColor = colors[0]!;
@@ -244,6 +253,65 @@ export function useModal() {
           accountType: acc.type,
         };
       }
+    } else if (m === "Reserve for payment") {
+      const action = defaultCategory === "release" ? "release" : "reserve";
+      const targetCard =
+        (state.value.accounts || []).find(
+          (a) => a.id === id && a.type === "credit",
+        ) ||
+        (state.value.accounts || []).find(
+          (a) => a.type === "credit" && !a.archived,
+        );
+      const cardId = targetCard ? targetCard.id : id;
+      const cov = targetCard ? getCreditCardCoverage(targetCard) : null;
+      let defaultAmount = "";
+      if (cov) {
+        if (action === "reserve" && cov.uncoveredDebt > 0) {
+          defaultAmount = String(cov.uncoveredDebt / 100);
+        } else if (action === "release" && cov.manualReleasable > 0) {
+          defaultAmount = String(cov.manualReleasable / 100);
+        }
+      }
+      form.value = {
+        ...form.value,
+        name: targetCard ? targetCard.name : "",
+        accountId: cardId,
+        amount: defaultAmount,
+        reserveAction: action,
+      };
+    } else if (
+      m === "Add transaction" &&
+      (defaultCategory === "Credit Card Payment" || defaultCategory === "payment")
+    ) {
+      const targetCard = (state.value.accounts || []).find(
+        (a) => a.id === id && a.type === "credit",
+      );
+      const cov = targetCard ? getCreditCardCoverage(targetCard) : null;
+      const defaultCash =
+        (state.value.accounts || []).find(
+          (a) => !a.archived && a.type === "checking",
+        ) ||
+        (state.value.accounts || []).find(
+          (a) => !a.archived && a.type === "savings",
+        );
+      const cardDebt = cov
+        ? cov.totalOwed
+        : targetCard
+          ? Math.max(0, getAccountBalance(targetCard))
+          : 0;
+      const prefillAmount =
+        cov && cov.readyToPay > 0
+          ? Math.min(cov.readyToPay, cardDebt)
+          : cardDebt;
+      form.value = {
+        ...form.value,
+        type: "Credit Card Payment",
+        category: "Payment",
+        name: targetCard ? `${targetCard.name} Payment` : "Credit Card Payment",
+        accountId: defaultCash ? defaultCash.id : defaultAccountId,
+        targetAccountId: targetCard ? targetCard.id : "",
+        amount: prefillAmount > 0 ? String(prefillAmount / 100) : "",
+      };
     }
 
     dialogRef.value?.showModal();
@@ -364,6 +432,64 @@ export function useModal() {
       return;
     }
 
+    if (mode.value === "Reserve for payment") {
+      const cardId = f.accountId;
+      if (!cardId) {
+        error.value = "Select a credit card account.";
+        return;
+      }
+      const acc = (state.value.accounts || []).find((a) => a.id === cardId);
+      if (!acc || acc.type !== "credit") {
+        error.value = "Selected account is not a valid credit card.";
+        return;
+      }
+      const reserveAmount = cents(Number(f.amount || 0));
+      if (!Number.isFinite(reserveAmount) || reserveAmount <= 0) {
+        error.value = "Enter an amount greater than zero.";
+        return;
+      }
+      const action = f.reserveAction || "reserve";
+      if (action === "reserve") {
+        const safeToSpend = Math.max(0, sum.value.safe);
+        if (reserveAmount > safeToSpend) {
+          error.value = "This amount exceeds your available Safe to Spend.";
+          return;
+        }
+        const cov = getCreditCardCoverage(acc);
+        if (cov.uncoveredDebt <= 0) {
+          error.value = `${acc.name} is already fully covered. No reservation needed.`;
+          return;
+        }
+        if (reserveAmount > cov.uncoveredDebt) {
+          error.value = `Cannot reserve more than the uncovered debt (${money(cov.uncoveredDebt)}).`;
+          return;
+        }
+        const ok = assignCardPaymentReserve(acc.id, reserveAmount);
+        if (!ok) {
+          error.value = "Failed to reserve funds for payment.";
+          return;
+        }
+      } else {
+        const cov = getCreditCardCoverage(acc);
+        if (cov.manualReleasable <= 0) {
+          error.value = "There are no manual reserved funds to release.";
+          return;
+        }
+        if (reserveAmount > cov.manualReleasable) {
+          error.value =
+            `Cannot release more than the manually assigned reserve (${money(cov.manualReleasable)}).`;
+          return;
+        }
+        const ok = releaseCardPaymentReserve(acc.id, reserveAmount);
+        if (!ok) {
+          error.value = "Failed to release payment reserve.";
+          return;
+        }
+      }
+      close();
+      return;
+    }
+
     if (
       [
         "Add transaction",
@@ -438,6 +564,28 @@ export function useModal() {
           error.value = "Payment destination must be a credit card account.";
           return;
         }
+        const cov = getCreditCardCoverage(dest);
+        let maxPayable = cov.totalOwed;
+        if (mode.value === "Edit transaction" && selected.value) {
+          const existingTx = (state.value.transactions || []).find(
+            (t) => t.id === selected.value,
+          );
+          if (
+            existingTx &&
+            existingTx.kind === "payment" &&
+            existingTx.targetAccountId === dest.id
+          ) {
+            maxPayable += Math.abs(existingTx.amount);
+          }
+        }
+        if (maxPayable <= 0) {
+          error.value = "This credit card has no positive outstanding balance to pay.";
+          return;
+        }
+        if (amount > maxPayable) {
+          error.value = `Cannot pay more than the outstanding debt (${money(maxPayable)}).`;
+          return;
+        }
       } else {
         if (!f.accountId) {
           error.value = "Select an account.";
@@ -507,6 +655,7 @@ export function useModal() {
           kind,
           targetAccountId:
             kind !== "standard" ? f.targetAccountId : undefined,
+          createdAt: new Date().toISOString(),
         });
       } else if (mode.value === "Edit transaction") {
         const existing = state.value.transactions.find(
@@ -699,6 +848,7 @@ export function useModal() {
               postedDate: today(),
               accountId: "acc-default-checking",
               kind: "standard",
+              createdAt: new Date().toISOString(),
             });
           }
         }

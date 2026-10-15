@@ -1,28 +1,32 @@
 import { ref, computed, watch } from "vue";
-import { companionMessage } from "../companion";
+import { companionMessage } from "../companion.ts";
 import {
   isWebGPUSupported,
   fetchInBrowserAdvice,
   DEFAULT_WEB_MODEL,
   AVAILABLE_WEB_MODELS,
   type WebLLMAdvice,
-} from "../webllm";
-import { useBudget } from "./useBudget";
-import { useToast } from "./useToast";
+} from "../webllm.ts";
+import { useBudget } from "./useBudget.ts";
+import { useToast } from "./useToast.ts";
 
 const COMPANION_KEY = "budget-companion-mika-visible";
 const WEB_MODEL_KEY = "budget-companion-webllm-model";
 
 let savedVisibility = true;
 try {
-  savedVisibility = localStorage.getItem(COMPANION_KEY) !== "false";
+  if (typeof localStorage !== "undefined") {
+    savedVisibility = localStorage.getItem(COMPANION_KEY) !== "false";
+  }
 } catch {}
 
 const showCompanion = ref(savedVisibility);
 
 watch(showCompanion, (visible) => {
   try {
-    localStorage.setItem(COMPANION_KEY, String(visible));
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(COMPANION_KEY, String(visible));
+    }
   } catch {
     const { toast } = useToast();
     toast("Your companion preference could not be saved in this browser.");
@@ -31,14 +35,18 @@ watch(showCompanion, (visible) => {
 
 let savedWebModel = DEFAULT_WEB_MODEL;
 try {
-  savedWebModel = localStorage.getItem(WEB_MODEL_KEY) || DEFAULT_WEB_MODEL;
+  if (typeof localStorage !== "undefined") {
+    savedWebModel = localStorage.getItem(WEB_MODEL_KEY) || DEFAULT_WEB_MODEL;
+  }
 } catch {}
 
 const selectedWebModel = ref(savedWebModel);
 
 watch(selectedWebModel, (m) => {
   try {
-    localStorage.setItem(WEB_MODEL_KEY, m);
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(WEB_MODEL_KEY, m);
+    }
   } catch {}
 });
 

@@ -18,6 +18,8 @@ export type Transaction = {
   accountId?: string;
   kind?: TransactionKind;
   targetAccountId?: string;
+  isLegacyDebt?: boolean;
+  createdAt?: string;
 };
 
 export type Budget = {
@@ -53,6 +55,13 @@ export type BillSettlement = {
 
 export type AccountType = "checking" | "savings" | "credit";
 
+export interface PaymentReservation {
+  id: string;
+  amount: number; // Integer cents: positive = reserve added, negative = reserve released
+  date: string; // YYYY-MM-DD
+  createdAt: string; // ISO timestamp
+}
+
 export interface Account {
   id: string;
   name: string;
@@ -66,10 +75,13 @@ export interface Account {
   archived?: boolean; // Soft-delete / hide from active views
   createdAt: string;
   updatedAt: string;
+  assignedPaymentReserve?: number; // Integer cents (credit card only). Current net manual reserve
+  paymentReservations?: PaymentReservation[]; // Chronological manual reservation entries
+  coveredCreditBaselineAt?: string; // ISO timestamp of baseline
 }
 
 export type State = {
-  version: 2 | 3;
+  version: 2 | 3 | 4;
   demo: boolean;
   opening: number;
   payday: string;
@@ -258,7 +270,7 @@ export function accountTotals(s: State) {
   const creditAccounts = activeAccounts.filter((a) => a.type === "credit");
 
   const totalCashAssets = cashAccounts.reduce((sum, a) => sum + getAccountBalance(a, s), 0);
-  const totalCreditDebt = creditAccounts.reduce((sum, a) => sum + getAccountBalance(a, s), 0);
+  const totalCreditDebt = creditAccounts.reduce((sum, a) => sum + Math.max(0, getAccountBalance(a, s)), 0);
   const totalAvailableCredit = creditAccounts.reduce((sum, a) => sum + getAvailableCredit(a, s), 0);
 
   return {
@@ -270,11 +282,329 @@ export function accountTotals(s: State) {
   };
 }
 
+export type CreditCoverageStatus =
+  | "zero_balance"
+  | "statement_credit"
+  | "fully_covered"
+  | "partially_covered"
+  | "uncovered";
+
+export function getCreditCardCoverageStatus(coverage: {
+  totalOwed: number;
+  readyToPay: number;
+  uncoveredDebt: number;
+  statementCredit: number;
+}): CreditCoverageStatus {
+  if (coverage.statementCredit > 0) return "statement_credit";
+  if (coverage.totalOwed === 0) return "zero_balance";
+  if (coverage.uncoveredDebt === 0) return "fully_covered";
+  if (coverage.readyToPay > 0) return "partially_covered";
+  return "uncovered";
+}
+
+export interface CreditCardCoverage {
+  totalOwed: number; // Current liability (Math.max(0, balance))
+  readyToPay: number; // Actual cash reserved in checking for repayment
+  uncoveredDebt: number; // Math.max(0, totalOwed - readyToPay)
+  statementCredit: number; // Math.max(0, -balance)
+  availableCredit: number; // Math.max(0, limit - balance)
+  grossReserve: number; // Total reserve in pool before clamping
+  assignedReserve: number; // Net manual reservations
+  manualReleasable: number; // Actual remaining manual reserve eligible for release
+  status: CreditCoverageStatus;
+}
+
+export function getCreditCardCoverage(
+  account: Account,
+  s: State,
+  now = today(),
+): CreditCardCoverage {
+  if (account.type !== "credit") {
+    return {
+      totalOwed: 0,
+      readyToPay: 0,
+      uncoveredDebt: 0,
+      statementCredit: 0,
+      availableCredit: 0,
+      grossReserve: 0,
+      assignedReserve: 0,
+      manualReleasable: 0,
+      status: "zero_balance",
+    };
+  }
+
+  const currentBalance = getAccountBalance(account, s);
+  const totalOwed = Math.max(0, currentBalance);
+  const statementCredit = Math.max(0, -currentBalance);
+
+  const manualEntries = Array.isArray(account.paymentReservations)
+    ? [...account.paymentReservations]
+    : [];
+
+  if (manualEntries.length === 0 && (account.assignedPaymentReserve || 0) > 0) {
+    manualEntries.push({
+      id: "baseline-reserve",
+      amount: account.assignedPaymentReserve || 0,
+      date: (account.updatedAt || account.createdAt || now).slice(0, 10),
+      createdAt: account.updatedAt || account.createdAt || now,
+    });
+  }
+
+  const assignedReserve = manualEntries.reduce((sum, r) => sum + r.amount, 0);
+
+  const allCardTransactions = (s.transactions || []).filter(
+    (t) =>
+      isLedgerStatus(t.status) &&
+      (t.accountId === account.id || t.targetAccountId === account.id),
+  );
+
+  interface TimelineEvent {
+    type: "purchase" | "payment" | "manual_reserve" | "refund";
+    amount: number;
+    category?: string;
+    date: string;
+    createdAt: string;
+    isLegacyDebt?: boolean;
+    txId?: string;
+  }
+
+  const events: TimelineEvent[] = [];
+
+  for (const t of allCardTransactions) {
+    const kind = t.kind || "standard";
+    const absAmt = Math.abs(t.amount);
+    const createdAt = t.createdAt || t.postedDate || t.date;
+
+    if (kind === "payment" && t.targetAccountId === account.id) {
+      events.push({
+        type: "payment",
+        amount: absAmt,
+        date: t.date,
+        createdAt,
+        txId: t.id,
+      });
+    } else if (kind === "standard" && t.accountId === account.id) {
+      if (t.amount < 0) {
+        events.push({
+          type: "purchase",
+          amount: absAmt,
+          category: t.category,
+          date: t.date,
+          createdAt,
+          isLegacyDebt: Boolean(t.isLegacyDebt),
+          txId: t.id,
+        });
+      } else if (t.amount > 0) {
+        events.push({
+          type: "refund",
+          amount: absAmt,
+          category: t.category,
+          date: t.date,
+          createdAt,
+          txId: t.id,
+        });
+      }
+    }
+  }
+
+  for (const r of manualEntries) {
+    events.push({
+      type: "manual_reserve",
+      amount: r.amount,
+      date: r.date,
+      createdAt: r.createdAt || r.date,
+    });
+  }
+
+  const typePriority = { refund: 1, purchase: 2, manual_reserve: 3, payment: 4 };
+  events.sort((a, b) => {
+    if (a.date !== b.date) return a.date.localeCompare(b.date);
+    const tsA = a.createdAt.length === 10 ? `${a.createdAt}T00:00:00.000Z` : a.createdAt;
+    const tsB = b.createdAt.length === 10 ? `${b.createdAt}T00:00:00.000Z` : b.createdAt;
+    if (tsA !== tsB) return tsA.localeCompare(tsB);
+    return typePriority[a.type] - typePriority[b.type];
+  });
+
+  const categoryBudgetSpentMap = new Map<string, number>();
+
+  let runningCardLiability = account.opening;
+  let reservePool = 0;
+
+  interface ReserveLot {
+    type: "auto" | "manual";
+    amount: number;
+  }
+  const reserveLots: ReserveLot[] = [];
+
+  for (const ev of events) {
+    if (ev.type === "refund") {
+      runningCardLiability -= ev.amount;
+    } else if (ev.type === "purchase") {
+      runningCardLiability += ev.amount;
+
+      // Legacy debt transactions never auto-fund
+      const isEligible =
+        !ev.isLegacyDebt &&
+        (!account.coveredCreditBaselineAt ||
+          ev.date >= account.coveredCreditBaselineAt.slice(0, 7));
+
+      if (isEligible) {
+        // Purchases when card is in statement credit absorb that credit first
+        const liabilityBefore = runningCardLiability - ev.amount;
+        const absorbsCredit =
+          liabilityBefore < 0
+            ? Math.min(ev.amount, Math.abs(liabilityBefore))
+            : 0;
+        const netRequiringCoverage = ev.amount - absorbsCredit;
+
+        if (netRequiringCoverage > 0) {
+          const month = ev.date.slice(0, 7);
+          const cat = ev.category || "General";
+          const key = `${month}:${cat.toLowerCase()}`;
+          const budget = (s.budgets || []).find(
+            (b) => b.category.toLowerCase() === cat.toLowerCase(),
+          );
+
+          let coveredPortion = 0;
+          if (budget) {
+            const limit = budget.limit;
+            const alreadyUsed = categoryBudgetSpentMap.get(key) || 0;
+            const remaining = Math.max(0, limit - alreadyUsed);
+            coveredPortion = Math.min(netRequiringCoverage, remaining);
+            categoryBudgetSpentMap.set(key, alreadyUsed + coveredPortion);
+          } else {
+            coveredPortion = 0;
+          }
+
+          reservePool += coveredPortion;
+          if (coveredPortion > 0) {
+            reserveLots.push({ type: "auto", amount: coveredPortion });
+          }
+        }
+      }
+    } else if (ev.type === "payment") {
+      runningCardLiability -= ev.amount;
+      const consumed = Math.min(reservePool, ev.amount);
+      reservePool -= consumed;
+      let toConsume = ev.amount;
+      for (let i = 0; i < reserveLots.length; i++) {
+        const lot = reserveLots[i]!;
+        if (toConsume <= 0) break;
+        const take = Math.min(lot.amount, toConsume);
+        lot.amount -= take;
+        toConsume -= take;
+      }
+    } else if (ev.type === "manual_reserve") {
+      reservePool = Math.max(0, reservePool + ev.amount);
+      if (ev.amount > 0) {
+        reserveLots.push({ type: "manual", amount: ev.amount });
+      } else if (ev.amount < 0) {
+        let toRelease = Math.abs(ev.amount);
+        for (let i = reserveLots.length - 1; i >= 0; i--) {
+          const lot = reserveLots[i]!;
+          if (lot.type === "manual") {
+            const take = Math.min(lot.amount, toRelease);
+            lot.amount -= take;
+            toRelease -= take;
+            if (toRelease <= 0) break;
+          }
+        }
+      }
+    }
+  }
+
+  const manualReservePool = reserveLots
+    .filter((l) => l.type === "manual")
+    .reduce((sum, l) => sum + l.amount, 0);
+  const autoReservePool = reserveLots
+    .filter((l) => l.type === "auto")
+    .reduce((sum, l) => sum + l.amount, 0);
+
+  const readyToPay = Math.max(0, Math.min(totalOwed, reservePool));
+  const uncoveredDebt = Math.max(0, totalOwed - readyToPay);
+  const availableCredit = getAvailableCredit(account, s);
+  const manualInReadyToPay = Math.max(0, readyToPay - autoReservePool);
+  const manualReleasable = Math.max(0, Math.min(manualReservePool, manualInReadyToPay));
+  const status = getCreditCardCoverageStatus({
+    totalOwed,
+    readyToPay,
+    uncoveredDebt,
+    statementCredit,
+  });
+
+  return {
+    totalOwed,
+    readyToPay,
+    uncoveredDebt,
+    statementCredit,
+    availableCredit,
+    grossReserve: reservePool,
+    assignedReserve,
+    manualReleasable,
+    status,
+  };
+}
+
+export function assignCardPaymentReserve(
+  account: Account,
+  amount: number,
+  now = today(),
+): void {
+  if (account.type !== "credit" || amount <= 0) return;
+  if (!Array.isArray(account.paymentReservations)) {
+    account.paymentReservations = [];
+  }
+  const dateStr = now.slice(0, 10);
+  const createdStr = now.length > 10 ? now : `${dateStr}T00:00:00.000Z`;
+  const entry: PaymentReservation = {
+    id: uid(),
+    amount,
+    date: dateStr,
+    createdAt: createdStr,
+  };
+  account.paymentReservations.push(entry);
+  account.assignedPaymentReserve = account.paymentReservations.reduce(
+    (sum, r) => sum + r.amount,
+    0,
+  );
+  account.updatedAt = createdStr;
+}
+
+export function releaseCardPaymentReserve(
+  account: Account,
+  amount: number,
+  s: State,
+  now = today(),
+): boolean {
+  if (account.type !== "credit" || amount <= 0) return false;
+  const coverage = getCreditCardCoverage(account, s, now);
+  if (amount > coverage.manualReleasable) return false;
+
+  if (!Array.isArray(account.paymentReservations)) {
+    account.paymentReservations = [];
+  }
+  const dateStr = now.slice(0, 10);
+  const createdStr = now.length > 10 ? now : `${dateStr}T00:00:00.000Z`;
+  const entry: PaymentReservation = {
+    id: uid(),
+    amount: -amount,
+    date: dateStr,
+    createdAt: createdStr,
+  };
+  account.paymentReservations.push(entry);
+  account.assignedPaymentReserve = account.paymentReservations.reduce(
+    (sum, r) => sum + r.amount,
+    0,
+  );
+  account.updatedAt = createdStr;
+  return true;
+}
+
 export function blank(): State {
   const payday = nextPayday();
   const d = today();
   return {
-    version: 3,
+    version: 4,
     demo: false,
     opening: 0,
     payday,
@@ -303,7 +633,7 @@ export function demo(): State {
   const d = today();
   const payday = nextPayday();
   return {
-    version: 3,
+    version: 4,
     demo: true,
     opening: 285675,
     payday,
@@ -458,6 +788,9 @@ export function demo(): State {
         archived: false,
         createdAt: d,
         updatedAt: d,
+        assignedPaymentReserve: 0,
+        paymentReservations: [],
+        coveredCreditBaselineAt: d,
       },
     ],
   };
@@ -467,19 +800,50 @@ export const spent = (
   s: State,
   category: string,
   month = today().slice(0, 7),
-) =>
-  Math.abs(
-    s.transactions
-      .filter(
-        (t) =>
-          isLedgerStatus(t.status) &&
-          t.amount < 0 &&
-          (t.kind === "standard" || !t.kind) &&
-          t.category === category &&
-          t.date.startsWith(month),
-      )
-      .reduce((n, t) => n + t.amount, 0),
+): number => {
+  const transactions = (s.transactions || []).filter(
+    (t) =>
+      isLedgerStatus(t.status) &&
+      t.category.toLowerCase() === category.toLowerCase() &&
+      t.date.startsWith(month) &&
+      (t.kind === "standard" || !t.kind) &&
+      !t.isLegacyDebt,
   );
+
+  let cashPurchases = 0;
+  let cashRefunds = 0;
+  let creditPurchases = 0;
+  let creditRefunds = 0;
+
+  for (const t of transactions) {
+    const acc = (s.accounts || []).find(
+      (a) => a.id === (t.accountId || "acc-default-checking"),
+    );
+    const isCredit = acc ? acc.type === "credit" : false;
+    const absAmt = Math.abs(t.amount);
+
+    if (t.amount < 0) {
+      if (isCredit) {
+        creditPurchases += absAmt;
+      } else {
+        cashPurchases += absAmt;
+      }
+    } else if (t.amount > 0) {
+      if (isCredit) {
+        creditRefunds += absAmt;
+      } else {
+        cashRefunds += absAmt;
+      }
+    }
+  }
+
+  // Account isolation: cash refunds offset cash purchases; credit refunds offset credit purchases.
+  // Credit card statement credits cannot offset cash purchases or create cash spending availability.
+  const netCash = Math.max(0, cashPurchases - cashRefunds);
+  const netCredit = Math.max(0, creditPurchases - creditRefunds);
+
+  return netCash + netCredit;
+};
 
 export function dueDate(b: Bill, month: string) {
   const [y, m] = month.split("-").map(Number);
@@ -781,7 +1145,31 @@ export function totals(s: State, now = today()) {
   const bills = billBreakdown.total;
   const uncoveredScheduledExpenses = getUncoveredScheduledExpenses(s, now);
 
-  const rawSafe = balance - pots - budgets - bills - uncoveredScheduledExpenses;
+  const creditCardAccounts = (s.accounts || []).filter(
+    (a) => !a.archived && a.type === "credit",
+  );
+  const creditCoverage = creditCardAccounts.map((a) =>
+    getCreditCardCoverage(a, s, now),
+  );
+  const totalReadyToPay = creditCoverage.reduce(
+    (sum, c) => sum + c.readyToPay,
+    0,
+  );
+  const totalCreditOwed = creditCoverage.reduce(
+    (sum, c) => sum + c.totalOwed,
+    0,
+  );
+  const totalUncoveredDebt = creditCoverage.reduce(
+    (sum, c) => sum + c.uncoveredDebt,
+    0,
+  );
+  const totalStatementCredits = creditCoverage.reduce(
+    (sum, c) => sum + c.statementCredit,
+    0,
+  );
+
+  const rawSafe =
+    balance - pots - budgets - bills - uncoveredScheduledExpenses - totalReadyToPay;
   const safe = Math.max(0, rawSafe);
   const shortfall = rawSafe < 0 ? Math.abs(rawSafe) : 0;
 
@@ -795,6 +1183,10 @@ export function totals(s: State, now = today()) {
     uncoveredScheduledExpenses,
     scheduledIncome,
     scheduledExpenses,
+    totalReadyToPay,
+    totalCreditOwed,
+    totalUncoveredDebt,
+    totalStatementCredits,
     rawSafe,
     safe,
     shortfall,
@@ -804,6 +1196,16 @@ export function totals(s: State, now = today()) {
 export function migrateState(raw: any, now = today()): State {
   if (!raw || typeof raw !== "object") {
     return blank();
+  }
+
+  const isV4 = raw.version === 4;
+  const creditAccountIds = new Set<string>();
+  if (Array.isArray(raw.accounts)) {
+    for (const a of raw.accounts) {
+      if (a && a.type === "credit" && a.id) {
+        creditAccountIds.add(String(a.id));
+      }
+    }
   }
 
   const transactions: Transaction[] = Array.isArray(raw.transactions)
@@ -825,6 +1227,10 @@ export function migrateState(raw: any, now = today()): State {
         const kind: TransactionKind =
           t.kind === "transfer" || t.kind === "payment" ? t.kind : "standard";
 
+        const accountId = t.accountId ? String(t.accountId) : "acc-default-checking";
+        const isCreditTx = creditAccountIds.has(accountId);
+        const isLegacyDebt = isV4 ? Boolean(t.isLegacyDebt) : isCreditTx;
+
         return {
           id: String(t.id || uid()),
           name: String(t.name || ""),
@@ -842,9 +1248,11 @@ export function migrateState(raw: any, now = today()): State {
           billDueDate: t.billDueDate ? String(t.billDueDate) : undefined,
           status,
           postedDate: t.postedDate ? String(t.postedDate) : undefined,
-          accountId: t.accountId ? String(t.accountId) : "acc-default-checking",
+          accountId,
           kind,
           targetAccountId: t.targetAccountId ? String(t.targetAccountId) : undefined,
+          isLegacyDebt,
+          createdAt: t.createdAt ? String(t.createdAt) : undefined,
         };
       })
     : [];
@@ -939,6 +1347,18 @@ export function migrateState(raw: any, now = today()): State {
         if (a.minPayment !== undefined) {
           acc.minPayment = Number(a.minPayment);
         }
+        acc.assignedPaymentReserve = isV4 ? (Number(a.assignedPaymentReserve) || 0) : 0;
+        acc.paymentReservations = (isV4 && Array.isArray(a.paymentReservations))
+          ? a.paymentReservations.map((pr: any) => ({
+              id: String(pr.id || uid()),
+              amount: Number(pr.amount) || 0,
+              date: String(pr.date || now),
+              createdAt: String(pr.createdAt || now),
+            }))
+          : [];
+        acc.coveredCreditBaselineAt = (isV4 && a.coveredCreditBaselineAt)
+          ? String(a.coveredCreditBaselineAt)
+          : now;
       }
       return acc;
     });
@@ -968,8 +1388,10 @@ export function migrateState(raw: any, now = today()): State {
     }
   }
 
+  const version: 2 | 3 | 4 = (raw.version === 1 || raw.version === 2) ? 2 : 4;
+
   return {
-    version: raw.version === 3 ? 3 : 2,
+    version,
     demo: Boolean(raw.demo),
     opening: rawOpening,
     payday,

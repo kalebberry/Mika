@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { colors, themeColors, today } from "../../model";
+import { colors, themeColors, today, cents } from "../../model";
 import { money } from "../../utils/format";
 import { useBudget } from "../../composables/useBudget";
 import { useModal } from "../../composables/useModal";
@@ -10,6 +10,8 @@ const {
   categories,
   backup,
   state,
+  sum,
+  getCreditCardCoverage,
   getAccountBalance,
   getAccountTransactionCount,
   getAccountDeletionBlockReason,
@@ -77,6 +79,74 @@ const isCreditCardSelected = computed(
   () => selectedAccount.value?.type === "credit",
 );
 
+const targetReserveCard = computed(() => {
+  if (mode.value !== "Reserve for payment") return null;
+  const cardId = form.value.accountId || selected.value;
+  return (
+    activeCreditAccounts.value.find((a) => a.id === cardId) ||
+    activeCreditAccounts.value[0] ||
+    null
+  );
+});
+
+const targetReserveCoverage = computed(() => {
+  if (!targetReserveCard.value) return null;
+  return getCreditCardCoverage(targetReserveCard.value);
+});
+
+function onReserveCardChange() {
+  if (targetReserveCard.value && targetReserveCoverage.value) {
+    form.value.name = targetReserveCard.value.name;
+    const cov = targetReserveCoverage.value;
+    if (form.value.reserveAction === "release") {
+      form.value.amount =
+        cov.manualReleasable > 0 ? String(cov.manualReleasable / 100) : "";
+    } else {
+      form.value.amount =
+        cov.uncoveredDebt > 0 ? String(cov.uncoveredDebt / 100) : "";
+    }
+  }
+}
+
+function onReserveActionChange() {
+  if (targetReserveCoverage.value) {
+    const cov = targetReserveCoverage.value;
+    if (form.value.reserveAction === "release") {
+      form.value.amount =
+        cov.manualReleasable > 0 ? String(cov.manualReleasable / 100) : "";
+    } else {
+      form.value.amount =
+        cov.uncoveredDebt > 0 ? String(cov.uncoveredDebt / 100) : "";
+    }
+  }
+}
+
+const targetPaymentCard = computed(() => {
+  if (form.value.type !== "Credit Card Payment" || !form.value.targetAccountId) {
+    return null;
+  }
+  return (
+    (state.value.accounts || []).find(
+      (a) => a.id === form.value.targetAccountId && a.type === "credit",
+    ) || null
+  );
+});
+
+const targetPaymentCoverage = computed(() => {
+  if (!targetPaymentCard.value) return null;
+  return getCreditCardCoverage(targetPaymentCard.value);
+});
+
+function onPaymentTargetChange() {
+  if (targetPaymentCard.value && targetPaymentCoverage.value) {
+    const cov = targetPaymentCoverage.value;
+    const cardDebt = cov.totalOwed;
+    const prefill =
+      cov.readyToPay > 0 ? Math.min(cov.readyToPay, cardDebt) : cardDebt;
+    form.value.amount = prefill > 0 ? String(prefill / 100) : "";
+  }
+}
+
 function onTransactionTypeChange() {
   if (form.value.type === "Transfer") {
     if (!form.value.accountId || selectedAccount.value?.type === "credit") {
@@ -104,6 +174,16 @@ function onTransactionTypeChange() {
       )?.type !== "credit"
     ) {
       form.value.targetAccountId = activeCreditAccounts.value[0]?.id || "";
+    }
+    const card = (state.value.accounts || []).find(
+      (a) => a.id === form.value.targetAccountId && a.type === "credit",
+    );
+    if (card) {
+      const cov = getCreditCardCoverage(card);
+      const cardDebt = cov.totalOwed;
+      const prefill =
+        cov.readyToPay > 0 ? Math.min(cov.readyToPay, cardDebt) : cardDebt;
+      form.value.amount = prefill > 0 ? String(prefill / 100) : "";
     }
   } else {
     if (!form.value.accountId) {
@@ -182,7 +262,13 @@ function onDateInput() {
     <form @submit.prevent="submit">
       <div class="section-heading">
         <h2 id="dialog-title">
-          {{ mode === "Adjust balance" ? "Adjust balance — " + form.name : mode }}
+          {{
+            mode === "Adjust balance"
+              ? "Adjust balance — " + form.name
+              : mode === "Reserve for payment"
+                ? "Reserve for payment — " + (targetReserveCard ? targetReserveCard.name : form.name)
+                : mode
+          }}
         </h2>
         <button
           type="button"
@@ -440,6 +526,143 @@ function onDateInput() {
         </small>
       </label>
 
+      <!-- Reserve for payment form (Stage 4) -->
+      <template v-if="mode === 'Reserve for payment'">
+        <!-- Target card selection if multiple credit cards, or display single card name -->
+        <label v-if="activeCreditAccounts.length > 1">
+          Target Credit Card
+          <select v-model="form.accountId" @change="onReserveCardChange" required>
+            <option v-for="c in activeCreditAccounts" :key="c.id" :value="c.id">
+              {{ c.name }} — Owed: {{ money(getCreditCardCoverage(c).totalOwed) }}
+            </option>
+          </select>
+        </label>
+        <div v-else-if="targetReserveCard" class="reserve-target-card-box">
+          <span class="muted small">Target Credit Card</span>
+          <strong>{{ targetReserveCard.name }}</strong>
+        </div>
+
+        <!-- Target Card Accounting Metrics Display (Requirement 2) -->
+        <div v-if="targetReserveCoverage" class="reserve-metrics-display">
+          <div class="rm-row">
+            <div class="rm-col">
+              <span class="rm-label">Total Owed</span>
+              <strong class="rm-val liability-text">{{ money(targetReserveCoverage.totalOwed) }}</strong>
+            </div>
+            <div class="rm-divider"></div>
+            <div class="rm-col">
+              <span class="rm-label">Ready to Pay</span>
+              <strong class="rm-val ready-text">{{ money(targetReserveCoverage.readyToPay) }}</strong>
+            </div>
+            <div class="rm-divider"></div>
+            <div class="rm-col">
+              <span class="rm-label">Uncovered Debt</span>
+              <strong
+                class="rm-val"
+                :class="targetReserveCoverage.uncoveredDebt > 0 ? 'uncovered-text' : 'muted-val'"
+              >
+                {{ money(targetReserveCoverage.uncoveredDebt) }}
+              </strong>
+            </div>
+          </div>
+
+          <div class="rm-manual-badge">
+            <span>Manually Releasable Reserve:</span>
+            <strong>{{ money(targetReserveCoverage.manualReleasable) }}</strong>
+          </div>
+        </div>
+
+        <!-- Action Toggle: Assign vs Release (Requirement 1) -->
+        <fieldset class="reset-options reserve-options-group" style="margin: 0.75rem 0;">
+          <legend class="sr-only">Choose Reservation Action</legend>
+          <label class="reset-option" :class="{ 'is-selected': form.reserveAction === 'reserve' }">
+            <input
+              type="radio"
+              v-model="form.reserveAction"
+              value="reserve"
+              @change="onReserveActionChange"
+            />
+            <span>
+              <strong>Assign cash to payment reserve</strong>
+              <small>
+                Locks cash from Safe to Spend ({{ money(sum.safe) }} available) so it is ready to pay this card.
+              </small>
+            </span>
+          </label>
+
+          <label
+            class="reset-option"
+            :class="{
+              'is-selected': form.reserveAction === 'release',
+              'is-disabled': targetReserveCoverage && targetReserveCoverage.manualReleasable <= 0
+            }"
+          >
+            <input
+              type="radio"
+              v-model="form.reserveAction"
+              value="release"
+              @change="onReserveActionChange"
+            />
+            <span>
+              <strong>Release reserve back to Safe to Spend</strong>
+              <small>
+                Return manually assigned funds back to your spending plan.
+              </small>
+            </span>
+          </label>
+        </fieldset>
+
+        <!-- Requirement 3: Invariant Clarity Note -->
+        <div class="formula-note release-clarity-box">
+          <p v-if="form.reserveAction === 'release'" style="margin: 0; font-size: 0.8125rem; line-height: 1.45;">
+            🛡️ <strong>Accounting Invariant:</strong> Releasing money applies <strong>only to manually assigned funds</strong> (up to {{ money(targetReserveCoverage?.manualReleasable || 0) }}). Funds automatically covered from budgeted purchases are permanently protected and can never be released.
+          </p>
+          <p v-else style="margin: 0; font-size: 0.8125rem; line-height: 1.45;">
+            💡 <strong>How it works:</strong> Cash remains safely in your checking account, but is reserved for this credit card so you never accidentally spend it.
+          </p>
+        </div>
+
+        <!-- Amount Input with Quick-Action Fill -->
+        <label>
+          {{ form.reserveAction === 'release' ? 'Amount to Release ($)' : 'Amount to Reserve ($)' }}
+          <div class="amount-quick-row">
+            <input
+              v-model="form.amount"
+              type="number"
+              min="0.01"
+              step="0.01"
+              required
+              inputmode="decimal"
+              placeholder="0.00"
+            />
+            <button
+              v-if="form.reserveAction === 'reserve' && targetReserveCoverage && targetReserveCoverage.uncoveredDebt > 0"
+              type="button"
+              class="secondary small quick-btn"
+              @click="form.amount = String(targetReserveCoverage.uncoveredDebt / 100)"
+              title="Fill total uncovered debt"
+            >
+              Fill Uncovered ({{ money(targetReserveCoverage.uncoveredDebt) }})
+            </button>
+            <button
+              v-else-if="form.reserveAction === 'release' && targetReserveCoverage && targetReserveCoverage.manualReleasable > 0"
+              type="button"
+              class="secondary small quick-btn"
+              @click="form.amount = String(targetReserveCoverage.manualReleasable / 100)"
+              title="Release full manual reserve"
+            >
+              Release All ({{ money(targetReserveCoverage.manualReleasable) }})
+            </button>
+          </div>
+          <small v-if="form.reserveAction === 'reserve'">
+            Up to {{ money(Math.min(sum.safe, targetReserveCoverage?.uncoveredDebt || 0)) }} (Available Safe to Spend: {{ money(sum.safe) }}).
+          </small>
+          <small v-else>
+            Max releasable: {{ money(targetReserveCoverage?.manualReleasable || 0) }} (only manually assigned funds).
+          </small>
+        </label>
+      </template>
+
       <!-- Credit card specific fields (Progressive disclosure) -->
       <template v-if="(mode === 'Add account' || mode === 'Edit account') && form.accountType === 'credit'">
         <label>
@@ -568,7 +791,7 @@ function onDateInput() {
         </label>
         <label>
           Pay To (Credit Card)
-          <select v-model="form.targetAccountId" required>
+          <select v-model="form.targetAccountId" required @change="onPaymentTargetChange">
             <option v-for="a in activeCreditAccounts" :key="a.id" :value="a.id">
               {{ a.name }} — Owed: {{ money(getAccountBalance(a)) }} (Limit: {{ money(a.creditLimit || 0) }})
             </option>
@@ -580,6 +803,54 @@ function onDateInput() {
             Reduces your cash balance and card balance owed, freeing up available credit without creating a spending expense.
           </small>
         </label>
+
+        <!-- Coverage & Reserve status callout for Credit Card Payment (Requirement 6 & Partial Coverage Edge Case) -->
+        <div
+          v-if="targetPaymentCoverage"
+          class="payment-coverage-callout"
+          :class="{
+            'uncovered-warning': targetPaymentCoverage.readyToPay === 0 && targetPaymentCoverage.totalOwed > 0,
+            'covered-info': targetPaymentCoverage.readyToPay > 0 && cents(Number(form.amount || 0)) <= targetPaymentCoverage.readyToPay,
+            'partial-warning': targetPaymentCoverage.readyToPay > 0 && cents(Number(form.amount || 0)) > targetPaymentCoverage.readyToPay
+          }"
+        >
+          <template v-if="targetPaymentCoverage.readyToPay > 0">
+            <template v-if="cents(Number(form.amount || 0)) <= targetPaymentCoverage.readyToPay">
+              <div class="callout-header">
+                <span class="badge covered-badge">🛡️ Reserve-Backed</span>
+                <span class="muted"><strong>{{ money(targetPaymentCoverage.readyToPay) }}</strong> Ready to Pay reserved</span>
+              </div>
+              <small class="callout-note">
+                ✓ This payment is fully covered by existing cash reserved for this card. Safe to Spend will not be reduced.
+              </small>
+            </template>
+            <template v-else>
+              <div class="callout-header">
+                <span class="badge partial-badge">⚡ Partially Covered</span>
+                <span class="uncovered-note">
+                  <strong>{{ money(targetPaymentCoverage.readyToPay) }}</strong> covered / <strong>{{ money(cents(Number(form.amount || 0)) - targetPaymentCoverage.readyToPay) }}</strong> uncovered
+                </span>
+              </div>
+              <small class="callout-note text-warning">
+                Of this {{ money(cents(Number(form.amount || 0))) }} payment, <strong>{{ money(targetPaymentCoverage.readyToPay) }}</strong> is funded from reserved cash. The remaining <strong>{{ money(cents(Number(form.amount || 0)) - targetPaymentCoverage.readyToPay) }}</strong> is uncovered debt and will directly reduce your Safe to Spend.
+              </small>
+            </template>
+          </template>
+          <template v-else-if="targetPaymentCoverage.totalOwed > 0">
+            <div class="callout-header">
+              <span class="badge uncovered-badge">⚠️ Direct Uncovered Payment</span>
+              <span class="uncovered-note"><strong>$0.00 Ready to Pay</strong></span>
+            </div>
+            <small class="callout-note text-warning">
+              This card has $0.00 reserved in Ready to Pay. This payment is <strong>not funded by an existing reserve</strong> and will directly reduce your cash and Safe to Spend.
+            </small>
+          </template>
+          <template v-else>
+            <small class="callout-note muted">
+              This card has no outstanding debt owed ($0.00).
+            </small>
+          </template>
+        </div>
       </template>
 
       <!-- Standard Expense or Income Account Selector -->
@@ -632,6 +903,13 @@ function onDateInput() {
           inputmode="decimal"
           placeholder="0.00"
         />
+        <small
+          v-if="form.type === 'Credit Card Payment' && targetPaymentCoverage && targetPaymentCoverage.totalOwed > 0"
+          class="muted"
+          style="display: block; margin-top: 0.25rem;"
+        >
+          Maximum payable: {{ money(targetPaymentCoverage.totalOwed) }} outstanding debt.
+        </small>
       </label>
 
       <!-- Date -->
@@ -874,19 +1152,235 @@ function onDateInput() {
             ? "Confirm and start fresh"
             : mode === "Delete account"
               ? "Confirm permanent deletion"
-              : mode.startsWith("Delete")
-                ? "Confirm removal"
-                : mode === "Adjust balance"
-                  ? "Update balance"
-                  : mode === "Settle bill" || (mode === "Pay bill" && payMethod === "settled")
-                    ? "Confirm settlement"
-                    : mode === "Pay bill"
-                      ? "Confirm payment"
-                      : mode.startsWith("Edit")
-                        ? "Save changes"
-                        : "Save"
+              : mode === "Reserve for payment"
+                ? (form.reserveAction === "release" ? "Release to Safe to Spend" : "Assign to Payment Reserve")
+                : mode.startsWith("Delete")
+                  ? "Confirm removal"
+                  : mode === "Adjust balance"
+                    ? "Update balance"
+                    : mode === "Settle bill" || (mode === "Pay bill" && payMethod === "settled")
+                      ? "Confirm settlement"
+                      : mode === "Pay bill"
+                        ? "Confirm payment"
+                        : mode.startsWith("Edit")
+                          ? "Save changes"
+                          : "Save"
         }}
       </button>
     </form>
   </dialog>
 </template>
+
+<style scoped>
+.reserve-target-card-box {
+  background: var(--color-surface-subtle, #f8f8fa);
+  border: 1px solid var(--color-border, #ededf2);
+  border-radius: var(--radius-sm, 6px);
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.reserve-target-card-box strong {
+  font-size: 1.125rem;
+  color: var(--color-text, #201f24);
+}
+
+.reserve-metrics-display {
+  background: var(--color-surface-subtle, #f8f8fa);
+  border: 1px solid var(--color-border, #ededf2);
+  border-radius: var(--radius-sm, 6px);
+  padding: 0.875rem 1rem;
+  margin-bottom: 0.875rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.rm-row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr auto 1fr;
+  align-items: center;
+  gap: 0.5rem;
+  text-align: center;
+}
+
+.rm-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.rm-divider {
+  width: 1px;
+  height: 28px;
+  background: var(--color-border, #e5e7eb);
+}
+
+.rm-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-muted);
+}
+
+.rm-val {
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.liability-text {
+  color: var(--color-danger, #c94736);
+}
+
+.ready-text {
+  color: var(--color-teal, #277c78);
+}
+
+.uncovered-text {
+  color: #b45309;
+}
+
+.muted-val {
+  color: var(--color-muted);
+}
+
+.rm-manual-badge {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.8125rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--color-border, #ededf2);
+  color: var(--color-muted);
+}
+
+.rm-manual-badge strong {
+  color: var(--color-teal, #277c78);
+  font-weight: 700;
+}
+
+.release-clarity-box {
+  background: #fdfaf6;
+  border: 1px solid #f6ebe1;
+  padding: 0.75rem;
+  border-radius: var(--radius-sm, 6px);
+  margin-bottom: 0.875rem;
+  color: #7c4a1e;
+}
+
+.amount-quick-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.amount-quick-row input {
+  flex: 1;
+}
+
+.quick-btn {
+  white-space: nowrap;
+  font-size: 0.75rem;
+  padding: 0.5rem 0.65rem;
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: var(--radius-sm, 6px);
+  transition: all 0.15s ease;
+}
+
+.quick-btn:hover {
+  background: #fde68a;
+  color: #78350f;
+}
+
+.reset-option.is-selected {
+  border-color: var(--color-teal);
+  background: #edf6f3;
+}
+
+.reset-option.is-disabled {
+  opacity: 0.6;
+}
+
+.payment-coverage-callout {
+  margin-top: 0.5rem;
+  padding: 0.75rem;
+  border-radius: var(--radius-sm, 6px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8125rem;
+  background: var(--color-surface, #f9fafb);
+  border: 1px solid var(--color-border, #e5e7eb);
+}
+
+.payment-coverage-callout.covered-info {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+
+.payment-coverage-callout.uncovered-warning {
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
+.payment-coverage-callout .callout-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.payment-coverage-callout .callout-note {
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.payment-coverage-callout .text-warning {
+  color: #92400e;
+}
+
+.covered-badge {
+  background: #dcfce7;
+  color: #166534;
+  font-weight: 600;
+  font-size: 0.6875rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 9999px;
+}
+
+.uncovered-badge {
+  background: #fef3c7;
+  color: #92400e;
+  font-weight: 600;
+  font-size: 0.6875rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 9999px;
+}
+
+.partial-badge {
+  background: #fef3c7;
+  color: #92400e;
+  font-weight: 600;
+  font-size: 0.6875rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 9999px;
+}
+
+.payment-coverage-callout.partial-warning {
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
+.uncovered-note {
+  color: #b45309;
+}
+</style>

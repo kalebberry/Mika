@@ -52,6 +52,14 @@ const { state, sum, days, page } = useBudget();
         <span>Next cycle bills protected</span>
         <span>− {{ money(sum.protectedCycleBills) }}</span>
       </div>
+      <div v-if="sum.uncoveredScheduledExpenses > 0">
+        <span>Scheduled expenses before payday</span>
+        <span>− {{ money(sum.uncoveredScheduledExpenses) }}</span>
+      </div>
+      <div v-if="sum.totalReadyToPay > 0">
+        <span>Credit card payment reserves</span>
+        <span>− {{ money(sum.totalReadyToPay) }}</span>
+      </div>
       <div v-if="sum.shortfall > 0" style="color: #ff9b82; font-weight: 600;">
         <span>Reserve shortfall</span>
         <span>{{ money(sum.shortfall) }} deficit</span>

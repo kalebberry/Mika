@@ -1,4 +1,4 @@
-import { type State, today, totals } from "./model";
+import { type State, today, totals } from "./model.ts";
 export type CompanionExpression =
   | "welcome"
   | "celebrating"

@@ -25,10 +25,16 @@ import {
   canDeleteAccount,
   getAccountDeletionBlockReason,
   type DeletionBlockReason,
+  type CreditCardCoverage,
+  type CreditCoverageStatus,
+  getCreditCardCoverage,
+  getCreditCardCoverageStatus,
+  assignCardPaymentReserve as modelAssignCardPaymentReserve,
+  releaseCardPaymentReserve as modelReleaseCardPaymentReserve,
   uid,
-} from "../model";
-import { money } from "../utils/format";
-import { useToast } from "./useToast";
+} from "../model.ts";
+import { money } from "../utils/format.ts";
+import { useToast } from "./useToast.ts";
 
 export type PageName =
   | "Overview"
@@ -55,20 +61,25 @@ let initialData = demo();
 let initialWarning = "";
 
 try {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (raw) {
-    const parsed = JSON.parse(raw);
-    if (
-      (parsed.version === 1 || parsed.version === 2 || parsed.version === 3) &&
-      Array.isArray(parsed.transactions) &&
-      Array.isArray(parsed.pots) &&
-      Array.isArray(parsed.bills) &&
-      Array.isArray(parsed.budgets) &&
-      Number.isFinite(parsed.opening)
-    ) {
-      initialData = migrateState(parsed);
-    } else {
-      throw new Error("Invalid schema");
+  if (typeof localStorage !== "undefined") {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (
+        (parsed.version === 1 ||
+          parsed.version === 2 ||
+          parsed.version === 3 ||
+          parsed.version === 4) &&
+        Array.isArray(parsed.transactions) &&
+        Array.isArray(parsed.pots) &&
+        Array.isArray(parsed.bills) &&
+        Array.isArray(parsed.budgets) &&
+        Number.isFinite(parsed.opening)
+      ) {
+        initialData = migrateState(parsed);
+      } else {
+        throw new Error("Invalid schema");
+      }
     }
   }
 } catch {
@@ -257,7 +268,7 @@ watch(
 watch(
   state,
   () => {
-    if (storageBlocked.value) return;
+    if (storageBlocked.value || typeof localStorage === "undefined") return;
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state.value));
     } catch {
@@ -422,6 +433,9 @@ export function useBudget() {
       newAcc.creditLimit = accData.creditLimit ? Math.max(0, accData.creditLimit) : 0;
       if (accData.dueDay) newAcc.dueDay = Math.min(31, Math.max(1, accData.dueDay));
       if (accData.minPayment) newAcc.minPayment = Math.max(0, accData.minPayment);
+      newAcc.assignedPaymentReserve = 0;
+      newAcc.paymentReservations = [];
+      newAcc.coveredCreditBaselineAt = today();
     }
     state.value.accounts.push(newAcc);
     toast(`Added ${newAcc.name}.`);
@@ -526,6 +540,113 @@ export function useBudget() {
     return false;
   }
 
+  const activeCreditCards = computed(() =>
+    (state.value.accounts || []).filter(
+      (a) => !a.archived && a.type === "credit",
+    ),
+  );
+
+  const creditCardSummary = computed(() => {
+    const cards = activeCreditCards.value;
+    const coverages = cards.map((a) =>
+      getCreditCardCoverage(a, state.value, today()),
+    );
+    return {
+      totalOwed: coverages.reduce((sum, c) => sum + c.totalOwed, 0),
+      readyToPay: coverages.reduce((sum, c) => sum + c.readyToPay, 0),
+      uncoveredDebt: coverages.reduce((sum, c) => sum + c.uncoveredDebt, 0),
+      statementCredit: coverages.reduce((sum, c) => sum + c.statementCredit, 0),
+      availableCredit: coverages.reduce((sum, c) => sum + c.availableCredit, 0),
+      manualReleasable: coverages.reduce((sum, c) => sum + c.manualReleasable, 0),
+      cardCount: cards.length,
+      coverages,
+    };
+  });
+
+  function assignCardPaymentReserve(
+    cardOrId: Account | string,
+    amount: number,
+    now?: string,
+  ): boolean {
+    const acc =
+      typeof cardOrId === "string"
+        ? (state.value.accounts || []).find((a) => a.id === cardOrId)
+        : cardOrId;
+    if (!acc || acc.type !== "credit") {
+      toast("Invalid credit card account.");
+      return false;
+    }
+    if (amount <= 0) {
+      toast("Enter an amount greater than zero.");
+      return false;
+    }
+    const currentSafe = Math.max(0, sum.value.safe);
+    if (amount > currentSafe) {
+      toast("This amount exceeds your available Safe to Spend.");
+      return false;
+    }
+    const asOf = now || today();
+    const cov = getCreditCardCoverage(acc, state.value, asOf);
+    if (cov.uncoveredDebt <= 0) {
+      toast(`${acc.name} is already fully covered. No reservation needed.`);
+      return false;
+    }
+    if (amount > cov.uncoveredDebt) {
+      toast(
+        `Cannot reserve more than the uncovered debt (${money(cov.uncoveredDebt)}).`,
+      );
+      return false;
+    }
+    modelAssignCardPaymentReserve(acc, amount, asOf);
+    acc.updatedAt = asOf;
+    toast(`Reserved ${money(amount)} for ${acc.name}.`);
+    return true;
+  }
+
+  function releaseCardPaymentReserve(
+    cardOrId: Account | string,
+    amount: number,
+    now?: string,
+  ): boolean {
+    const acc =
+      typeof cardOrId === "string"
+        ? (state.value.accounts || []).find((a) => a.id === cardOrId)
+        : cardOrId;
+    if (!acc || acc.type !== "credit") {
+      toast("Invalid credit card account.");
+      return false;
+    }
+    if (amount <= 0) {
+      toast("Enter an amount greater than zero.");
+      return false;
+    }
+    const asOf = now || today();
+    const cov = getCreditCardCoverage(acc, state.value, asOf);
+    if (cov.manualReleasable <= 0) {
+      toast("There are no manual reserved funds to release.");
+      return false;
+    }
+    if (amount > cov.manualReleasable) {
+      toast(
+        `Cannot release more than the manually assigned reserve (${money(cov.manualReleasable)}).`,
+      );
+      return false;
+    }
+    const ok = modelReleaseCardPaymentReserve(
+      acc,
+      amount,
+      state.value,
+      asOf,
+    );
+    if (!ok) {
+      toast("Cannot release more than the manually assigned reserve.");
+      return false;
+    }
+    acc.updatedAt = asOf;
+    toast(`Released ${money(amount)} back to Safe to Spend.`);
+    return true;
+  }
+
   function registerModelContext() {
     const context = (document as any).modelContext;
     if (context?.registerTool) {
@@ -592,6 +713,7 @@ export function useBudget() {
     accounts,
     activeAccounts,
     archivedAccounts,
+    activeCreditCards,
     accountSummary,
     addAccount,
     updateAccount,
@@ -606,6 +728,37 @@ export function useBudget() {
       getAccountDeletionBlockReason(accOrId, state.value),
     getAccountBalance: (a: Account) => getAccountBalance(a, state.value),
     getAvailableCredit: (a: Account) => getAvailableCredit(a, state.value),
+    creditCardSummary,
+    assignCardPaymentReserve,
+    releaseCardPaymentReserve,
+    getCreditCardCoverage: (accOrId: Account | string, now?: string) => {
+      const acc =
+        typeof accOrId === "string"
+          ? (state.value.accounts || []).find((a) => a.id === accOrId)
+          : accOrId;
+      if (!acc) {
+        return {
+          totalOwed: 0,
+          readyToPay: 0,
+          uncoveredDebt: 0,
+          statementCredit: 0,
+          availableCredit: 0,
+          grossReserve: 0,
+          assignedReserve: 0,
+          manualReleasable: 0,
+          status: "zero_balance" as const,
+        };
+      }
+      return getCreditCardCoverage(acc, state.value, now || today());
+    },
+    getCreditCardCoverageStatus: (accOrId: Account | string, now?: string) => {
+      const acc =
+        typeof accOrId === "string"
+          ? (state.value.accounts || []).find((a) => a.id === accOrId)
+          : accOrId;
+      if (!acc) return "zero_balance" as const;
+      return getCreditCardCoverage(acc, state.value, now || today()).status;
+    },
     registerModelContext,
   };
 }

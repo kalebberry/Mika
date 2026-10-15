@@ -5,7 +5,7 @@ import {
   nextUnpaidDueDate,
   getFollowingPayday,
   today,
-} from "../model";
+} from "../model.ts";
 
 export const money = (v: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(

@@ -8,8 +8,8 @@ import {
   isBillPaid,
   dueDate,
   nextDueDate,
-} from "./model";
-import { type CompanionExpression, companionMessage } from "./companion";
+} from "./model.ts";
+import { type CompanionExpression, companionMessage } from "./companion.ts";
 
 export interface WebLLMModelOption {
   id: string;
