@@ -1,5 +1,10 @@
 <script setup lang="ts">
-import { isBillPaid, nextUnpaidDueDate, getFollowingPayday } from "../../model";
+import {
+  isBillPaid,
+  nextUnpaidDueDate,
+  getBillOccurrenceStatus,
+  getFollowingPayday,
+} from "../../model";
 import { money, formatNextDue, billStatus, date } from "../../utils/format";
 import { useBudget } from "../../composables/useBudget";
 import { useModal } from "../../composables/useModal";
@@ -53,7 +58,29 @@ const { open } = useModal();
         >
           {{ billStatus(state, b) }}
         </span>
-        <strong>{{ money(b.amount) }}</strong>
+        <div style="text-align: right;">
+          <template v-if="getBillOccurrenceStatus(state, b, nextUnpaidDueDate(state, b)).status === 'partially_paid'">
+            <strong>{{ money(getBillOccurrenceStatus(state, b, nextUnpaidDueDate(state, b)).remainingAmount) }}</strong>
+            <span class="muted" style="display: block; font-size: 0.75rem;">
+              {{ money(getBillOccurrenceStatus(state, b, nextUnpaidDueDate(state, b)).paidAmount) }} of {{ money(b.amount) }}
+            </span>
+          </template>
+          <template v-else-if="getBillOccurrenceStatus(state, b, nextUnpaidDueDate(state, b)).status === 'overpaid'">
+            <strong>$0.00</strong>
+            <span class="muted" style="display: block; font-size: 0.75rem;">
+              {{ money(getBillOccurrenceStatus(state, b, nextUnpaidDueDate(state, b)).paidAmount) }} (+{{ money(getBillOccurrenceStatus(state, b, nextUnpaidDueDate(state, b)).overpaidAmount) }})
+            </span>
+          </template>
+          <template v-else-if="getBillOccurrenceStatus(state, b, nextUnpaidDueDate(state, b)).status === 'paid'">
+            <strong>$0.00</strong>
+            <span class="muted" style="display: block; font-size: 0.75rem;">
+              Paid in full
+            </span>
+          </template>
+          <template v-else>
+            <strong>{{ money(b.amount) }}</strong>
+          </template>
+        </div>
 
         <!-- Protect toggle for bills due after next payday but before following payday -->
         <button
@@ -75,7 +102,13 @@ const { open } = useModal();
           @click="open('Pay bill', b.id)"
           :disabled="isBillPaid(state, b, nextUnpaidDueDate(state, b))"
         >
-          {{ isBillPaid(state, b, nextUnpaidDueDate(state, b)) ? "Paid ✓" : "Mark paid" }}
+          {{
+            isBillPaid(state, b, nextUnpaidDueDate(state, b))
+              ? "Paid ✓"
+              : getBillOccurrenceStatus(state, b, nextUnpaidDueDate(state, b)).status === 'partially_paid'
+                ? "Pay remaining"
+                : "Mark paid"
+          }}
         </button>
 
         <button

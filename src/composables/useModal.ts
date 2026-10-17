@@ -7,6 +7,7 @@ import {
   cents,
   resetWorkspace,
   nextUnpaidDueDate,
+  getBillOccurrenceStatus,
   isBillPaid,
   settleBillOccurrence,
   recordBillPayment,
@@ -322,6 +323,26 @@ export function useModal() {
         targetAccountId: targetCard ? targetCard.id : "",
         amount: prefillAmount > 0 ? String(prefillAmount / 100) : "",
       };
+    } else if (m === "Pay bill" || m === "Settle bill") {
+      const b = state.value.bills.find((item) => item.id === id);
+      if (b) {
+        const targetDue = nextUnpaidDueDate(state.value, b, today());
+        const occStatus = getBillOccurrenceStatus(state.value, b, targetDue);
+        const defaultAmt =
+          occStatus.remainingAmount > 0
+            ? occStatus.remainingAmount
+            : b.amount;
+        form.value = {
+          ...form.value,
+          name: b.name,
+          amount: String(defaultAmt / 100),
+          date: today(),
+          billId: b.id,
+          billDueDate: targetDue,
+          accountId: defaultAccountId,
+          status: "posted",
+        };
+      }
     }
 
     dialogRef.value?.showModal();
@@ -883,22 +904,68 @@ export function useModal() {
     } else if (mode.value === "Pay bill" || mode.value === "Settle bill") {
       const b = state.value.bills.find((item) => item.id === selected.value);
       if (b) {
-        const due = nextUnpaidDueDate(state.value, b, today());
-        if (!isBillPaid(state.value, b, due)) {
-          if (mode.value === "Settle bill" || payMethod.value === "settled") {
-            settleBillOccurrence(state.value, b.id, due);
-          } else {
-            recordBillPayment(state.value, b.id, {
-              dueDate: due,
-              accountId: form.value.accountId || "acc-default-checking",
-            });
+        const targetDue =
+          form.value.billDueDate && isValidDateString(form.value.billDueDate)
+            ? form.value.billDueDate
+            : nextUnpaidDueDate(state.value, b, today());
+
+        if (mode.value === "Settle bill" || payMethod.value === "settled") {
+          if (isBillPaid(state.value, b, targetDue)) {
+            error.value = `${b.name} (${targetDue}) is already recorded as paid or settled.`;
+            return;
           }
+          settleBillOccurrence(state.value, b.id, targetDue);
+        } else {
+          const paymentAmount = cents(Number(form.value.amount));
+          if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+            error.value = "Enter a valid payment amount greater than zero.";
+            return;
+          }
+          if (paymentAmount > 1000000000) {
+            error.value = "Payment amount exceeds maximum supported limit.";
+            return;
+          }
+          if (!isValidDateString(form.value.date)) {
+            error.value = "Enter a valid payment date (YYYY-MM-DD).";
+            return;
+          }
+          const chosenAccount = (state.value.accounts || []).find(
+            (a) => a.id === form.value.accountId && !a.archived,
+          );
+          if (!chosenAccount && (state.value.accounts || []).length > 0) {
+            error.value = "Select a valid active source account.";
+            return;
+          }
+          const chosenStatus: TransactionStatus =
+            form.value.status === "scheduled" || form.value.status === "cleared"
+              ? form.value.status
+              : "posted";
+
+          if (chosenStatus === "cleared" && form.value.date > today()) {
+            error.value =
+              "A transaction cannot be marked cleared with a future date.";
+            return;
+          }
+
+          const defaultChecking =
+            (state.value.accounts || []).find(
+              (a) => a.type === "checking" && !a.archived,
+            )?.id || "acc-default-checking";
+
+          recordBillPayment(state.value, b.id, {
+            amount: paymentAmount,
+            date: form.value.date,
+            dueDate: targetDue,
+            accountId: form.value.accountId || defaultChecking,
+            status: chosenStatus,
+          });
         }
       }
     }
 
     const currentMode = mode.value;
     const currentMethod = payMethod.value;
+    const recordedStatus = form.value.status;
     close();
 
     toast(
@@ -908,9 +975,13 @@ export function useModal() {
           ? "Scheduled transaction saved. It will not affect balance until confirmed."
           : currentMode === "Settle bill" || (currentMode === "Pay bill" && currentMethod === "settled")
             ? "Marked settled before setup without deducting cash."
-            : currentMode === "Add transaction" && showCompanion.value
-              ? "Mika: Logged. One less thing to remember."
-              : "Saved. You’re up to date.",
+            : currentMode === "Pay bill"
+              ? recordedStatus === "scheduled"
+                ? "Scheduled bill payment recorded. Will not affect balance until confirmed."
+                : "Bill payment recorded."
+              : currentMode === "Add transaction" && showCompanion.value
+                ? "Mika: Logged. One less thing to remember."
+                : "Saved. You’re up to date.",
     );
   }
 

@@ -1,6 +1,7 @@
 import { ref, computed, watch } from "vue";
 import {
   type State,
+  type Bill,
   type Account,
   type AccountType,
   demo,
@@ -20,6 +21,7 @@ import {
   addDays,
   isBillPaid,
   nextUnpaidDueDate,
+  getBillOccurrenceStatus,
   settleBillOccurrence,
   unsettleBillOccurrence,
   recordBillPayment,
@@ -463,6 +465,7 @@ export function useBudget() {
       dueDate?: string;
       accountId?: string;
       date?: string;
+      amount?: number;
       status?: TransactionStatus;
     },
   ) {
@@ -478,7 +481,18 @@ export function useBudget() {
       dueDate: due,
     });
     if (tx) {
-      toast(`Recorded payment for ${tx.name} (${tx.billDueDate}).`);
+      const occStatus = getBillOccurrenceStatus(state.value, bill, due);
+      if (occStatus.status === "partially_paid") {
+        toast(
+          `Recorded partial payment of ${money(Math.abs(tx.amount))} for ${tx.name}. ${money(occStatus.remainingAmount)} remaining for ${due}.`,
+        );
+      } else if (occStatus.status === "overpaid") {
+        toast(
+          `Recorded payment of ${money(Math.abs(tx.amount))} for ${tx.name}. Overpaid by ${money(occStatus.overpaidAmount)}.`,
+        );
+      } else {
+        toast(`Recorded payment for ${tx.name} (${tx.billDueDate}).`);
+      }
     }
     return tx;
   }
@@ -792,6 +806,8 @@ export function useBudget() {
     settleBill,
     unsettleBill,
     payBill,
+    getBillOccurrenceStatus: (bill: Bill, occurrenceDate?: string) =>
+      getBillOccurrenceStatus(state.value, bill, occurrenceDate),
     accounts,
     activeAccounts,
     archivedAccounts,

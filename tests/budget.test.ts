@@ -9,6 +9,9 @@ import {
   totals,
   reserveBillsBreakdown,
   nextUnpaidDueDate,
+  getBillOccurrenceStatus,
+  type BillPaymentStatus,
+  type BillOccurrenceStatus,
   isBillPaid,
   isBillSettled,
   settleBillOccurrence,
@@ -5777,6 +5780,7 @@ test("Test 3A.2.15 — Ambiguous legacy transactions: multiple unlinked candidat
 
   // Part D: Disambiguating by setting explicit billDueDate resolves the ambiguity
   tx1.billDueDate = "2026-10-10";
+  tx2.billDueDate = "2026-10-10";
   assert.equal(isBillPaid(state, gymBill, "2026-10-10"), true, "Explicit linkage resolves ambiguity and settles occurrence");
   const bdResolved = reserveBillsBreakdown(state, simulatedToday);
   assert.equal(bdResolved.currentCycleBills, 0, "Reservation released cleanly once disambiguated");
@@ -6854,6 +6858,711 @@ test("Test 3A.3.12 — Schedule changes with one-time overrides: incompatibility
     ["2026-10-16", "2026-10-23", "2026-10-29"],
     "Override shifts 2026-10-30 to 2026-10-29 in compatible weekly schedule",
   );
+});
+
+test("Test 3B.1 — Full payment: settles occurrence in full and releases reservation", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+  state.opening = 100000; // $1,000.00
+
+  const internetBill: Bill = {
+    id: "b-internet",
+    name: "Internet Fiber",
+    amount: 8000, // $80.00
+    day: 15,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(internetBill);
+
+  // Before payment: unpaid, $80 reserved
+  const beforeStatus = getBillOccurrenceStatus(state, internetBill, "2026-10-15");
+  assert.equal(beforeStatus.expectedAmount, 8000);
+  assert.equal(beforeStatus.paidAmount, 0);
+  assert.equal(beforeStatus.remainingAmount, 8000);
+  assert.equal(beforeStatus.overpaidAmount, 0);
+  assert.equal(beforeStatus.status, "unpaid");
+  assert.equal(isBillPaid(state, internetBill, "2026-10-15"), false);
+  assert.equal(reserveBillsBreakdown(state, simulatedToday).currentCycleBills, 8000);
+
+  // Record full payment of $80.00
+  const tx = recordBillPayment(state, internetBill.id, {
+    dueDate: "2026-10-15",
+    amount: 8000,
+    date: simulatedToday,
+  });
+  assert.ok(tx);
+  assert.equal(tx.amount, -8000);
+  assert.equal(tx.billDueDate, "2026-10-15");
+
+  // After payment: paid in full, $0 remaining, $0 reserved
+  const afterStatus = getBillOccurrenceStatus(state, internetBill, "2026-10-15");
+  assert.equal(afterStatus.expectedAmount, 8000);
+  assert.equal(afterStatus.paidAmount, 8000);
+  assert.equal(afterStatus.remainingAmount, 0);
+  assert.equal(afterStatus.overpaidAmount, 0);
+  assert.equal(afterStatus.status, "paid");
+  assert.equal(isBillPaid(state, internetBill, "2026-10-15"), true);
+  assert.equal(reserveBillsBreakdown(state, simulatedToday).currentCycleBills, 0);
+  assert.equal(nextUnpaidDueDate(state, internetBill, simulatedToday), "2026-11-15");
+});
+
+test("Test 3B.2 — Single partial payment: leaves remaining balance and retains obligation", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+  state.opening = 100000;
+
+  const electricBill: Bill = {
+    id: "b-electric",
+    name: "Electric Utility",
+    amount: 20000, // $200.00
+    day: 15,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(electricBill);
+
+  // Pay $75.00 toward $200.00 bill
+  const tx = recordBillPayment(state, electricBill.id, {
+    dueDate: "2026-10-15",
+    amount: 7500,
+    date: simulatedToday,
+  });
+  assert.ok(tx);
+  assert.equal(tx.amount, -7500);
+
+  const status = getBillOccurrenceStatus(state, electricBill, "2026-10-15");
+  assert.equal(status.expectedAmount, 20000);
+  assert.equal(status.paidAmount, 7500);
+  assert.equal(status.remainingAmount, 12500);
+  assert.equal(status.overpaidAmount, 0);
+  assert.equal(status.status, "partially_paid");
+
+  // Crucial check: must NOT be considered fully paid
+  assert.equal(isBillPaid(state, electricBill, "2026-10-15"), false);
+
+  // Bill reservation must reserve the remaining $125.00
+  const breakdown = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(breakdown.currentCycleBills, 12500);
+  assert.equal(breakdown.details[0]?.amount, 12500);
+
+  // nextUnpaidDueDate must remain on 2026-10-15 until the remaining $125 is paid
+  assert.equal(nextUnpaidDueDate(state, electricBill, simulatedToday), "2026-10-15");
+});
+
+test("Test 3B.3 — Multiple partial payments accumulate toward same occurrence", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+  state.opening = 100000;
+
+  const rentBill: Bill = {
+    id: "b-rent",
+    name: "Apartment Rent",
+    amount: 150000, // $1,500.00
+    day: 15,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(rentBill);
+
+  // Installment 1: $600.00
+  recordBillPayment(state, rentBill.id, {
+    dueDate: "2026-10-15",
+    amount: 60000,
+    date: "2026-10-05",
+  });
+  const s1 = getBillOccurrenceStatus(state, rentBill, "2026-10-15");
+  assert.equal(s1.paidAmount, 60000);
+  assert.equal(s1.remainingAmount, 90000);
+  assert.equal(s1.status, "partially_paid");
+  assert.equal(isBillPaid(state, rentBill, "2026-10-15"), false);
+  assert.equal(reserveBillsBreakdown(state, simulatedToday).currentCycleBills, 90000);
+
+  // Installment 2: $400.00
+  recordBillPayment(state, rentBill.id, {
+    dueDate: "2026-10-15",
+    amount: 40000,
+    date: "2026-10-10",
+  });
+  const s2 = getBillOccurrenceStatus(state, rentBill, "2026-10-15");
+  assert.equal(s2.paidAmount, 100000);
+  assert.equal(s2.remainingAmount, 50000);
+  assert.equal(s2.status, "partially_paid");
+  assert.equal(reserveBillsBreakdown(state, simulatedToday).currentCycleBills, 50000);
+
+  // Installment 3: Final $500.00 completes the bill
+  recordBillPayment(state, rentBill.id, {
+    dueDate: "2026-10-15",
+    amount: 50000,
+    date: "2026-10-15",
+  });
+  const s3 = getBillOccurrenceStatus(state, rentBill, "2026-10-15");
+  assert.equal(s3.paidAmount, 150000);
+  assert.equal(s3.remainingAmount, 0);
+  assert.equal(s3.overpaidAmount, 0);
+  assert.equal(s3.status, "paid");
+  assert.equal(isBillPaid(state, rentBill, "2026-10-15"), true);
+  assert.equal(reserveBillsBreakdown(state, simulatedToday).currentCycleBills, 0);
+  assert.equal(nextUnpaidDueDate(state, rentBill, simulatedToday), "2026-11-15");
+});
+
+test("Test 3B.4 — Overpayment stays attached to occurrence and does not silently credit future months", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+
+  const waterBill: Bill = {
+    id: "b-water",
+    name: "City Water",
+    amount: 6000, // $60.00
+    day: 15,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(waterBill);
+
+  // Pay $90.00 on a $60.00 bill ($30 overpayment)
+  recordBillPayment(state, waterBill.id, {
+    dueDate: "2026-10-15",
+    amount: 9000,
+    date: simulatedToday,
+  });
+
+  const octStatus = getBillOccurrenceStatus(state, waterBill, "2026-10-15");
+  assert.equal(octStatus.expectedAmount, 6000);
+  assert.equal(octStatus.paidAmount, 9000);
+  assert.equal(octStatus.remainingAmount, 0);
+  assert.equal(octStatus.overpaidAmount, 3000);
+  assert.equal(octStatus.status, "overpaid");
+  assert.equal(isBillPaid(state, waterBill, "2026-10-15"), true);
+
+  // Crucial invariant: The $30 overpayment stays attached to October.
+  // It is NOT silently credited toward November. November must still expect $60.00!
+  const novStatus = getBillOccurrenceStatus(state, waterBill, "2026-11-15");
+  assert.equal(novStatus.expectedAmount, 6000);
+  assert.equal(novStatus.paidAmount, 0);
+  assert.equal(novStatus.remainingAmount, 6000);
+  assert.equal(novStatus.overpaidAmount, 0);
+  assert.equal(novStatus.status, "unpaid");
+  assert.equal(isBillPaid(state, waterBill, "2026-11-15"), false);
+});
+
+test("Test 3B.5 — Early and late payments preserve intended occurrence association", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+
+  const storageBill: Bill = {
+    id: "b-storage",
+    name: "Storage Locker",
+    amount: 10000, // $100.00
+    day: 1,
+    protected: false,
+    trackingStartDate: "2026-09-01",
+  };
+  state.bills.push(storageBill);
+
+  // Late payment: On October 15, paying the overdue September 1 bill
+  const lateTx = recordBillPayment(state, storageBill.id, {
+    dueDate: "2026-09-01",
+    amount: 10000,
+    date: "2026-10-15",
+  });
+  assert.equal(lateTx?.billDueDate, "2026-09-01");
+  assert.equal(isBillPaid(state, storageBill, "2026-09-01"), true);
+  // October 1 bill is still unpaid!
+  assert.equal(isBillPaid(state, storageBill, "2026-10-01"), false);
+  assert.equal(getBillOccurrenceStatus(state, storageBill, "2026-10-01").remainingAmount, 10000);
+
+  // Early payment: On October 15, paying November 1 bill early
+  const earlyTx = recordBillPayment(state, storageBill.id, {
+    dueDate: "2026-11-01",
+    amount: 10000,
+    date: "2026-10-15",
+  });
+  assert.equal(earlyTx?.billDueDate, "2026-11-01");
+  assert.equal(isBillPaid(state, storageBill, "2026-11-01"), true);
+  // October 1 bill is STILL unpaid!
+  assert.equal(isBillPaid(state, storageBill, "2026-10-01"), false);
+  assert.equal(nextUnpaidDueDate(state, storageBill, simulatedToday), "2026-10-01");
+});
+
+test("Test 3B.6 — Scheduled versus posted transactions: scheduled transactions do not count as completed payments", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+  state.opening = 100000;
+
+  const phoneBill: Bill = {
+    id: "b-phone",
+    name: "Mobile Phone",
+    amount: 7000, // $70.00
+    day: 20,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(phoneBill);
+
+  // Schedule payment for October 20
+  const scheduledTx = recordBillPayment(state, phoneBill.id, {
+    dueDate: "2026-10-20",
+    amount: 7000,
+    date: "2026-10-20",
+    status: "scheduled",
+  });
+  assert.ok(scheduledTx);
+  assert.equal(scheduledTx.status, "scheduled");
+
+  // Occurrence status: Scheduled transaction must NOT be counted in paidAmount!
+  const occStatus = getBillOccurrenceStatus(state, phoneBill, "2026-10-20");
+  assert.equal(occStatus.paidAmount, 0, "Scheduled transactions must not count toward paidAmount");
+  assert.equal(occStatus.remainingAmount, 7000, "Remaining balance remains $70.00");
+  assert.equal(occStatus.status, "unpaid");
+  assert.equal(isBillPaid(state, phoneBill, "2026-10-20"), false);
+
+  // Financial totals:
+  const tBefore = totals(state, simulatedToday);
+  assert.equal(tBefore.balance, 100000, "Checking balance untouched by scheduled payment");
+  assert.equal(tBefore.bills, 7000, "Bill reservation holds $70.00");
+  assert.equal(tBefore.uncoveredScheduledExpenses, 0, "Linked scheduled transaction not double-counted in uncoveredScheduledExpenses");
+  assert.equal(tBefore.safe, 93000, "Safe to spend = $1000 - $70 = $930");
+
+  // Post transaction on October 20
+  scheduledTx.status = "posted";
+  scheduledTx.postedDate = "2026-10-20";
+
+  const occPosted = getBillOccurrenceStatus(state, phoneBill, "2026-10-20");
+  assert.equal(occPosted.paidAmount, 7000);
+  assert.equal(occPosted.remainingAmount, 0);
+  assert.equal(occPosted.status, "paid");
+  assert.equal(isBillPaid(state, phoneBill, "2026-10-20"), true);
+
+  const tAfter = totals(state, "2026-10-20");
+  assert.equal(tAfter.balance, 93000, "Balance reduced by $70 posted payment");
+  assert.equal(tAfter.bills, 0, "Bill reservation released");
+  assert.equal(tAfter.safe, 93000, "Safe to spend remains $930.00 (invariant preserved)");
+});
+
+test("Test 3B.7 — Editing and deleting linked payments dynamically recalculates outstanding amounts", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+
+  const carInsurance: Bill = {
+    id: "b-car",
+    name: "Car Insurance",
+    amount: 12000, // $120.00
+    day: 15,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(carInsurance);
+
+  const tx = recordBillPayment(state, carInsurance.id, {
+    dueDate: "2026-10-15",
+    amount: 5000, // $50.00
+    date: simulatedToday,
+  })!;
+
+  assert.equal(getBillOccurrenceStatus(state, carInsurance, "2026-10-15").remainingAmount, 7000);
+
+  // 1. Edit payment amount: change from $50.00 to $100.00
+  tx.amount = -10000;
+  assert.equal(getBillOccurrenceStatus(state, carInsurance, "2026-10-15").paidAmount, 10000);
+  assert.equal(getBillOccurrenceStatus(state, carInsurance, "2026-10-15").remainingAmount, 2000);
+  assert.equal(getBillOccurrenceStatus(state, carInsurance, "2026-10-15").status, "partially_paid");
+
+  // 2. Edit unrelated properties: name and date
+  tx.name = "Auto Insurance Inc";
+  tx.date = "2026-10-14";
+  assert.equal(tx.billDueDate, "2026-10-15", "Occurrence link preserved");
+  assert.equal(getBillOccurrenceStatus(state, carInsurance, "2026-10-15").remainingAmount, 2000);
+
+  // 3. Delete payment transaction
+  state.transactions = state.transactions.filter((t) => t.id !== tx.id);
+  const sDeleted = getBillOccurrenceStatus(state, carInsurance, "2026-10-15");
+  assert.equal(sDeleted.paidAmount, 0);
+  assert.equal(sDeleted.remainingAmount, 12000);
+  assert.equal(sDeleted.status, "unpaid");
+  assert.equal(reserveBillsBreakdown(state, simulatedToday).currentCycleBills, 12000);
+});
+
+test("Test 3B.8 — Historical settlement without cash deduction and partial settlement", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+  state.opening = 500000; // $5,000.00
+
+  const hoaBill: Bill = {
+    id: "b-hoa",
+    name: "HOA Dues",
+    amount: 30000, // $300.00
+    day: 1,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(hoaBill);
+
+  // Scenario A: Mark settled without payment
+  const settledOk = settleBillOccurrence(state, hoaBill.id, "2026-10-01");
+  assert.equal(settledOk, true);
+  const hoaStatus = getBillOccurrenceStatus(state, hoaBill, "2026-10-01");
+  assert.equal(hoaStatus.isSettled, true);
+  assert.equal(hoaStatus.paidAmount, 0);
+  assert.equal(hoaStatus.remainingAmount, 0);
+  assert.equal(hoaStatus.status, "paid");
+  assert.equal(isBillPaid(state, hoaBill, "2026-10-01"), true);
+  // Cash balance is completely untouched
+  assert.equal(totals(state, simulatedToday).balance, 500000);
+
+  // Scenario B: Settle an occurrence that had a partial payment
+  const trashBill: Bill = {
+    id: "b-trash",
+    name: "Trash Service",
+    amount: 9000, // $90.00
+    day: 10,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(trashBill);
+  recordBillPayment(state, trashBill.id, {
+    dueDate: "2026-10-10",
+    amount: 3000, // $30.00 partial payment
+    date: "2026-10-10",
+  });
+  assert.equal(getBillOccurrenceStatus(state, trashBill, "2026-10-10").remainingAmount, 6000);
+  settleBillOccurrence(state, trashBill.id, "2026-10-10");
+  const trashStatus = getBillOccurrenceStatus(state, trashBill, "2026-10-10");
+  assert.equal(trashStatus.isSettled, true);
+  assert.equal(trashStatus.paidAmount, 3000);
+  assert.equal(trashStatus.remainingAmount, 0);
+  assert.equal(trashStatus.status, "paid");
+  assert.equal(isBillPaid(state, trashBill, "2026-10-10"), true);
+});
+
+test("Test 3B.9 — Ambiguous legacy transactions handled conservatively", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+
+  const netflixBill: Bill = {
+    id: "b-netflix",
+    name: "Netflix",
+    amount: 2000, // $20.00
+    day: 15,
+    protected: false,
+    trackingStartDate: "2026-09-01",
+  };
+  state.bills.push(netflixBill);
+
+  // September is unpaid. Unlinked transaction in October cannot be assumed for October.
+  state.transactions.push({
+    id: "tx-unlinked-oct",
+    name: "Netflix Sub",
+    amount: -2000,
+    category: "Bills",
+    date: "2026-10-15",
+    status: "posted",
+    billId: netflixBill.id,
+    // billDueDate undefined!
+  });
+
+  // Because September is unpaid, October occurrence must retain obligation!
+  const octStatus = getBillOccurrenceStatus(state, netflixBill, "2026-10-15");
+  assert.equal(octStatus.paidAmount, 0, "Cannot guess unlinked transaction when prior occurrence unpaid");
+  assert.equal(octStatus.remainingAmount, 2000);
+  assert.equal(isBillPaid(state, netflixBill, "2026-10-15"), false);
+
+  // Settle September so September is no longer unpaid
+  settleBillOccurrence(state, netflixBill.id, "2026-09-15");
+  assert.equal(isBillPaid(state, netflixBill, "2026-09-15"), true);
+
+  // Now the single unlinked transaction in October unambiguously matches October!
+  const octResolved = getBillOccurrenceStatus(state, netflixBill, "2026-10-15");
+  assert.equal(octResolved.paidAmount, 2000);
+  assert.equal(octResolved.remainingAmount, 0);
+  assert.equal(octResolved.status, "paid");
+  assert.equal(isBillPaid(state, netflixBill, "2026-10-15"), true);
+});
+
+test("Test 3B.10 — Overdue and protected reservations reserve outstanding remaining amounts", () => {
+  const simulatedToday = "2026-10-16";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+
+  // Bill 1: Overdue from October 5 ($300) with $100 paid -> $200 remaining
+  const overdueBill: Bill = {
+    id: "b-overdue",
+    name: "Overdue Medical",
+    amount: 30000,
+    day: 5,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  // Bill 2: Current cycle due October 20 ($200) with $75 paid -> $125 remaining
+  const currentBill: Bill = {
+    id: "b-current",
+    name: "Power Bill",
+    amount: 20000,
+    day: 20,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  // Bill 3: Protected following-cycle due November 1 ($150) with $50 paid -> $100 remaining
+  const protectedBill: Bill = {
+    id: "b-protected",
+    name: "Student Loan",
+    amount: 15000,
+    day: 1,
+    protected: true,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(overdueBill, currentBill, protectedBill);
+  settleBillOccurrence(state, protectedBill.id, "2026-10-01");
+
+  // Record partial payments
+  recordBillPayment(state, overdueBill.id, {
+    dueDate: "2026-10-05",
+    amount: 10000,
+    date: "2026-10-05",
+  });
+  recordBillPayment(state, currentBill.id, {
+    dueDate: "2026-10-20",
+    amount: 7500,
+    date: "2026-10-10",
+  });
+  recordBillPayment(state, protectedBill.id, {
+    dueDate: "2026-11-01",
+    amount: 5000,
+    date: "2026-10-12",
+  });
+
+  const breakdown = reserveBillsBreakdown(state, simulatedToday);
+  // Current cycle: $200 (overdue) + $125 (current) = $325 (32500 cents)
+  assert.equal(breakdown.currentCycleBills, 32500);
+  // Protected following cycle: $100 (10000 cents)
+  assert.equal(breakdown.protectedCycleBills, 10000);
+  // Total: $325 + $100 = $425 (42500 cents)
+  assert.equal(breakdown.total, 42500);
+});
+
+test("Test 3B.11 — Safe to Spend and shortfall invariant preservation under partial payments", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+  state.opening = 100000; // $1,000.00 cash
+
+  const bill: Bill = {
+    id: "b-tax",
+    name: "Property Tax",
+    amount: 40000, // $400.00
+    day: 18,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(bill);
+
+  // Initially: balance = $1,000, bills reserved = $400, safe = $600
+  const t0 = totals(state, simulatedToday);
+  assert.equal(t0.balance, 100000);
+  assert.equal(t0.bills, 40000);
+  assert.equal(t0.safe, 60000);
+  assert.equal(t0.shortfall, 0);
+
+  // Pay $150.00 partial payment from checking
+  recordBillPayment(state, bill.id, {
+    dueDate: "2026-10-18",
+    amount: 15000,
+    date: simulatedToday,
+  });
+
+  // After payment:
+  // Cash balance drops to $850 ($1,000 - $150).
+  // Bill reservation drops to $250 ($400 - $150).
+  // Safe to Spend = $850 - $250 = $600!
+  // Invariant: Cash dropped and reservation dropped by exact same $150; Safe to Spend is preserved!
+  const t1 = totals(state, simulatedToday);
+  assert.equal(t1.balance, 85000);
+  assert.equal(t1.bills, 25000);
+  assert.equal(t1.safe, 60000, "Safe to spend must not change when bill paid from cash");
+  assert.equal(t1.shortfall, 0);
+
+  // Shortfall preservation: If total obligations exceed cash
+  const shortState: State = blank();
+  shortState.payday = "2026-10-23";
+  shortState.followingPayday = "2026-11-06";
+  shortState.opening = 15000; // $150.00 cash
+  shortState.bills.push({
+    id: "b-big",
+    name: "Big Bill",
+    amount: 50000, // $500.00
+    day: 18,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  });
+  const tShort0 = totals(shortState, simulatedToday);
+  // balance = 15000, bills = 50000 -> rawSafe = 15000 - 50000 = -35000 -> safe = 0, shortfall = 35000
+  assert.equal(tShort0.safe, 0);
+  assert.equal(tShort0.shortfall, 35000);
+
+  // Pay $50.00: cash becomes $100.00, bill remaining becomes $450.00
+  recordBillPayment(shortState, "b-big", {
+    dueDate: "2026-10-18",
+    amount: 5000,
+    date: simulatedToday,
+  });
+  const tShort1 = totals(shortState, simulatedToday);
+  assert.equal(tShort1.balance, 10000);
+  assert.equal(tShort1.bills, 45000);
+  assert.equal(tShort1.safe, 0);
+  assert.equal(tShort1.shortfall, 35000, "Shortfall magnitude remains exactly $350.00");
+});
+
+test("Test 3B.12 — Credit card bill payment behavior & Covered Credit integration", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+  state.opening = 100000; // $1,000 checking
+
+  const ccAccount: Account = {
+    id: "acc-cc-1",
+    name: "Visa Card",
+    type: "credit",
+    balance: 0,
+    opening: 0,
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+  };
+  state.accounts = [
+    {
+      id: "acc-default-checking",
+      name: "Checking",
+      type: "checking",
+      balance: 100000,
+      opening: 100000,
+      includeInSafeToSpend: true,
+    },
+    ccAccount,
+  ];
+
+  const streamingBill: Bill = {
+    id: "b-stream",
+    name: "Streaming Subscription",
+    amount: 1500, // $15.00
+    day: 15,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(streamingBill);
+
+  // Pay bill using credit card
+  const tx = recordBillPayment(state, streamingBill.id, {
+    dueDate: "2026-10-15",
+    amount: 1500,
+    accountId: ccAccount.id,
+    date: simulatedToday,
+  });
+  assert.ok(tx);
+  assert.equal(tx.accountId, ccAccount.id);
+
+  // Occurrence is paid
+  const occ = getBillOccurrenceStatus(state, streamingBill, "2026-10-15");
+  assert.equal(occ.paidAmount, 1500);
+  assert.equal(occ.remainingAmount, 0);
+  assert.equal(occ.status, "paid");
+
+  // Checking cash balance is NOT reduced by card charge (card liability increased)
+  const ccCoverage = getCreditCardCoverage(ccAccount, state, simulatedToday);
+  assert.equal(ccCoverage.totalOwed, 1500, "Credit card balance owed increased by $15.00");
+  const t = totals(state, simulatedToday);
+  assert.equal(t.balance, 100000, "Checking balance untouched by credit card charge");
+  assert.equal(t.bills, 0, "Bill reservation released");
+});
+
+test("Test 3B.13 — Composable and Modal workflow integration", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+  state.opening = 200000;
+
+  const phoneBill: Bill = {
+    id: "b-phone-test",
+    name: "Family Phone Plan",
+    amount: 16000, // $160.00
+    day: 15,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(phoneBill);
+
+  // Setup budget composable context
+  const budget = useBudget();
+  budget.state.value = state;
+
+  // 1. payBill with custom amount
+  const p1 = budget.payBill(phoneBill.id, {
+    amount: 6000,
+    dueDate: "2026-10-15",
+  });
+  assert.ok(p1);
+  const occ1 = budget.getBillOccurrenceStatus(phoneBill, "2026-10-15");
+  assert.equal(occ1.paidAmount, 6000);
+  assert.equal(occ1.remainingAmount, 10000);
+  assert.equal(occ1.status, "partially_paid");
+
+  // 2. useModal open("Pay bill") pre-fills remaining balance of $100.00
+  const modal = useModal();
+  modal.open("Pay bill", phoneBill.id);
+  assert.equal(modal.form.value.name, "Family Phone Plan");
+  assert.equal(modal.form.value.amount, "100"); // $100.00 remaining
+  assert.equal(modal.form.value.billDueDate, "2026-10-15");
+
+  // 3. Modal validation checks
+  // A. Invalid payment amount <= 0
+  modal.form.value.amount = "0";
+  modal.submit();
+  assert.equal(modal.error.value, "Enter a valid payment amount greater than zero.");
+
+  // B. Invalid date
+  modal.form.value.amount = "50";
+  modal.form.value.date = "invalid-date";
+  modal.submit();
+  assert.equal(modal.error.value, "Enter a valid payment date (YYYY-MM-DD).");
+
+  // C. Cleared status with future date rejected
+  modal.form.value.date = "2026-12-25";
+  modal.form.value.status = "cleared";
+  modal.submit();
+  assert.equal(modal.error.value, "A transaction cannot be marked cleared with a future date.");
+
+  // D. Valid payment of remaining $100
+  modal.form.value.date = simulatedToday;
+  modal.form.value.status = "posted";
+  modal.form.value.amount = "100";
+  modal.submit();
+  assert.equal(modal.error.value, "");
+
+  const occFinal = budget.getBillOccurrenceStatus(phoneBill, "2026-10-15");
+  assert.equal(occFinal.paidAmount, 16000);
+  assert.equal(occFinal.remainingAmount, 0);
+  assert.equal(occFinal.status, "paid");
+  assert.equal(isBillPaid(budget.state.value, phoneBill, "2026-10-15"), true);
 });
 
 

@@ -11,6 +11,18 @@
   background: #e6f3ef;
 }
 
+.badge.partially-paid {
+  background: #fff4e5;
+  color: #b25e00;
+  border: 1px solid #ffd8a8;
+}
+
+.badge.overpaid {
+  background: #e7f5ff;
+  color: #1971c2;
+  border: 1px solid #a5d8ff;
+}
+
 .badge.overdue,
 .badge.due-today {
   background: #fff0e9;

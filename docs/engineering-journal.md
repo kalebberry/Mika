@@ -629,6 +629,134 @@ Phase 3A.3 connects the Phase 3A.1 scheduling engine and Phase 3A.2 financial in
 3. **Why should incompatible overrides be rejected by validation and presented via an explicit confirmation flow rather than automatically cleared on frequency switch?**
    - *Answer*: Silently deleting user data breaks user trust and violates ADHD-friendly predictability. An override often represents a carefully noted real-world exception (e.g. an early holiday direct deposit). If a user temporarily toggles the frequency dropdown to inspect another schedule option, silently destroying their overrides would cause irrecoverable data loss if they cancel or change back. Requiring validation and offering an explicit "Remove incompatible overrides" action ensures intentionality while keeping financial invariants airtight.
 
+---
+
+## Phase 3B: Bill-to-Transaction Linking & Flexible Payments
+
+### 1. Architecture and Decisions
+
+Phase 3B extends Mika's bill-occurrence accounting system to support flexible, real-world payment workflows—including partial payments, multiple installments, overpayments, early payments, late payments, and exact outstanding balance tracking.
+
+Key architectural decisions:
+1. **Deterministic Pure Function (`getBillOccurrenceStatus`)**:
+   - Rather than mutating side-tables or maintaining cached balance fields that can drift out of sync, occurrence status is computed purely on demand from immutable ledger transactions and bill definition.
+   - Computes:
+     - `expectedAmount`: The nominal recurring bill amount (integer cents).
+     - `paidAmount`: Total integer cents of qualifying ledger payments applied to this occurrence.
+     - `remainingAmount`: `Math.max(0, expectedAmount - paidAmount)` (or `0` if explicitly settled before setup).
+     - `overpaidAmount`: `Math.max(0, paidAmount - expectedAmount)`.
+     - `status`: `"unpaid" | "partially_paid" | "paid" | "overpaid"`.
+     - `isSettled`: Whether marked settled before setup without deducting cash.
+     - `transactions`: Qualifying transactions applied to this occurrence.
+2. **Deterministic Linking Rules**:
+   - **Explicit Linkage Priority**: A transaction with `t.billId === bill.id` and explicit `t.billDueDate === occurrenceDate` belongs uniquely to that occurrence.
+   - **Non-Guessing Conservative Legacy Fallback**: Preserves the approved Phase 3A.2 non-ambiguity policy: unlinked legacy transactions without `billDueDate` qualify only if there is exactly 1 unlinked candidate in the occurrence calendar month and no earlier unpaid occurrences since tracking started. Ambiguous transactions retain the obligation rather than guessing.
+   - **One Transaction, One Occurrence**: Each transaction belongs to exactly one bill occurrence. Editing unrelated details (description, date, amount, account) strictly preserves `billDueDate`.
+3. **Integer Cents Representation**:
+   - All calculations use integer cents, avoiding IEEE 754 floating-point inaccuracies.
+4. **Scheduled Transactions Exclusion**:
+   - Transactions with `status: "scheduled"` do not deduct cash from account balances and are strictly excluded from `paidAmount` until posted or cleared.
+   - Linked scheduled transactions are excluded from `getUncoveredScheduledExpenses` to prevent double-deduction against the bill reservation.
+5. **Overpayment Containment**:
+   - Excess money (`overpaidAmount`) stays attached to the specific occurrence where it was paid.
+   - It is never silently rolled forward or applied to another month. Future months evaluate independently against their full expected bill amount.
+6. **Outstanding Reservation Accounting**:
+   - `reserveBillsBreakdown` evaluates all qualifying occurrences in the planning window (overdue, current payday cycle, or protected following cycle).
+   - For each occurrence, it reserves `occStatus.remainingAmount` rather than the flat `bill.amount`. Fully paid or overpaid occurrences reserve $0.00.
+
+---
+
+### 2. Payment Allocation Rules
+
+1. **Qualifying Payment Criteria**:
+   A transaction counts toward an occurrence if and only if:
+   - `t.billId === bill.id`
+   - `isLedgerStatus(t.status)` (`"posted"` or `"cleared"`; scheduled transactions do not qualify)
+   - `t.amount < 0` (expense payments; positive refunds or credits do not settle bills)
+   - Either:
+     - `t.billDueDate === occurrenceDate` (explicit association), OR
+     - Unlinked candidate (`!t.billDueDate`) meeting conservative non-ambiguity requirements (single unlinked transaction in occurrence month, no earlier unpaid occurrence).
+2. **Multiple Payments Accumulation**:
+   - All qualifying payments applied to an occurrence sum additively:
+     $$\text{paidAmount} = \sum_{t \in \text{qualifying}} |\text{t.amount}|$$
+3. **Status Determination**:
+   - If `isSettled` or `remainingAmount === 0`:
+     - If `paidAmount > expectedAmount`: `"overpaid"`
+     - Else: `"paid"`
+   - If `remainingAmount > 0`:
+     - If `paidAmount > 0`: `"partially_paid"`
+     - Else: `"unpaid"`
+4. **Default Payment Prefill**:
+   - When paying a bill (`recordBillPayment` or modal open), the default payment amount is `occStatus.remainingAmount > 0 ? occStatus.remainingAmount : bill.amount`. If a bill is partially paid, Mika defaults to the remaining balance so the user can complete the bill without typing or recalculating.
+
+---
+
+### 3. Financial Invariants
+
+1. **Conservation of Safe to Spend across Partial Payments**:
+   - When a payment of $\$X$ is recorded from a cash checking account:
+     - Cash balance drops by $\$X$.
+     - Bill reservation drops by $\$X$ (from remaining balance).
+     - Net Safe to Spend ($\text{balance} - \text{pots} - \text{budgets} - \text{bills} - \text{creditReserves}$) remains invariant:
+       $$\Delta \text{Safe to Spend} = (-\$X) - (-\$X) = \$0$$
+   - Zero double-deduction.
+2. **Partial Payments Do Not Silently Release Reservations**:
+   - A bill of $\$200$ with $\$75$ paid retains $\$125$ in `reserveBillsBreakdown`.
+   - `isBillPaid` returns `false` until `remainingAmount === 0`.
+   - `nextUnpaidDueDate` remains on the earliest occurrence with `remainingAmount > 0`.
+3. **Covered Credit Parity**:
+   - Paying a bill via credit card records a negative charge on the credit card account.
+   - Checking cash balance is untouched. Card balance owed increases by the payment amount.
+   - If "Bills" has budget, the charge is automatically reserved in Ready to Pay; if unbudgeted, it is tracked as uncovered debt.
+4. **Historical Settlement Parity**:
+   - Marking an occurrence settled before setup zeroes its remaining balance without creating a cash transaction or altering account balances.
+
+---
+
+### 4. Edge Cases Handled
+
+1. **Split Payments**: Multiple payments toward the same occurrence (e.g. paying $\$600$, then $\$400$, then $\$500$ on a $\$1,500$ rent bill) accumulate progressively from `"partially_paid"` to `"paid"`.
+2. **Overpayments**: Paying $\$250$ on a $\$200$ utility bill produces status `"overpaid"` with $\$50$ overpaid. The next month's bill still expects its full $\$200$ and is not silently credited forward.
+3. **Early and Late Payments**: A late payment on October 15 linked to September 1 settles September 1 without touching October 1. An early payment on October 15 linked to November 1 settles November 1 without touching October 1.
+4. **Scheduled Payment Deduplication**: Scheduled bill payments do not count toward `paidAmount` (bill remains reserved), and are omitted from `getUncoveredScheduledExpenses` so they are not double-reserved.
+5. **Editing and Deleting Payments**: Editing transaction amounts, dates, or accounts immediately recalculates outstanding balances without stale cached state. Deleting a transaction immediately restores the outstanding reservation.
+6. **Ambiguous Legacy Transactions**: Multiple unlinked transactions in the same month or unlinked transactions with prior unpaid occurrences are rejected from automatic assignment to prevent financial guessing.
+
+---
+
+### 5. Verification & Regression Tests
+
+Automated test suite (`npm test`): **121 passing tests (0 failures, 0 skipped)**:
+- **Test 3B.1**: Full payment: settles occurrence in full, releases reservation, advances `nextUnpaidDueDate`.
+- **Test 3B.2**: Single partial payment: $75 on $200 bill leaves $125 remaining, `isBillPaid` returns `false`, reserves $125, retains due date.
+- **Test 3B.3**: Multiple partial payments accumulate: $600 + $400 + $500 progressively settles $1,500 rent bill.
+- **Test 3B.4**: Overpayment: $250 on $200 bill stays attached to occurrence (overpaid by $50); November occurrence remains unpaid and expects full $200.
+- **Test 3B.5**: Early and late payments preserve intended occurrence association: late payment settles September without touching October; early payment settles November without touching October.
+- **Test 3B.6**: Scheduled vs posted transactions: scheduled transactions do not count toward `paidAmount`, do not change balance, and do not double-count in uncovered scheduled expenses; posting cleanly transitions to paid status.
+- **Test 3B.7**: Editing and deleting linked payments dynamically recalculates outstanding amounts without stale state.
+- **Test 3B.8**: Historical settlement without cash deduction and settling partially paid bills.
+- **Test 3B.9**: Ambiguous legacy transactions handled conservatively: unlinked candidates with prior unpaid occurrences retain obligations; single unlinked candidate after settling prior occurrence matches cleanly.
+- **Test 3B.10**: Overdue and protected reservations reserve outstanding remaining amounts: overdue ($200 remaining) + current ($125 remaining) + protected following ($100 remaining) = $425 total.
+- **Test 3B.11**: Safe to Spend and shortfall invariant preservation under partial payments: paying $150 from cash preserves Safe to Spend exactly; shortfall magnitude remains stable.
+- **Test 3B.12**: Credit card bill payment behavior & Covered Credit integration: paying bill from credit card increases card balance owed without altering checking cash; releases bill reservation.
+- **Test 3B.13**: Composable and Modal workflow integration (`useBudget`, `useModal`): pre-filling remaining balance, validating amounts, rejecting invalid dates and premature cleared statuses, and submitting payment.
+
+Production build check (`npm run build`):
+- `vue-tsc -b && vite build` succeeded with 0 errors.
+
+---
+
+### 6. Engineering Learning Questions
+
+1. **Why must bill reservations reserve `remainingAmount` rather than either full `b.amount` or $0?**
+   - *Answer*: If the system reserved the full amount until 100% paid, making a partial payment would double-count the obligation: the paid portion would be subtracted from cash while still being reserved in bills, causing Safe to Spend to drop artificially. Conversely, if making any payment released the full reservation to $0, the unpaid balance would become spendable cash, causing users to accidentally spend money needed to complete the bill. Reserving `remainingAmount` maintains exact conservation of cash: cash and reservation decrease in exact tandem.
+
+2. **Why must overpayments stay attached to their specific occurrence rather than being credited forward to the next month?**
+   - *Answer*: Silently rolling over excess money introduces hidden state that violates banking reality and user intuition. When a user overpays an electric bill, the next month's bill from the provider may still be issued for a variable or estimated amount, or the provider may issue a credit on their utility account statement. Silently diminishing next month's reservation in Mika would lead the user to believe next month's obligation is lower than it actually is, potentially causing a cash shortfall when the next bill arrives. Keeping overpayments attached to the occurrence ensures explicit transparency and ADHD-friendly clarity.
+
+3. **Why are scheduled transactions excluded from completed payments in `getBillOccurrenceStatus`?**
+   - *Answer*: Scheduled transactions represent future intended intent, not confirmed cash movements. They do not alter current bank ledger balances. If a scheduled transaction were counted as a completed payment, the bill reservation would be released immediately, inflating current Safe to Spend before the cash has actually left the account. Keeping scheduled transactions separate ensures that the bill reservation remains in place until the money is confirmed posted or cleared.
+
 
 
 

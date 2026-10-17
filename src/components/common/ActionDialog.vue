@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { colors, themeColors, today, cents } from "../../model";
+import {
+  colors,
+  themeColors,
+  today,
+  cents,
+  getBillOccurrenceStatus,
+  nextUnpaidDueDate,
+} from "../../model";
 import { money } from "../../utils/format";
 import { useBudget } from "../../composables/useBudget";
 import { useModal } from "../../composables/useModal";
@@ -34,6 +41,28 @@ const {
 const currentAccount = computed(() =>
   (state.value.accounts || []).find((a) => a.id === selected.value),
 );
+
+const currentBill = computed(() => {
+  if (mode.value !== "Pay bill" && mode.value !== "Settle bill") return null;
+  return state.value.bills.find((b) => b.id === selected.value) || null;
+});
+
+const currentBillTargetDueDate = computed(() => {
+  if (!currentBill.value) return "";
+  return (
+    form.value.billDueDate ||
+    nextUnpaidDueDate(state.value, currentBill.value, today())
+  );
+});
+
+const currentBillOccurrenceStatus = computed(() => {
+  if (!currentBill.value || !currentBillTargetDueDate.value) return null;
+  return getBillOccurrenceStatus(
+    state.value,
+    currentBill.value,
+    currentBillTargetDueDate.value,
+  );
+});
 
 const currentAccountBalance = computed(() => {
   if (!currentAccount.value) return 0;
@@ -400,26 +429,67 @@ function onDateInput() {
       </p>
 
       <template v-if="mode === 'Pay bill'">
+        <!-- Occurrence Details Display -->
+        <div v-if="currentBill && currentBillOccurrenceStatus" class="bill-payment-card">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem;">
+            <div>
+              <strong style="font-size: 1.05rem; display: block;">{{ currentBill.name }}</strong>
+              <span class="muted small">Target Occurrence: {{ currentBillTargetDueDate }}</span>
+            </div>
+            <span
+              class="badge"
+              :class="currentBillOccurrenceStatus.status.replace('_', '-')"
+            >
+              {{
+                currentBillOccurrenceStatus.status === 'partially_paid'
+                  ? 'Partially paid'
+                  : currentBillOccurrenceStatus.status === 'overpaid'
+                    ? 'Overpaid'
+                    : currentBillOccurrenceStatus.status === 'paid'
+                      ? 'Paid'
+                      : 'Unpaid'
+              }}
+            </span>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; background: var(--color-surface, #fff); padding: 0.75rem; border-radius: 6px; border: 1px solid var(--color-border, #ededf2); text-align: center;">
+            <div>
+              <span class="muted small" style="display: block; font-size: 0.75rem;">Expected</span>
+              <strong>{{ money(currentBillOccurrenceStatus.expectedAmount) }}</strong>
+            </div>
+            <div>
+              <span class="muted small" style="display: block; font-size: 0.75rem;">Paid so far</span>
+              <strong style="color: var(--color-teal, #277c78);">{{ money(currentBillOccurrenceStatus.paidAmount) }}</strong>
+            </div>
+            <div>
+              <span class="muted small" style="display: block; font-size: 0.75rem;">Remaining</span>
+              <strong :style="{ color: currentBillOccurrenceStatus.remainingAmount > 0 ? '#b25e00' : 'inherit' }">
+                {{ money(currentBillOccurrenceStatus.remainingAmount) }}
+              </strong>
+            </div>
+          </div>
+        </div>
+
         <p class="muted">
-          Choose how you want to record this recurring bill payment:
+          Choose payment method:
         </p>
         <fieldset class="reset-options" style="margin: 0.75rem 0;">
           <legend class="sr-only">Payment method</legend>
-          <label class="reset-option">
+          <label class="reset-option" :class="{ 'is-selected': payMethod === 'transaction' }">
             <input type="radio" v-model="payMethod" value="transaction" />
             <span>
-              <strong>Record expense payment today</strong>
+              <strong>Record expense payment</strong>
               <small>
-                Deducts the bill amount from your cash balance and adds an expense transaction.
+                Deducts payment from your account ledger and credits this bill occurrence.
               </small>
             </span>
           </label>
-          <label class="reset-option">
+          <label class="reset-option" :class="{ 'is-selected': payMethod === 'settled' }">
             <input type="radio" v-model="payMethod" value="settled" />
             <span>
               <strong>Already paid before setup</strong>
               <small>
-                Advances this bill to the next cycle without deducting money or creating an expense transaction.
+                Advances this bill to the next cycle without deducting money or creating a ledger transaction.
               </small>
             </span>
           </label>
@@ -853,8 +923,14 @@ function onDateInput() {
         </div>
       </template>
 
-      <!-- Standard Expense or Income Account Selector -->
-      <template v-if="(mode === 'Add transaction' || mode === 'Edit transaction') && (form.type === 'Expense' || form.type === 'Income')">
+      <!-- Standard Expense or Income or Bill Payment Account Selector -->
+      <template
+        v-if="
+          ((mode === 'Add transaction' || mode === 'Edit transaction') &&
+            (form.type === 'Expense' || form.type === 'Income')) ||
+          (mode === 'Pay bill' && payMethod === 'transaction')
+        "
+      >
         <label>
           Account
           <select v-model="form.accountId" required>
@@ -869,7 +945,10 @@ function onDateInput() {
               </option>
             </optgroup>
           </select>
-          <small v-if="isCreditCardSelected && form.type === 'Expense'" style="color: #a63223; font-weight: 500; display: block;">
+          <small v-if="mode === 'Pay bill'">
+            Select the source checking, savings, or credit card account paying this bill.
+          </small>
+          <small v-else-if="isCreditCardSelected && form.type === 'Expense'" style="color: #a63223; font-weight: 500; display: block;">
             💳 Charges on this credit card increase the balance owed and reduce available credit. They do NOT decrease your cash balance.
           </small>
           <small v-else-if="isCreditCardSelected && form.type === 'Income'" style="color: #1b5e4f; font-weight: 500; display: block;">
@@ -890,19 +969,30 @@ function onDateInput() {
             'Edit bill',
             'Add money',
             'Withdraw',
-          ].includes(mode)
+          ].includes(mode) || (mode === 'Pay bill' && payMethod === 'transaction')
         "
       >
         Amount ($)
-        <input
-          v-model="form.amount"
-          type="number"
-          min="0.01"
-          step="0.01"
-          required
-          inputmode="decimal"
-          placeholder="0.00"
-        />
+        <div :class="{ 'amount-quick-row': mode === 'Pay bill' }">
+          <input
+            v-model="form.amount"
+            type="number"
+            min="0.01"
+            step="0.01"
+            required
+            inputmode="decimal"
+            placeholder="0.00"
+          />
+          <button
+            v-if="mode === 'Pay bill' && currentBillOccurrenceStatus && currentBillOccurrenceStatus.remainingAmount > 0"
+            type="button"
+            class="secondary small quick-btn"
+            @click="form.amount = String(currentBillOccurrenceStatus.remainingAmount / 100)"
+            title="Fill remaining balance"
+          >
+            Fill Remaining ({{ money(currentBillOccurrenceStatus.remainingAmount) }})
+          </button>
+        </div>
         <small
           v-if="form.type === 'Credit Card Payment' && targetPaymentCoverage && targetPaymentCoverage.totalOwed > 0"
           class="muted"
@@ -910,11 +1000,21 @@ function onDateInput() {
         >
           Maximum payable: {{ money(targetPaymentCoverage.totalOwed) }} outstanding debt.
         </small>
+        <small v-else-if="mode === 'Pay bill'" class="muted" style="display: block; margin-top: 0.25rem;">
+          Enter payment amount. Supports partial payments, full payments, or overpayments.
+        </small>
+      </label>
+
+      <!-- Target Bill Occurrence Due Date (Pay bill only) -->
+      <label v-if="mode === 'Pay bill' && payMethod === 'transaction'">
+        Target Bill Due Date
+        <input type="date" v-model="form.billDueDate" required />
+        <small>The specific recurring bill occurrence this payment applies to.</small>
       </label>
 
       <!-- Date -->
-      <label v-if="mode === 'Add transaction' || mode === 'Edit transaction'">
-        Date
+      <label v-if="mode === 'Add transaction' || mode === 'Edit transaction' || (mode === 'Pay bill' && payMethod === 'transaction')">
+        {{ mode === 'Pay bill' ? 'Payment Date' : 'Date' }}
         <input type="date" v-model="form.date" @input="onDateInput" required />
         <small v-if="form.date > today()">
           Transactions dated in the future should be scheduled until they occur.
@@ -1012,21 +1112,21 @@ function onDateInput() {
         <small>Use specific names like Electricity or Utilities for variable bills.</small>
       </label>
 
-      <!-- Status (Add / Edit transaction) -->
-      <label v-if="mode === 'Add transaction' || mode === 'Edit transaction'">
+      <!-- Status (Add / Edit transaction or Pay bill) -->
+      <label v-if="mode === 'Add transaction' || mode === 'Edit transaction' || (mode === 'Pay bill' && payMethod === 'transaction')">
         Status
         <select v-model="form.status">
+          <option value="posted">Posted — Submitted / authorized in ledger</option>
           <option value="scheduled">Scheduled — Planned, not in cash balance</option>
-          <option value="pending">Pending — Submitted / authorized in ledger</option>
           <option value="cleared" :disabled="form.date > today()">
             Cleared — Confirmed against bank statement {{ form.date > today() ? "(Cannot clear future date)" : "" }}
           </option>
         </select>
         <small v-if="form.status === 'scheduled'">
-          Scheduled transactions do not affect your current account balance.
+          Scheduled transactions do not affect your current account balance until posted.
         </small>
-        <small v-else-if="form.status === 'pending'">
-          Pending transactions immediately update your current ledger balance.
+        <small v-else-if="form.status === 'pending' || form.status === 'posted'">
+          Immediately updates your current ledger balance.
         </small>
         <small v-else-if="form.status === 'cleared'">
           Cleared transactions are confirmed against your statement.
@@ -1382,5 +1482,13 @@ function onDateInput() {
 
 .uncovered-note {
   color: #b45309;
+}
+
+.bill-payment-card {
+  background: var(--color-surface-subtle, #f8f8fa);
+  border: 1px solid var(--color-border, #ededf2);
+  border-radius: var(--radius-sm, 6px);
+  padding: 0.875rem 1rem;
+  margin-bottom: 0.875rem;
 }
 </style>

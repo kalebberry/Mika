@@ -4,6 +4,7 @@ import {
   type PaydayFrequency,
   isBillPaid,
   nextUnpaidDueDate,
+  getBillOccurrenceStatus,
   getCurrentPayday,
   getFollowingPayday,
   today,
@@ -67,8 +68,15 @@ export const pct = (a: number, b: number) =>
 
 export function billStatus(state: State, b: Bill, now = today()) {
   const next = nextUnpaidDueDate(state, b, now);
-  if (isBillPaid(state, b, next)) {
+  const occ = getBillOccurrenceStatus(state, b, next);
+  if (occ.status === "overpaid") {
+    return "Overpaid";
+  }
+  if (occ.status === "paid") {
     return "Paid";
+  }
+  if (occ.status === "partially_paid") {
+    return "Partially paid";
   }
   if (next < now) {
     return "Overdue";

@@ -1140,19 +1140,20 @@ export function getAccountLedgerDelta(account: Account, s: State): number {
 
 export function getAccountBalance(account: Account, s: State): number {
   const delta = getAccountLedgerDelta(account, s);
+  const opening = account.opening || 0;
   if (account.id === "acc-default-checking") {
-    const opening =
-      account.opening !== 0
-        ? account.opening
+    const checkingOpening =
+      opening !== 0
+        ? opening
         : s && typeof s.opening === "number"
           ? s.opening
-          : account.opening;
-    return opening + delta;
+          : opening;
+    return checkingOpening + delta;
   }
   if (hasAccountLedgerActivity(account, s)) {
-    return account.opening + delta;
+    return opening + delta;
   }
-  return account.balance !== undefined ? account.balance : account.opening;
+  return account.balance !== undefined ? account.balance : opening;
 }
 
 export function getAvailableCredit(account: Account, s?: State): number {
@@ -1840,57 +1841,105 @@ function hasEarlierUnpaidOccurrence(
   return false;
 }
 
-export function isBillPaid(
+export type BillPaymentStatus =
+  | "unpaid"
+  | "partially_paid"
+  | "paid"
+  | "overpaid";
+
+export interface BillOccurrenceStatus {
+  expectedAmount: number;
+  paidAmount: number;
+  remainingAmount: number;
+  overpaidAmount: number;
+  status: BillPaymentStatus;
+  isSettled: boolean;
+  transactions: Transaction[];
+}
+
+export function getBillOccurrenceStatus(
   s: State,
   b: Bill,
   occurrenceDate = nextDueDate(b, today()),
-): boolean {
-  // 1. Settlement priority
-  if (isBillSettled(s, b, occurrenceDate)) {
-    return true;
-  }
+): BillOccurrenceStatus {
+  const expectedAmount = b.amount;
+  const isSettled = isBillSettled(s, b, occurrenceDate);
 
-  // 2. Explicit occurrence linkage has absolute priority (must be an expense payment)
-  const hasExplicitMatch = s.transactions.some(
+  // 1. Explicit occurrence linkage transactions (must be ledger status and expense payments)
+  const explicitMatches = s.transactions.filter(
     (t) =>
       isLedgerStatus(t.status) &&
       t.billId === b.id &&
       t.amount < 0 &&
       t.billDueDate === occurrenceDate,
   );
-  if (hasExplicitMatch) {
-    return true;
+
+  const qualifyingTransactions: Transaction[] = [...explicitMatches];
+
+  // 2. Candidate legacy/unlinked transactions in the occurrence month (must be expense payments)
+  // Only evaluate unlinked candidates if there are no explicit matches for this occurrence
+  if (qualifyingTransactions.length === 0) {
+    const occurrenceMonth = occurrenceDate.slice(0, 7);
+    const unlinkedCandidates = s.transactions.filter(
+      (t) =>
+        isLedgerStatus(t.status) &&
+        t.billId === b.id &&
+        t.amount < 0 &&
+        !t.billDueDate &&
+        t.date.slice(0, 7) === occurrenceMonth,
+    );
+
+    if (unlinkedCandidates.length === 1) {
+      if (!hasEarlierUnpaidOccurrence(s, b, occurrenceDate)) {
+        qualifyingTransactions.push(unlinkedCandidates[0]!);
+      }
+    }
   }
 
-  // 3. Candidate legacy/unlinked transactions in the occurrence month (must be expense payments)
-  const occurrenceMonth = occurrenceDate.slice(0, 7);
-  const unlinkedCandidates = s.transactions.filter(
-    (t) =>
-      isLedgerStatus(t.status) &&
-      t.billId === b.id &&
-      t.amount < 0 &&
-      !t.billDueDate &&
-      t.date.slice(0, 7) === occurrenceMonth,
+  const paidAmount = qualifyingTransactions.reduce(
+    (sum, t) => sum + Math.abs(t.amount),
+    0,
   );
 
-  if (unlinkedCandidates.length === 0) {
-    return false;
+  let remainingAmount = Math.max(0, expectedAmount - paidAmount);
+  const overpaidAmount = Math.max(0, paidAmount - expectedAmount);
+
+  if (isSettled) {
+    remainingAmount = 0;
   }
 
-  // 4. Ambiguity check 1: If there are earlier unpaid occurrences since tracking began,
-  // an unlinked payment cannot be unambiguously assigned to this occurrence without guessing.
-  // We retain the obligation rather than guessing or silently releasing the wrong bill.
-  if (hasEarlierUnpaidOccurrence(s, b, occurrenceDate)) {
-    return false;
+  let status: BillPaymentStatus;
+  if (remainingAmount === 0) {
+    if (paidAmount > expectedAmount) {
+      status = "overpaid";
+    } else {
+      status = "paid";
+    }
+  } else {
+    if (paidAmount > 0) {
+      status = "partially_paid";
+    } else {
+      status = "unpaid";
+    }
   }
 
-  // 5. Ambiguity check 2: If there are multiple unlinked transactions in the same month for this bill,
-  // it is ambiguous which occurrence or portion they represent. Retain obligation for reconciliation.
-  if (unlinkedCandidates.length > 1) {
-    return false;
-  }
+  return {
+    expectedAmount,
+    paidAmount,
+    remainingAmount,
+    overpaidAmount,
+    status,
+    isSettled,
+    transactions: qualifyingTransactions,
+  };
+}
 
-  return true;
+export function isBillPaid(
+  s: State,
+  b: Bill,
+  occurrenceDate = nextDueDate(b, today()),
+): boolean {
+  return getBillOccurrenceStatus(s, b, occurrenceDate).remainingAmount === 0;
 }
 
 export function recordBillPayment(
@@ -1925,11 +1974,19 @@ export function recordBillPayment(
     s.accounts?.find((a) => a.type === "checking" && !a.archived)?.id ||
     "acc-default-checking";
 
+  let paymentAmount: number;
+  if (options?.amount !== undefined) {
+    paymentAmount = Math.abs(options.amount);
+  } else {
+    const occStatus = getBillOccurrenceStatus(s, bill, explicitDueDate);
+    paymentAmount =
+      occStatus.remainingAmount > 0 ? occStatus.remainingAmount : bill.amount;
+  }
+
   const tx: Transaction = {
     id: uid(),
     name: options?.name || bill.name,
-    amount:
-      options?.amount !== undefined ? -Math.abs(options.amount) : -bill.amount,
+    amount: -paymentAmount,
     category: "Bills",
     date: payDate,
     billId: bill.id,
@@ -2163,11 +2220,14 @@ export function reserveBillsBreakdown(
       diagnostics.push(
         `Bill '${b.name}' calculated non-positive totalMonths (${totalMonths}); safely reserving current cycle amount.`,
       );
-      currentCycleBills += b.amount;
+      const occStatus = getBillOccurrenceStatus(s, b, validNow);
+      const reserveAmt =
+        occStatus.remainingAmount > 0 ? occStatus.remainingAmount : b.amount;
+      currentCycleBills += reserveAmt;
       details.push({
         bill: b,
         dueDate: validNow,
-        amount: b.amount,
+        amount: reserveAmt,
         cycle: "current",
       });
       continue;
@@ -2197,21 +2257,22 @@ export function reserveBillsBreakdown(
 
       if (due >= trackingStart && due <= maxEnd) {
         evaluatedCount++;
-        if (!isBillPaid(s, b, due)) {
+        const occStatus = getBillOccurrenceStatus(s, b, due);
+        if (occStatus.remainingAmount > 0) {
           if (due <= currentPaydayEnd) {
-            currentCycleBills += b.amount;
+            currentCycleBills += occStatus.remainingAmount;
             details.push({
               bill: b,
               dueDate: due,
-              amount: b.amount,
+              amount: occStatus.remainingAmount,
               cycle: "current",
             });
           } else if (due <= followingEnd && b.protected) {
-            protectedCycleBills += b.amount;
+            protectedCycleBills += occStatus.remainingAmount;
             details.push({
               bill: b,
               dueDate: due,
-              amount: b.amount,
+              amount: occStatus.remainingAmount,
               cycle: "following_protected",
             });
           }
@@ -2229,11 +2290,14 @@ export function reserveBillsBreakdown(
       diagnostics.push(
         `Bill '${b.name}' yielded 0 evaluated occurrences within window; safely reserving current cycle amount.`,
       );
-      currentCycleBills += b.amount;
+      const occStatus = getBillOccurrenceStatus(s, b, validNow);
+      const reserveAmt =
+        occStatus.remainingAmount > 0 ? occStatus.remainingAmount : b.amount;
+      currentCycleBills += reserveAmt;
       details.push({
         bill: b,
         dueDate: validNow,
-        amount: b.amount,
+        amount: reserveAmt,
         cycle: "current",
       });
     }
