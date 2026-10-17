@@ -2037,9 +2037,9 @@ export function getCreditCardMinimumProtection(
   baseResult.remainingMinimumRequirement = remainingMinRequirement;
 
   // Determine whether this obligation is an explicitly recorded snapshot or an inferred estimate
-  if (isOverdue) {
-    const overdueSnapshot = getCreditCardMinimumObligation(account, targetDueDate);
-    if (overdueSnapshot !== null) {
+  if (targetDueDate) {
+    const targetSnapshot = getCreditCardMinimumObligation(account, targetDueDate);
+    if (targetSnapshot !== null) {
       baseResult.isEstimated = false;
       baseResult.obligationType = "recorded";
     } else {
@@ -2048,7 +2048,7 @@ export function getCreditCardMinimumProtection(
     }
   } else {
     baseResult.isEstimated = false;
-    baseResult.obligationType = "recorded";
+    baseResult.obligationType = "none";
   }
 
   // Window attribution

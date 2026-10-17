@@ -9932,8 +9932,8 @@ test("Test 3C.37 — A new card configured after its previous due date does not 
     "Advances to upcoming November statement rather than fabricating October 15 overdue",
   );
   assert.equal(protOct.isOverdue, false, "Not overdue");
-  assert.equal(protOct.isEstimated, false);
-  assert.equal(protOct.obligationType, "recorded");
+  assert.equal(protOct.isEstimated, true, "Configured minimum without explicit snapshot is estimated");
+  assert.equal(protOct.obligationType, "estimated");
 
   // Evaluated on November 10 (now <= currentMonthDue of Nov 15):
   const protNov = getCreditCardMinimumProtection(newCard, budgetState.value, "2026-11-10");
@@ -9943,7 +9943,36 @@ test("Test 3C.37 — A new card configured after its previous due date does not 
     "Evaluates November 15 statement cleanly",
   );
   assert.equal(protNov.isOverdue, false, "Not overdue");
-  assert.equal(protNov.isEstimated, false);
+  assert.equal(protNov.isEstimated, true, "Upcoming obligation without snapshot is estimated");
+  assert.equal(protNov.obligationType, "estimated");
+
+  // Upcoming obligation WITH explicit snapshot
+  const cardWithSnapshot = setCreditCardMinimumObligation(newCard, "2026-11-15", 5000);
+  const protUpcomingRecorded = getCreditCardMinimumProtection(
+    cardWithSnapshot,
+    budgetState.value,
+    "2026-11-10",
+  );
+  assert.equal(protUpcomingRecorded.dueDate, "2026-11-15");
+  assert.equal(protUpcomingRecorded.isOverdue, false);
+  assert.equal(protUpcomingRecorded.configuredMinimum, 5000);
+  assert.equal(
+    protUpcomingRecorded.isEstimated,
+    false,
+    "Upcoming obligation with explicit snapshot is recorded, not estimated",
+  );
+  assert.equal(protUpcomingRecorded.obligationType, "recorded");
+
+  // No applicable obligation (e.g. zero balance or archived)
+  const zeroBalanceCard: Account = { ...newCard, opening: 0 };
+  const protNone = getCreditCardMinimumProtection(
+    zeroBalanceCard,
+    budgetState.value,
+    "2026-11-10",
+  );
+  assert.equal(protNone.status, "not_applicable");
+  assert.equal(protNone.obligationType, "none");
+  assert.equal(protNone.isEstimated, false);
 });
 
 

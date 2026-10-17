@@ -1023,6 +1023,15 @@ Production build check (`npm run build`):
     - `Test 3C.36`: Unsnapshotted overdue cycles are protected as estimates without creating synthetic snapshots on settings edits.
     - `Test 3C.37`: A new card configured after its previous due date does not acquire a fabricated overdue statement.
 
+#### Correction 8 — Uniform Classification of Recorded vs Estimated Obligations
+- **Finding**: Review of commit `95166a4` noted that the non-overdue branch of `getCreditCardMinimumProtection()` unconditionally marked upcoming obligations as `recorded` (`isEstimated = false`).
+- **Fix**:
+  - **Uniform Classification**: Updated [`getCreditCardMinimumProtection`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts) to consistently determine `obligationType` and `isEstimated` directly from whether `account.minimumObligations[targetDueDate]` exists, applying identical rules to upcoming and overdue obligations:
+    - Explicitly recorded obligation (`targetSnapshot !== null`): `obligationType = "recorded"`, `isEstimated = false`.
+    - Configured minimum without a due-date snapshot (`targetSnapshot === null`): `obligationType = "estimated"`, `isEstimated = true`.
+    - No applicable obligation: `obligationType = "none"`, `isEstimated = false`.
+  - **Regression Coverage**: Updated `Test 3C.37` in [`tests/budget.test.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/tests/budget.test.ts) to verify upcoming obligations without a snapshot (`estimated`), upcoming obligations with an explicit snapshot (`recorded`), and non-applicable accounts (`none`).
+
 ---
 
 ### 2. Following-Cycle Credit Minimum Policy & Parity with Recurring Bills
