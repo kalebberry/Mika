@@ -24,6 +24,7 @@ import {
   getBillOccurrenceStatus,
   getOrganizedBills,
   getBillItemPresentation,
+  getBillTargetOccurrenceDate,
   type BillItemPresentation,
   settleBillOccurrence,
   unsettleBillOccurrence,
@@ -860,6 +861,8 @@ export function useBudget() {
     organizedBills,
     getBillItemPresentation: (bill: Bill, now?: string) =>
       getBillItemPresentation(state.value, bill, now),
+    getBillTargetOccurrenceDate: (bill: Bill, now?: string) =>
+      getBillTargetOccurrenceDate(state.value, bill, now),
     getBillOccurrenceStatus: (bill: Bill, occurrenceDate?: string) =>
       getBillOccurrenceStatus(state.value, bill, occurrenceDate),
     accounts,

@@ -1184,12 +1184,50 @@ Added 17 comprehensive unit and integration tests in [`tests/budget.test.ts`](fi
 
 ---
 
-### 5. Verification Results
+### 5. Verification Results (Initial Implementation)
 
 - **Automated Tests**: 178 passing tests (`node --test tests/budget.test.ts`), 0 failures, 0 skipped.
 - **Production Build**: `npm run build` (`vue-tsc -b && vite build`) passed cleanly in 1.58s.
 
+---
 
+### 6. Phase 3D Independent Review Corrections
 
+Following independent review of commit `23c06d034e0349f0e7836c01febc60a127580ae8`, three findings were addressed:
 
+#### 1. Preserve Earliest Unpaid Occurrence (HIGH)
+- **Problem**: `getBillItemPresentation()` previously evaluated `nextUnpaidDueDate()` but both branches of a subsequent conditional reassigned `targetDue = currentMonthDue`. If a previous month's bill remained unpaid (e.g., September rent) while the current month was paid (October rent), the card would erroneously display October as "Paid", hiding the overdue September obligation.
+- **Solution**:
+  - Implemented `getBillTargetOccurrenceDate(s, b, now)` with clear chronological scanning.
+  - Determines tracking baseline via `getBillTrackingBaseline(s, b, now)` (inspecting `trackingStartDate`, linked transactions, and recorded settlements).
+  - Iterates month-by-month from baseline up through the current month:
+    - If any occurrence has an outstanding balance (`remainingAmount > 0`) and is overdue (`dueDate < now`), it is immediately returned as the actionable target. Overdue obligations take absolute priority and are never masked by later months.
+    - If all tracked occurrences through the current month are satisfied (`remainingAmount === 0`), it returns the current month occurrence as `Paid` (rank 3, visually quiet).
+    - If tracking starts in a future month (`currentMonthDue < baseline`), it targets the first occurrence on or after `trackingStartDate`.
+  - Ensures the displayed due date, status, remaining obligation, and "Pay bill" button preselection refer to the exact same occurrence.
 
+#### 2. Clarify Payday Protection (MEDIUM)
+- **Problem**: Payday protection indicators previously displayed generic text ("Reserved through payday", "Protected next cycle") without indicating the actual reserved dollar amount or distinguishing partial reservations from full reservations.
+- **Solution**:
+  - Tied presentation strictly to `reserveBillsBreakdown(s, now)`.
+  - Added `reservedAmount: number` to `BillItemPresentation`.
+  - If a bill has a matching reservation detail in the current cycle or following cycle:
+    - If `reservedAmount < remainingAmount`: labeled as partial (`Partially reserved through payday ($X.XX of $Y.YY)` or `Partially protected next cycle ($X.XX of $Y.YY)`).
+    - If `reservedAmount >= remainingAmount`: labeled as full (`Reserved through payday ($X.XX)` or `Protected next cycle ($X.XX)`).
+  - Preserves all existing Safe to Spend and bill reservation calculations.
+
+#### 3. Simplify Due-Date Selection
+- Removed redundant conditionals that assigned the same due date in both branches.
+- Documented selection rules in `getBillTargetOccurrenceDate` and `getBillTrackingBaseline` for clear maintainability.
+
+#### 4. Regression Tests Added (Tests 3D.18 – 3D.23)
+- `Test 3D.18`: Previous month unpaid, current month paid (preserves earlier unpaid occurrence).
+- `Test 3D.19`: Previous month partially paid, current month paid (preserves earlier partial occurrence).
+- `Test 3D.20`: Multiple overdue occurrences (targets earliest outstanding occurrence).
+- `Test 3D.21`: All tracked occurrences paid (presents current month occurrence as Paid).
+- `Test 3D.22`: Future tracking start date (targets first occurrence on or after trackingStartDate).
+- `Test 3D.23`: Payday protection displays actual reserved amount and handles partial reservations.
+
+#### 5. Verification Results (Corrections)
+- **Automated Tests**: 184 passing tests (`node --test tests/budget.test.ts`), 0 failures, 0 skipped.
+- **Production Build**: `npm run build` (`vue-tsc -b && vite build`) passed cleanly with 0 errors.

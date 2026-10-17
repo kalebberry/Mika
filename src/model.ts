@@ -3081,6 +3081,7 @@ export interface BillItemPresentation {
   paidAmount: number;
   remainingAmount: number;
   overpaidAmount: number;
+  reservedAmount: number;
   status: BillDisplayStatus;
   statusLabel: string;
   isOverdue: boolean;
@@ -3114,6 +3115,120 @@ export function isBillDueSoon(
 }
 
 /**
+ * Resolves the tracking baseline for a bill:
+ * Uses explicit trackingStartDate if valid.
+ * If not set, checks for any prior linked transactions or settlements;
+ * defaults to the first of the current calendar month.
+ */
+export function getBillTrackingBaseline(
+  s: State,
+  b: Bill,
+  now = today(),
+): string {
+  const validNow = isValidDateString(now) ? now : today();
+  if (isValidDateString(b.trackingStartDate)) {
+    return b.trackingStartDate;
+  }
+  let earliest = `${validNow.slice(0, 7)}-01`;
+  if (Array.isArray(s.transactions)) {
+    for (const t of s.transactions) {
+      if (t.billId === b.id) {
+        if (
+          t.billDueDate &&
+          isValidDateString(t.billDueDate) &&
+          t.billDueDate < earliest
+        ) {
+          earliest = t.billDueDate;
+        } else if (t.date && isValidDateString(t.date) && t.date < earliest) {
+          earliest = `${t.date.slice(0, 7)}-01`;
+        }
+      }
+    }
+  }
+  if (Array.isArray(b.settledDueDates)) {
+    for (const d of b.settledDueDates) {
+      if (isValidDateString(d) && d < earliest) {
+        earliest = d;
+      }
+    }
+  }
+  if (Array.isArray(s.settledBills)) {
+    for (const sb of s.settledBills) {
+      if (
+        sb.billId === b.id &&
+        isValidDateString(sb.dueDate) &&
+        sb.dueDate < earliest
+      ) {
+        earliest = sb.dueDate;
+      }
+    }
+  }
+  return earliest;
+}
+
+/**
+ * Resolves the actionable target occurrence date for a bill:
+ * 1. Checks chronologically from the bill's tracking baseline for the earliest outstanding occurrence
+ *    (remainingAmount > 0). If an overdue occurrence (dueDate < now) is outstanding, it is returned
+ *    immediately so past-due obligations are never hidden.
+ * 2. If all past occurrences are satisfied, evaluates the current calendar month occurrence.
+ *    If the current month is outstanding, returns the current month occurrence.
+ * 3. If all tracked occurrences through the current month are satisfied, returns the current month
+ *    occurrence to represent the completed/paid state sensibly without prematurely jumping to next month.
+ * 4. If the bill's tracking starts in a future month, returns the earliest upcoming occurrence.
+ */
+export function getBillTargetOccurrenceDate(
+  s: State,
+  b: Bill,
+  now = today(),
+): string {
+  const validNow = isValidDateString(now) ? now : today();
+  const baseline = getBillTrackingBaseline(s, b, validNow);
+
+  const [nowY, nowM] = validNow.split("-").map(Number);
+  const currentMonthDue = getBillDueDate(b, nowY!, nowM!);
+
+  // If tracking begins in a future month beyond the current month, target the earliest upcoming occurrence
+  if (currentMonthDue < baseline) {
+    return nextUnpaidDueDate(s, b, validNow);
+  }
+
+  // Iterate month-by-month from baseline up to current month to find the earliest outstanding occurrence
+  let [startY, startM] = baseline.split("-").map(Number);
+  if (!startY || !startM || startY < 1900 || startY > 2200) {
+    startY = nowY || 2026;
+    startM = nowM || 1;
+  }
+
+  let y = startY;
+  let m = startM;
+  const maxSteps = Math.max(1, (nowY! - startY) * 12 + (nowM! - startM) + 1);
+
+  for (let step = 0; step < maxSteps; step++) {
+    const due = getBillDueDate(b, y, m);
+    if (due >= baseline) {
+      const occ = getBillOccurrenceStatus(s, b, due);
+      if (occ.remainingAmount > 0) {
+        // Earliest outstanding occurrence found!
+        return due;
+      }
+    }
+
+    if (y === nowY && m === nowM) {
+      break;
+    }
+    m++;
+    if (m > 12) {
+      m = 1;
+      y++;
+    }
+  }
+
+  // All occurrences from baseline through current month are satisfied; target current month occurrence
+  return currentMonthDue;
+}
+
+/**
  * Derives the active presentation model for a single bill, answering:
  * 1. What do I owe? (expectedAmount)
  * 2. When is it due? (dueDate)
@@ -3128,25 +3243,7 @@ export function getBillItemPresentation(
   precomputedBreakdown?: BillReservationBreakdown,
 ): BillItemPresentation {
   const validNow = isValidDateString(now) ? now : today();
-  const unpaidDue = nextUnpaidDueDate(s, b, validNow);
-
-  let targetDue = unpaidDue;
-
-  if (unpaidDue >= validNow) {
-    const [y, m] = validNow.split("-").map(Number);
-    const currentMonthDue = getBillDueDate(b, y!, m!);
-    const trackingStart = b.trackingStartDate;
-    const hasValidTracking = !trackingStart || currentMonthDue >= trackingStart;
-
-    if (hasValidTracking) {
-      const currentMonthOcc = getBillOccurrenceStatus(s, b, currentMonthDue);
-      if (currentMonthOcc.remainingAmount === 0) {
-        targetDue = currentMonthDue;
-      } else {
-        targetDue = currentMonthDue;
-      }
-    }
-  }
+  const targetDue = getBillTargetOccurrenceDate(s, b, validNow);
 
   const occStatus = getBillOccurrenceStatus(s, b, targetDue);
   const expectedAmount = occStatus.expectedAmount;
@@ -3188,22 +3285,37 @@ export function getBillItemPresentation(
 
   let protectionStatus: BillProtectionStatus = "unprotected";
   let protectionLabel = "Not reserved";
+  let reservedAmount = 0;
 
   if (isPaid) {
     protectionStatus = "unprotected";
     protectionLabel = "Paid";
+    reservedAmount = 0;
   } else {
     const breakdown = precomputedBreakdown || reserveBillsBreakdown(s, validNow);
     const match = breakdown.details.find(
       (d) => d.bill.id === b.id && d.dueDate === targetDue,
     );
     if (match) {
+      reservedAmount = match.amount;
+      const formattedReserved = `$${(reservedAmount / 100).toFixed(2)}`;
+
       if (match.cycle === "current") {
         protectionStatus = "current_cycle";
-        protectionLabel = "Reserved through payday";
+        if (reservedAmount < remainingAmount) {
+          const formattedRemaining = `$${(remainingAmount / 100).toFixed(2)}`;
+          protectionLabel = `Partially reserved through payday (${formattedReserved} of ${formattedRemaining})`;
+        } else {
+          protectionLabel = `Reserved through payday (${formattedReserved})`;
+        }
       } else if (match.cycle === "following_protected") {
         protectionStatus = "following_protected";
-        protectionLabel = "Protected next cycle";
+        if (reservedAmount < remainingAmount) {
+          const formattedRemaining = `$${(remainingAmount / 100).toFixed(2)}`;
+          protectionLabel = `Partially protected next cycle (${formattedReserved} of ${formattedRemaining})`;
+        } else {
+          protectionLabel = `Protected next cycle (${formattedReserved})`;
+        }
       }
     }
   }
@@ -3215,6 +3327,7 @@ export function getBillItemPresentation(
     paidAmount,
     remainingAmount,
     overpaidAmount,
+    reservedAmount,
     status,
     statusLabel,
     isOverdue,

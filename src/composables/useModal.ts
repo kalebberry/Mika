@@ -8,6 +8,7 @@ import {
   resetWorkspace,
   nextUnpaidDueDate,
   getBillOccurrenceStatus,
+  getBillTargetOccurrenceDate,
   isBillPaid,
   settleBillOccurrence,
   recordBillPayment,
@@ -329,7 +330,7 @@ export function useModal() {
         const targetDue =
           isValidDateString(defaultCategory)
             ? defaultCategory
-            : nextUnpaidDueDate(state.value, b, today());
+            : getBillTargetOccurrenceDate(state.value, b, today());
         const occStatus = getBillOccurrenceStatus(state.value, b, targetDue);
         const defaultAmt =
           occStatus.remainingAmount > 0
