@@ -5160,16 +5160,23 @@ test("Test 3A.2.4 — One payment settles only its intended occurrence", () => {
     billId: gymBill.id,
   });
 
-  assert.equal(isBillPaid(state, gymBill, "2026-08-05"), false, "August is STILL unpaid");
-  assert.equal(isBillPaid(state, gymBill, "2026-10-05"), true, "October is paid by October transaction");
+  // Because August is still unpaid, tx-gym-oct without billDueDate cannot be unambiguously
+  // assigned to October without guessing whether it was a late payment for August.
+  // Both August and October remain retained as unpaid obligations!
+  assert.equal(isBillPaid(state, gymBill, "2026-08-05"), false, "August remains unpaid");
+  assert.equal(isBillPaid(state, gymBill, "2026-10-05"), false, "October is not paid due to ambiguous prior unpaid August obligation");
 
   bd = reserveBillsBreakdown(state, simulatedToday);
-  assert.equal(bd.currentCycleBills, 5000, "Only August is reserved");
-  assert.equal(bd.details[0]!.dueDate, "2026-08-05");
+  assert.equal(bd.currentCycleBills, 10000, "Both August and October are reserved");
+  assert.deepEqual(
+    bd.details.map((d) => d.dueDate),
+    ["2026-08-05", "2026-10-05"],
+  );
 
-  // Settlement: Manual settlement for August occurrence
+  // Settlement: Manual settlement for August occurrence disambiguates the state
   settleBillOccurrence(state, gymBill.id, "2026-08-05");
   assert.equal(isBillPaid(state, gymBill, "2026-08-05"), true, "August is now settled");
+  assert.equal(isBillPaid(state, gymBill, "2026-10-05"), true, "With August settled, October transaction unambiguously matches October");
 
   bd = reserveBillsBreakdown(state, simulatedToday);
   assert.equal(bd.currentCycleBills, 0, "All occurrences are now resolved");
@@ -5464,6 +5471,234 @@ test("Test 3A.2.9 — Negative rawSafe, safe = 0, and shortfall contract preserv
   assert.equal(t.safe, 0, "safe remains non-negative 0");
   // shortfall: Math.abs(rawSafe)
   assert.equal(t.shortfall, 15000, "shortfall correctly reports positive deficit of $150");
+});
+
+test("Test 3A.2.10 — September bill paid in October with explicit occurrence linkage", () => {
+  const simulatedToday = "2026-10-16";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+
+  const powerBill: Bill = {
+    id: "b-power",
+    name: "Power Electric",
+    amount: 12000,
+    day: 5,
+    protected: false,
+    trackingStartDate: "2026-08-01",
+  };
+  state.bills.push(powerBill);
+
+  // August was settled
+  settleBillOccurrence(state, powerBill.id, "2026-08-05");
+
+  // September bill paid late on October 2 with explicit occurrence linkage
+  state.transactions.push({
+    id: "tx-power-sep-paid-oct",
+    name: "Electric Payment (Late for Sep)",
+    amount: -12000,
+    category: "Utilities",
+    date: "2026-10-02",
+    status: "posted",
+    billId: powerBill.id,
+    billDueDate: "2026-09-05", // Explicit priority linkage
+  });
+
+  // Explicit linkage ensures September 5 is marked paid
+  assert.equal(isBillPaid(state, powerBill, "2026-09-05"), true, "September 5 must be paid via explicit billDueDate");
+
+  // Does NOT automatically treat the late payment as payment for October
+  assert.equal(isBillPaid(state, powerBill, "2026-10-05"), false, "October 5 must remain unpaid");
+
+  // Breakdown reserves only October 5
+  const bd = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(bd.currentCycleBills, 12000, "Only October 5 is reserved in current cycle");
+  assert.equal(bd.details.length, 1);
+  assert.equal(bd.details[0]!.dueDate, "2026-10-05");
+
+  // Earliest unpaid due date is October 5
+  assert.equal(nextUnpaidDueDate(state, powerBill, simulatedToday), "2026-10-05");
+});
+
+test("Test 3A.2.11 — Legacy payment without occurrence linkage", () => {
+  const simulatedToday = "2026-10-16";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+
+  const cloudBill: Bill = {
+    id: "b-cloud",
+    name: "Cloud Storage",
+    amount: 2500,
+    day: 15,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(cloudBill);
+
+  // Legacy transaction in October without billDueDate, where no prior unpaid occurrences exist
+  state.transactions.push({
+    id: "tx-cloud-legacy",
+    name: "Cloud Storage",
+    amount: -2500,
+    category: "Subscriptions",
+    date: "2026-10-15",
+    status: "posted",
+    billId: cloudBill.id,
+    // billDueDate is absent
+  });
+
+  // Unambiguous legacy record matches October occurrence cleanly
+  assert.equal(isBillPaid(state, cloudBill, "2026-10-15"), true, "Legitimate legacy payment matches without inventing settlement dates");
+
+  const bd = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(bd.currentCycleBills, 0, "Bill reservation is cleanly released");
+});
+
+test("Test 3A.2.12 — Two overdue occurrences and one payment", () => {
+  const simulatedToday = "2026-10-16";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+
+  const subBill: Bill = {
+    id: "b-sub",
+    name: "Software Subscription",
+    amount: 4000,
+    day: 10,
+    protected: false,
+    trackingStartDate: "2026-08-01",
+  };
+  state.bills.push(subBill);
+
+  // Part A: One payment in September without billDueDate
+  const tx = {
+    id: "tx-sub-ambiguous",
+    name: "Software Subscription",
+    amount: -4000,
+    category: "Software",
+    date: "2026-09-15",
+    status: "posted" as const,
+    billId: subBill.id,
+    billDueDate: undefined as string | undefined,
+  };
+  state.transactions.push(tx);
+
+  // August 10 is unpaid. September 10 has unlinked payment, but August 10 is unpaid (ambiguous!).
+  // Policy: Retain obligation and avoid guessing or releasing the wrong reservation.
+  assert.equal(isBillPaid(state, subBill, "2026-08-10"), false, "August remains unpaid");
+  assert.equal(isBillPaid(state, subBill, "2026-09-10"), false, "September is not paid due to ambiguous prior unpaid August occurrence");
+  assert.equal(isBillPaid(state, subBill, "2026-10-10"), false, "October remains unpaid");
+
+  let bd = reserveBillsBreakdown(state, simulatedToday);
+  // All 3 occurrences (Aug, Sep, Oct) remain reserved: 3 * $40 = $120 (12000 cents)
+  assert.equal(bd.currentCycleBills, 12000, "Ambiguous unlinked payment does not silently release reservations");
+
+  // Part B: Disambiguate with explicit linkage for August 10
+  tx.billDueDate = "2026-08-10";
+  assert.equal(isBillPaid(state, subBill, "2026-08-10"), true, "August is paid via explicit linkage");
+  assert.equal(isBillPaid(state, subBill, "2026-09-10"), false, "September remains unpaid");
+  assert.equal(isBillPaid(state, subBill, "2026-10-10"), false, "October remains unpaid");
+
+  bd = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(bd.currentCycleBills, 8000, "Only September and October are reserved (8000 cents)");
+
+  // Part C: Switch explicit linkage to September 10
+  tx.billDueDate = "2026-09-10";
+  assert.equal(isBillPaid(state, subBill, "2026-08-10"), false, "August remains unpaid");
+  assert.equal(isBillPaid(state, subBill, "2026-09-10"), true, "September is paid via explicit linkage");
+  assert.equal(isBillPaid(state, subBill, "2026-10-10"), false, "October remains unpaid");
+
+  bd = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(bd.currentCycleBills, 8000, "Only August and October are reserved (8000 cents)");
+});
+
+test("Test 3A.2.13 — More than 60 months of legitimate unpaid occurrences", () => {
+  const simulatedToday = "2026-10-16";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+
+  // Bill tracking started Jan 1, 2020. Due on the 1st of each month.
+  // Between 2020-01 and 2026-10 there are: (2026 - 2020) * 12 + (10 - 1) + 1 = 82 months!
+  const longBill: Bill = {
+    id: "b-annuity",
+    name: "Monthly Annuity",
+    amount: 1000, // $10/mo
+    day: 1,
+    protected: false,
+    trackingStartDate: "2020-01-01",
+  };
+  state.bills.push(longBill);
+
+  const bd = reserveBillsBreakdown(state, simulatedToday);
+  // Must evaluate all 82 months without silently dropping occurrences past month 60
+  assert.equal(bd.currentCycleBills, 82000, "All 82 overdue months must be reserved ($820.00)");
+  assert.equal(bd.details.length, 82, "Details must contain all 82 occurrences");
+  assert.equal(bd.details[0]!.dueDate, "2020-01-01", "Earliest detail is Jan 1, 2020");
+  assert.equal(bd.details[81]!.dueDate, "2026-10-01", "Latest current detail is Oct 1, 2026");
+
+  // nextUnpaidDueDate returns earliest unpaid occurrence across the entire range
+  assert.equal(nextUnpaidDueDate(state, longBill, simulatedToday), "2020-01-01");
+});
+
+test("Test 3A.2.14 — Safe to Spend and Covered Credit parity under occurrence matching", () => {
+  const simulatedToday = "2026-10-16";
+  const state: State = blank();
+  state.accounts = [
+    {
+      id: "acc-checking",
+      name: "Checking",
+      type: "checking",
+      opening: 300000,
+      includeInSafeToSpend: true,
+      createdAt: "2026-10-01",
+      updatedAt: "2026-10-01",
+    },
+    {
+      id: "acc-credit",
+      name: "Credit Card",
+      type: "credit",
+      opening: 0,
+      includeInSafeToSpend: false,
+      coveredCreditBaselineAt: "2026-10-01",
+      createdAt: "2026-10-01",
+      updatedAt: "2026-10-01",
+    },
+  ];
+  state.budgets = [
+    { id: "bg-util", category: "Utilities", limit: 15000, color: "#277c78" },
+  ];
+  const utilBill: Bill = {
+    id: "b-util",
+    name: "Utilities",
+    amount: 10000,
+    day: 5,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(utilBill);
+
+  // Paid on credit card with explicit occurrence linkage
+  state.transactions.push({
+    id: "tx-util-card",
+    name: "Utilities Card Payment",
+    amount: -10000,
+    category: "Utilities",
+    date: "2026-10-05",
+    status: "posted",
+    accountId: "acc-credit",
+    kind: "standard",
+    billId: utilBill.id,
+    billDueDate: "2026-10-05",
+  });
+
+  const t = totals(state, simulatedToday);
+  assert.equal(t.bills, 0, "Bill reservation released");
+  assert.equal(t.totalCreditOwed, 10000, "Credit card owes $100");
+  assert.equal(t.totalReadyToPay, 10000, "Ready to pay backed by Utilities budget ($100)");
+  assert.equal(t.budgets, 5000, "Remaining budget is $50");
+  assert.equal(t.safe, 285000, "Safe to spend preserves exact Covered Credit parity ($2,850)");
 });
 
 

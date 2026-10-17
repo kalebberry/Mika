@@ -301,5 +301,61 @@ Phase 3A.2 bridges the Smart Payday Planning engine into recurring bill reservat
 3. **Why does charging a recurring bill to a credit card require budget coverage to fund Ready to Pay, and how does this prevent double-deducting cash from checking?**
    - *Answer*: When a bill is paid on credit, the cash in checking has not yet left the account. The bill reservation is released because the vendor is paid. If the purchase is covered by a budget category, that budgeted amount moves into `Ready to Pay`, reserving checking cash to pay off the credit card later. If the purchase is unbudgeted, checking cash must not be locked into `Ready to Pay`, because the user has not allocated funds for it; doing so would falsely reduce Safe to Spend as if cash were reserved. In both cases, cash is deducted at most once.
 
+---
 
+## Phase 3A.2 — Independent Review Corrections
+
+### 1. Review Findings & Corrections Applied
+
+Two critical issues identified during independent review of Phase 3A.2 have been addressed:
+
+1. **Deterministic Bill Payment Occurrence Matching Policy (`isBillPaid`)**:
+   - **Problem**: When `billDueDate` was absent, `isBillPaid()` fell back to calendar month matching `(!t.billDueDate && t.date.startsWith(occurrenceDate.slice(0, 7)))`. If a user made a late payment in month $M$ for an overdue occurrence from month $M-1$ without an explicit `billDueDate`, the fallback erroneously treated the transaction as payment for month $M$, silently releasing month $M$'s reservation while leaving month $M-1$ unpaid.
+   - **Solution & Policy**:
+     1. **Settlement Priority**: Explicit manual settlements (`s.billSettlements`) are checked first.
+     2. **Explicit Linkage Priority**: Explicit `t.billDueDate === occurrenceDate` takes absolute precedence over all date heuristics. A late payment in October with `billDueDate: "2026-09-05"` settles September 5 and leaves October 5 unpaid.
+     3. **Unambiguous Legacy Preservation**: If `t.billDueDate` is absent, transactions in the occurrence month are evaluated, but only when no earlier unpaid occurrences exist since `trackingStartDate` (`hasEarlierUnpaidOccurrence(s, b, occurrenceDate) === false`). Legitimate, on-time historical payments are preserved without inventing settlement dates.
+     4. **Ambiguity Retention**: If earlier unpaid occurrences exist since `trackingStartDate`, an unlinked transaction cannot be unambiguously assigned to the current month without guessing whether it is a late payment for an earlier occurrence. The system retains the obligation for both occurrences and protects the funds until the user provides explicit linkage or records a settlement.
+     5. **One-to-One Accounting**: One payment cannot settle multiple occurrences.
+
+2. **Removal of Fixed 60-Month Reservation Cap (`reserveBillsBreakdown` & `nextUnpaidDueDate`)**:
+   - **Problem**: A fixed `step < 60` iteration limit prematurely halted evaluation after 5 years, silently dropping legitimate overdue occurrences for long-tracked obligations (e.g., annual or monthly multi-year annuities, subscriptions, or disputes).
+   - **Solution**:
+     - Dynamic month range calculation: `totalMonths = (endYear - startYear) * 12 + (endMonth - startMonth) + 1`.
+     - Validated date ranges guarding against pathological input: checks `1900 <= startYear && endYear <= 2200`, `totalMonths > 0`, and caps execution at `Math.min(totalMonths, 1200)` (100 years).
+     - Applied matching dynamic range calculation to `nextUnpaidDueDate` to guarantee the earliest unpaid due date is discovered across arbitrary multi-year spans.
+
+---
+
+### 2. Files Changed
+- [`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts):
+  - Added helper `hasEarlierUnpaidOccurrence(s, b, occurrenceDate)` to inspect tracking history for preceding unpaid cycles.
+  - Refactored `isBillPaid()` to enforce explicit linkage priority, unambiguous legacy matching, and ambiguity obligation retention.
+  - Replaced fixed loop bounds in `reserveBillsBreakdown()` and `nextUnpaidDueDate()` with dynamic calendar month spans bounded up to 100 years (`1200` months).
+- [`tests/budget.test.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/tests/budget.test.ts):
+  - Updated `Test 3A.2.4` to reflect ambiguity retention when prior unpaid occurrences exist without explicit linkage.
+  - Added `Test 3A.2.10`: September bill paid in October with explicit occurrence linkage.
+  - Added `Test 3A.2.11`: Legacy payment without occurrence linkage (unambiguous on-time match).
+  - Added `Test 3A.2.12`: Two overdue occurrences and one payment (ambiguous payment retains both; explicit linkage isolates each).
+  - Added `Test 3A.2.13`: More than 60 months of legitimate unpaid occurrences (82 consecutive months evaluated and reserved).
+  - Added `Test 3A.2.14`: Safe to Spend and Covered Credit parity under occurrence matching.
+
+---
+
+### 3. Verification & Test Metrics
+- **Automated Tests**: 91 passing tests (`npm test` / `node --test tests/budget.test.ts`), 0 failures, 0 skipped.
+- **Production Build**: `npm run build` (`vue-tsc -b && vite build`) completed successfully with 0 type errors and zero bundling issues.
+
+---
+
+### 4. Learning Questions
+
+1. **Why is retaining an obligation preferable to guessing when an unlinked legacy payment coincides with an overdue bill?**
+   - *Answer*: In personal financial budgeting, under-reserving cash causes unexpected overdrafts and false spending confidence. If a user missed their August bill and then paid in September without linking the payment, guessing that September is "paid" would release September's cash reservation while August's debt remains unaddressed. By retaining the obligation until explicit linkage or settlement is specified, the system guarantees that money remains reserved and alerts the user to reconcile rather than silently dropping a financial obligation.
+
+2. **Why does calculating the exact month range between `trackingStartDate` and the planning horizon protect performance while eliminating arbitrary caps?**
+   - *Answer*: A fixed iteration cap like 60 months was an arbitrary workaround to prevent infinite loops. By computing `(endYear - startYear) * 12 + (endMonth - startMonth) + 1` directly from validated ISO dates (`1900 <= year <= 2200`), the engine loops exactly the necessary number of times (e.g. 82 iterations for a 7-year history takes $< 0.3\text{ms}$). Capping pathological input at 1,200 months (100 years) guarantees worst-case $O(N)$ execution that never blocks the event loop, while supporting any legitimate real-world financial history.
+
+3. **How does explicit `billDueDate` linkage maintain full parity with Phase 2B Covered Credit accounting?**
+   - *Answer*: Covered Credit tracks debt and Ready to Pay reservations per account and transaction. When a bill payment is recorded on a credit card, the explicit `billDueDate` guarantees that the exact bill occurrence is marked paid, releasing the cash reservation from `currentCycleBills` and directing the budget coverage to `Ready to Pay`. Because occurrence matching is deterministic and one-to-one, credit card purchases cannot accidentally extinguish reservations for multiple months or misattribute cash backing across billing cycles.
 

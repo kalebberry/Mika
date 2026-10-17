@@ -1487,21 +1487,89 @@ export function isBillSettled(
   return false;
 }
 
+function hasEarlierUnpaidOccurrence(
+  s: State,
+  b: Bill,
+  occurrenceDate: string,
+): boolean {
+  let trackingStart = b.trackingStartDate;
+  if (!isValidDateString(trackingStart)) {
+    trackingStart = `${occurrenceDate.slice(0, 7)}-01`;
+  }
+  if (occurrenceDate <= trackingStart) {
+    return false;
+  }
+
+  const [startYear, startMonth] = trackingStart.split("-").map(Number);
+  const [occYear, occMonth] = occurrenceDate.split("-").map(Number);
+
+  if (!startYear || !startMonth || !occYear || !occMonth) {
+    return false;
+  }
+
+  let y = startYear;
+  let m = startMonth;
+
+  while (y < occYear || (y === occYear && m < occMonth)) {
+    const due = getBillDueDate(b, y, m);
+    if (due >= trackingStart && due < occurrenceDate) {
+      if (!isBillPaid(s, b, due)) {
+        return true;
+      }
+    }
+    m++;
+    if (m > 12) {
+      m = 1;
+      y++;
+    }
+  }
+
+  return false;
+}
+
 export function isBillPaid(
   s: State,
   b: Bill,
   occurrenceDate = nextDueDate(b, today()),
 ): boolean {
+  // 1. Settlement priority
   if (isBillSettled(s, b, occurrenceDate)) {
     return true;
   }
-  return s.transactions.some(
+
+  // 2. Explicit occurrence linkage has absolute priority
+  const hasExplicitMatch = s.transactions.some(
     (t) =>
       isLedgerStatus(t.status) &&
       t.billId === b.id &&
-      (t.billDueDate === occurrenceDate ||
-        (!t.billDueDate && t.date.startsWith(occurrenceDate.slice(0, 7)))),
+      t.billDueDate === occurrenceDate,
   );
+  if (hasExplicitMatch) {
+    return true;
+  }
+
+  // 3. Candidate legacy/unlinked transactions in the occurrence month
+  const occurrenceMonth = occurrenceDate.slice(0, 7);
+  const hasUnlinkedCandidate = s.transactions.some(
+    (t) =>
+      isLedgerStatus(t.status) &&
+      t.billId === b.id &&
+      !t.billDueDate &&
+      t.date.slice(0, 7) === occurrenceMonth,
+  );
+
+  if (!hasUnlinkedCandidate) {
+    return false;
+  }
+
+  // 4. Ambiguity check: If there are earlier unpaid occurrences since tracking began,
+  // an unlinked payment cannot be unambiguously assigned to this occurrence without guessing.
+  // We retain the obligation rather than guessing or silently releasing the wrong bill.
+  if (hasEarlierUnpaidOccurrence(s, b, occurrenceDate)) {
+    return false;
+  }
+
+  return true;
 }
 
 export function settleBillOccurrence(
@@ -1556,13 +1624,27 @@ export function nextUnpaidDueDate(
   b: Bill,
   fromDate = today(),
 ): string {
-  const trackingStart = b.trackingStartDate || `${fromDate.slice(0, 7)}-01`;
+  let trackingStart = b.trackingStartDate;
+  if (!isValidDateString(trackingStart)) {
+    trackingStart = `${fromDate.slice(0, 7)}-01`;
+  }
   const evalStart = trackingStart < fromDate ? trackingStart : fromDate;
   const [startY, startM] = evalStart.split("-").map(Number);
-  let y = startY!;
-  let m = startM!;
+  const [fromY, fromM] = fromDate.split("-").map(Number);
 
-  for (let i = 0; i < 36; i++) {
+  if (!startY || !startM || startY < 1900 || (fromY && fromY > 2200)) {
+    return getBillDueDate(b, startY || 2026, startM || 1);
+  }
+
+  // Look from evalStart up to 3 years past fromDate
+  const futureHorizonYear = (fromY || startY) + 3;
+  const totalMonths = (futureHorizonYear - startY) * 12 + ((fromM || startM) - startM) + 1;
+  const maxSteps = Math.min(Math.max(totalMonths, 36), 1200);
+
+  let y = startY;
+  let m = startM;
+
+  for (let i = 0; i < maxSteps; i++) {
     const due = getBillDueDate(b, y, m);
     if (due >= trackingStart) {
       if (!isBillPaid(s, b, due)) {
@@ -1631,17 +1713,40 @@ export function reserveBillsBreakdown(
   const details: BillReservationDetail[] = [];
 
   for (const b of s.bills) {
-    const trackingStart = b.trackingStartDate || `${now.slice(0, 7)}-01`;
+    let trackingStart = b.trackingStartDate;
+    if (!isValidDateString(trackingStart)) {
+      trackingStart = `${now.slice(0, 7)}-01`;
+    }
+
+    if (!isValidDateString(maxEnd)) {
+      continue;
+    }
+
     const [startYear, startMonth] = trackingStart.split("-").map(Number);
     const [endYear, endMonth] = maxEnd.split("-").map(Number);
 
-    let y = startYear!;
-    let m = startMonth!;
+    if (
+      !startYear ||
+      !startMonth ||
+      !endYear ||
+      !endMonth ||
+      startYear < 1900 ||
+      endYear > 2200 ||
+      endYear < startYear ||
+      (endYear === startYear && endMonth < startMonth)
+    ) {
+      continue;
+    }
 
-    for (let step = 0; step < 60; step++) {
-      if (y > endYear! || (y === endYear! && m > endMonth!)) {
-        break;
-      }
+    const totalMonths = (endYear - startYear) * 12 + (endMonth - startMonth) + 1;
+    // Calculation based on actual month range between trackingStartDate and planning horizon,
+    // with a defensive guard against pathological input (up to 100 years = 1200 months).
+    const maxSteps = Math.min(totalMonths, 1200);
+
+    let y = startYear;
+    let m = startMonth;
+
+    for (let step = 0; step < maxSteps; step++) {
       const due = getBillDueDate(b, y, m);
 
       if (due >= trackingStart && due <= maxEnd) {
