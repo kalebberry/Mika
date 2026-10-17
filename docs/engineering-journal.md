@@ -356,6 +356,73 @@ Two critical issues identified during independent review of Phase 3A.2 have been
 2. **Why does calculating the exact month range between `trackingStartDate` and the planning horizon protect performance while eliminating arbitrary caps?**
    - *Answer*: A fixed iteration cap like 60 months was an arbitrary workaround to prevent infinite loops. By computing `(endYear - startYear) * 12 + (endMonth - startMonth) + 1` directly from validated ISO dates (`1900 <= year <= 2200`), the engine loops exactly the necessary number of times (e.g. 82 iterations for a 7-year history takes $< 0.3\text{ms}$). Capping pathological input at 1,200 months (100 years) guarantees worst-case $O(N)$ execution that never blocks the event loop, while supporting any legitimate real-world financial history.
 
-3. **How does explicit `billDueDate` linkage maintain full parity with Phase 2B Covered Credit accounting?**
-   - *Answer*: Covered Credit tracks debt and Ready to Pay reservations per account and transaction. When a bill payment is recorded on a credit card, the explicit `billDueDate` guarantees that the exact bill occurrence is marked paid, releasing the cash reservation from `currentCycleBills` and directing the budget coverage to `Ready to Pay`. Because occurrence matching is deterministic and one-to-one, credit card purchases cannot accidentally extinguish reservations for multiple months or misattribute cash backing across billing cycles.
+
+
+---
+
+## Phase 3A.2 — Final Accounting Hardening
+
+### 1. Hardening Decisions & Architecture
+
+Following independent review confirmation of the initial corrections, a final targeted accounting hardening pass was implemented to ensure complete financial safety across bill payments, legacy data, and edge-case date inputs:
+
+1. **Explicit `billDueDate` on All Newly Recorded Bill Payments**:
+   - Implemented `recordBillPayment(s, billId, options)` in [`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts) and integrated it into [`src/composables/useBudget.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/composables/useBudget.ts) and [`src/composables/useModal.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/composables/useModal.ts).
+   - Any newly recorded bill payment automatically binds to the earliest unpaid occurrence (`nextUnpaidDueDate`) or explicit caller-supplied `dueDate`.
+   - In "Add transaction" and "Edit transaction" modal workflows, specifying a `billId` automatically resolves and sets the explicit `billDueDate` to the intended occurrence if not manually specified.
+
+2. **Strict Unambiguous Legacy Matching Policy**:
+   - Both explicit and legacy candidate transactions are strictly required to be expense payments (`t.amount < 0`). Positive credits, refunds, or reversals associated with a bill cannot settle an occurrence.
+   - Transactions without `billId` are never matched, regardless of month or category.
+   - If multiple unlinked expense transactions exist in the same month for a bill (`unlinkedCandidates.length > 1`), the occurrence is treated as ambiguous and retained as an unpaid obligation until the user explicitly links or settles the intended transactions.
+   - If earlier unpaid occurrences exist since `trackingStartDate`, unlinked transactions in subsequent months remain ambiguous and retain obligations for all occurrences.
+
+3. **Non-Omission Safe Failure Policy & Diagnostics for Date Ranges**:
+   - Replaced silent `continue` omission with active clamping, diagnostic logging, and fallback reservation:
+     - Supported calendar domain is formally established as `[1900, 2200]`.
+     - Malformed or invalid `trackingStartDate` values fall back to the valid current month baseline (`YYYY-MM-01`) and emit a diagnostic.
+     - Out-of-bounds start or end dates are clamped into `[1900, 2200]` and emit diagnostics.
+     - If an unexpected date error or non-positive month calculation occurs, the engine safely reserves `b.amount` in `currentCycleBills` with an explicit diagnostic rather than silently dropping the obligation.
+     - Safety cap (3,600 months, covering 300 years) shifts evaluation to the most recent 3,600 months up to `maxEnd`, guaranteeing the current cycle and recent overdue occurrences are never dropped.
+     - Both `reserveBillsBreakdown` and `totals` now expose `diagnostics: string[]` to give consumers full visibility into date anomalies.
+
+4. **Covered Credit & Safe to Spend Parity**:
+   - Paying a bill via credit card using `recordBillPayment` cleanly releases the bill reservation, records credit debt, reserves funds in `Ready to Pay` (when budgeted), and maintains signed `rawSafe`, `safe`, and `shortfall` invariants without double-deducting checking cash.
+
+---
+
+### 2. Files Changed
+- [`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts):
+  - Added `recordBillPayment(s, billId, options)`.
+  - Hardened `isBillPaid` with `t.amount < 0` expense guards and `unlinkedCandidates.length > 1` ambiguity check.
+  - Hardened `nextUnpaidDueDate` with clamped date parsing and fallback defaults.
+  - Hardened `reserveBillsBreakdown` with non-omission safe failure policy, clamped date handling, and `diagnostics: string[]`.
+  - Added `diagnostics` to `totals()` return contract.
+- [`src/composables/useBudget.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/composables/useBudget.ts):
+  - Added `payBill` composable helper and exported it.
+- [`src/composables/useModal.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/composables/useModal.ts):
+  - Updated "Pay bill" mode to record transactions via `recordBillPayment`.
+  - Added `billId` and `billDueDate` to `ModalFormState` and resolved explicit linkage on Add/Edit transaction.
+- [`tests/budget.test.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/tests/budget.test.ts):
+  - Added `Test 3A.2.15`: Ambiguous legacy transactions (multiple unlinked candidates, non-expense credits, and unlinked arbitrary transactions).
+  - Added `Test 3A.2.16`: Explicit occurrence linkage on newly recorded payments (`recordBillPayment`).
+  - Added `Test 3A.2.17`: Date-range safety handling, diagnostics, and non-omission safe failure policy.
+  - Added `Test 3A.2.18`: Preserved Phase 2B Covered Credit and Safe to Spend invariants under `recordBillPayment`.
+
+---
+
+### 3. Verification & Test Metrics
+- **Automated Tests**: 95 passing tests (`npm test` / `node --test tests/budget.test.ts`), 0 failures, 0 skipped.
+- **Production Build**: `npm run build` (`vue-tsc -b && vite build`) passed with 0 errors.
+
+---
+
+### 4. Learning Questions
+
+1. **Why must multiple unlinked transactions in the same month be treated as ambiguous rather than summing them or picking the first one?**
+   - *Answer*: When a user has two unlinked transactions in a single month (e.g. two $50 payments on a $100 utility bill), Mika cannot guess whether the user made a split payment, accidentally entered a duplicate, or paid a late fee/prior balance. Summing or arbitrarily picking one could prematurely release the reservation when partial funds or duplicates are involved. Treating multiple unlinked records as ambiguous preserves the full reservation and prompts user reconciliation without making irreversible financial guesses.
+
+2. **Why is a non-omission safe failure policy critical for personal finance software when encountering corrupted or out-of-bounds dates?**
+   - *Answer*: In general software engineering, invalid input often fails closed by returning empty results (`continue` or null). However, in financial budgeting, omitting an obligation because of a malformed date leads to false spending confidence, reporting that money is "safe to spend" when it is actually owed. A non-omission policy clamps dates into safe bounds and, in worst-case corrupted states, retains the reservation in `currentCycleBills` while emitting diagnostic warnings.
+
 

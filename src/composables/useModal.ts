@@ -9,6 +9,7 @@ import {
   nextUnpaidDueDate,
   isBillPaid,
   settleBillOccurrence,
+  recordBillPayment,
   type TransactionStatus,
   type TransactionKind,
 } from "../model.ts";
@@ -40,6 +41,8 @@ export interface ModalFormState {
   accountId?: string;
   targetAccountId?: string;
   reserveAction?: "reserve" | "release";
+  billId?: string;
+  billDueDate?: string;
 }
 
 const dialogRef = ref<HTMLDialogElement | null>(null);
@@ -642,6 +645,14 @@ export function useModal() {
         txAmount = amount;
       }
 
+      let explicitBillDueDate = f.billDueDate;
+      if (f.billId && !explicitBillDueDate) {
+        const linkedBill = state.value.bills.find((b) => b.id === f.billId);
+        if (linkedBill) {
+          explicitBillDueDate = nextUnpaidDueDate(state.value, linkedBill, f.date);
+        }
+      }
+
       if (mode.value === "Add transaction") {
         state.value.transactions.unshift({
           id: uid(),
@@ -655,6 +666,8 @@ export function useModal() {
           kind,
           targetAccountId:
             kind !== "standard" ? f.targetAccountId : undefined,
+          billId: f.billId || undefined,
+          billDueDate: f.billId ? explicitBillDueDate : undefined,
           createdAt: new Date().toISOString(),
         });
       } else if (mode.value === "Edit transaction") {
@@ -676,6 +689,11 @@ export function useModal() {
             kind,
             targetAccountId:
               kind !== "standard" ? f.targetAccountId : undefined,
+            billId: f.billId !== undefined ? f.billId || undefined : existing.billId,
+            billDueDate:
+              f.billId !== undefined
+                ? f.billId ? explicitBillDueDate : undefined
+                : existing.billDueDate,
           });
         }
       }
@@ -837,19 +855,9 @@ export function useModal() {
           if (mode.value === "Settle bill" || payMethod.value === "settled") {
             settleBillOccurrence(state.value, b.id, due);
           } else {
-            state.value.transactions.unshift({
-              id: uid(),
-              name: b.name,
-              amount: -b.amount,
-              category: "Bills",
-              date: today(),
-              billId: b.id,
-              billDueDate: due,
-              status: "posted",
-              postedDate: today(),
-              accountId: "acc-default-checking",
-              kind: "standard",
-              createdAt: new Date().toISOString(),
+            recordBillPayment(state.value, b.id, {
+              dueDate: due,
+              accountId: form.value.accountId || "acc-default-checking",
             });
           }
         }

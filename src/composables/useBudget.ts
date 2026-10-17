@@ -16,6 +16,8 @@ import {
   nextUnpaidDueDate,
   settleBillOccurrence,
   unsettleBillOccurrence,
+  recordBillPayment,
+  type TransactionStatus,
   isLedgerStatus,
   accountTotals,
   getAccountBalance,
@@ -408,6 +410,32 @@ export function useBudget() {
     toast("Settlement removed.");
   }
 
+  function payBill(
+    billId: string,
+    options?: {
+      dueDate?: string;
+      accountId?: string;
+      date?: string;
+      status?: TransactionStatus;
+    },
+  ) {
+    const bill = state.value.bills.find((b) => b.id === billId);
+    if (!bill) return null;
+    const due = options?.dueDate || nextUnpaidDueDate(state.value, bill, today());
+    if (isBillPaid(state.value, bill, due)) {
+      toast(`${bill.name} (${due}) is already recorded as paid or settled.`);
+      return null;
+    }
+    const tx = recordBillPayment(state.value, billId, {
+      ...options,
+      dueDate: due,
+    });
+    if (tx) {
+      toast(`Recorded payment for ${tx.name} (${tx.billDueDate}).`);
+    }
+    return tx;
+  }
+
   function addAccount(accData: {
     name: string;
     type: AccountType;
@@ -711,6 +739,7 @@ export function useBudget() {
     toggleProtectBill,
     settleBill,
     unsettleBill,
+    payBill,
     accounts,
     activeAccounts,
     archivedAccounts,

@@ -51,6 +51,7 @@ import {
   validatePaydayOverride,
   applyPaydayOverride,
   removePaydayOverride,
+  recordBillPayment,
 } from "../src/model.ts";
 import { useBudget } from "../src/composables/useBudget.ts";
 import { useModal } from "../src/composables/useModal.ts";
@@ -5700,6 +5701,220 @@ test("Test 3A.2.14 — Safe to Spend and Covered Credit parity under occurrence 
   assert.equal(t.budgets, 5000, "Remaining budget is $50");
   assert.equal(t.safe, 285000, "Safe to spend preserves exact Covered Credit parity ($2,850)");
 });
+
+test("Test 3A.2.15 — Ambiguous legacy transactions: multiple unlinked candidates and non-expense credits retain obligations", () => {
+  const simulatedToday = "2026-10-16";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+
+  const gymBill: Bill = {
+    id: "b-gym",
+    name: "Gym Membership",
+    amount: 5000,
+    day: 10,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(gymBill);
+
+  // Part A: Positive transaction (refund/credit) does NOT settle a recurring bill
+  state.transactions.push({
+    id: "tx-gym-refund",
+    name: "Gym Refund",
+    amount: 5000, // positive amount!
+    category: "Health",
+    date: "2026-10-10",
+    status: "posted",
+    billId: gymBill.id,
+  });
+  assert.equal(isBillPaid(state, gymBill, "2026-10-10"), false, "Positive credit/refund cannot settle a bill occurrence");
+
+  // Part B: Arbitrary transaction in same month without billId does NOT settle recurring bill
+  state.transactions.push({
+    id: "tx-arbitrary-gym",
+    name: "Gym Membership",
+    amount: -5000,
+    category: "Bills",
+    date: "2026-10-10",
+    status: "posted",
+    // billId is undefined!
+  });
+  assert.equal(isBillPaid(state, gymBill, "2026-10-10"), false, "Arbitrary transaction without billId cannot settle a bill");
+
+  // Part C: Multiple unlinked expense transactions in the same month trigger ambiguity
+  const tx1: Transaction = {
+    id: "tx-gym-split-1",
+    name: "Gym Payment 1",
+    amount: -2500,
+    category: "Health",
+    date: "2026-10-05",
+    status: "posted",
+    billId: gymBill.id,
+    // unlinked
+  };
+  const tx2: Transaction = {
+    id: "tx-gym-split-2",
+    name: "Gym Payment 2",
+    amount: -2500,
+    category: "Health",
+    date: "2026-10-12",
+    status: "posted",
+    billId: gymBill.id,
+    // unlinked
+  };
+  state.transactions.push(tx1, tx2);
+
+  // Both tx1 and tx2 exist without billDueDate in October. This is ambiguous.
+  assert.equal(isBillPaid(state, gymBill, "2026-10-10"), false, "Multiple unlinked candidates in same month retain obligation");
+  const bdAmbiguous = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(bdAmbiguous.currentCycleBills, 5000, "Ambiguous legacy occurrence remains reserved");
+
+  // Part D: Disambiguating by setting explicit billDueDate resolves the ambiguity
+  tx1.billDueDate = "2026-10-10";
+  assert.equal(isBillPaid(state, gymBill, "2026-10-10"), true, "Explicit linkage resolves ambiguity and settles occurrence");
+  const bdResolved = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(bdResolved.currentCycleBills, 0, "Reservation released cleanly once disambiguated");
+});
+
+test("Test 3A.2.16 — Explicit occurrence linkage on newly recorded payments", () => {
+  const simulatedToday = "2026-10-16";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+
+  const rentBill: Bill = {
+    id: "b-rent",
+    name: "Apartment Rent",
+    amount: 150000,
+    day: 1,
+    protected: false,
+    trackingStartDate: "2026-09-01",
+  };
+  state.bills.push(rentBill);
+
+  // September 1 is unpaid. October 1 is unpaid.
+  assert.equal(nextUnpaidDueDate(state, rentBill, simulatedToday), "2026-09-01");
+
+  // Call recordBillPayment without explicit options: must automatically bind to earliest unpaid occurrence
+  const p1 = recordBillPayment(state, rentBill.id);
+  assert.ok(p1, "Payment transaction must be created");
+  assert.equal(p1.billId, rentBill.id);
+  assert.equal(p1.billDueDate, "2026-09-01", "Newly recorded payment must explicitly bind to earliest unpaid occurrence");
+  assert.equal(isBillPaid(state, rentBill, "2026-09-01"), true, "September is now paid");
+  assert.equal(isBillPaid(state, rentBill, "2026-10-01"), false, "October remains unpaid");
+
+  // Second payment binds to next unpaid occurrence (October 1)
+  assert.equal(nextUnpaidDueDate(state, rentBill, simulatedToday), "2026-10-01");
+  const p2 = recordBillPayment(state, rentBill.id);
+  assert.ok(p2);
+  assert.equal(p2.billDueDate, "2026-10-01", "Second payment explicitly links to October 1");
+  assert.equal(isBillPaid(state, rentBill, "2026-10-01"), true, "October is now paid");
+
+  // Next unpaid occurrence advances into November
+  assert.equal(nextUnpaidDueDate(state, rentBill, simulatedToday), "2026-11-01");
+});
+
+test("Test 3A.2.17 — Date-range safety handling, diagnostics, and non-omission policy", () => {
+  const simulatedToday = "2026-10-16";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+
+  // Case 1: Corrupted/invalid trackingStartDate does not omit bill
+  const badStartBill: Bill = {
+    id: "b-bad-start",
+    name: "Corrupt Date Bill",
+    amount: 7500,
+    day: 5,
+    protected: false,
+    trackingStartDate: "not-a-valid-date",
+  };
+  state.bills.push(badStartBill);
+
+  const bd1 = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(bd1.currentCycleBills, 7500, "Corrupted date bill must not be omitted from reservations");
+  assert.ok(bd1.diagnostics.some((d) => d.includes("missing or invalid trackingStartDate")), "Must report diagnostic");
+
+  // Case 2: Out-of-bounds start year before 1900 clamped safely
+  badStartBill.trackingStartDate = "1850-01-01";
+  const bd2 = reserveBillsBreakdown(state, simulatedToday);
+  assert.ok(bd2.currentCycleBills > 0, "Out-of-bounds year must not omit bill");
+  assert.ok(bd2.diagnostics.some((d) => d.includes("before 1900")), "Must report clamping diagnostic for pre-1900 year");
+
+  // Case 3: nextUnpaidDueDate with invalid fromDate falls back safely
+  const due = nextUnpaidDueDate(state, badStartBill, "garbage-date");
+  assert.ok(isValidDateString(due), "Must return a valid ISO due date string even with corrupted input");
+
+  // Case 4: Totals includes diagnostics
+  const t = totals(state, simulatedToday);
+  assert.ok(Array.isArray(t.diagnostics), "Totals must include diagnostics");
+  assert.ok(t.diagnostics.length > 0, "Diagnostics must be visible in totals");
+});
+
+test("Test 3A.2.18 — Preserved Phase 2B Covered Credit and Safe to Spend invariants under recordBillPayment", () => {
+  const simulatedToday = "2026-10-16";
+  const state: State = blank();
+  state.accounts = [
+    {
+      id: "acc-checking",
+      name: "Checking",
+      type: "checking",
+      opening: 200000,
+      includeInSafeToSpend: true,
+      createdAt: "2026-10-01",
+      updatedAt: "2026-10-01",
+    },
+    {
+      id: "acc-credit",
+      name: "Credit Card",
+      type: "credit",
+      opening: 0,
+      includeInSafeToSpend: false,
+      coveredCreditBaselineAt: "2026-10-01",
+      createdAt: "2026-10-01",
+      updatedAt: "2026-10-01",
+    },
+  ];
+  state.budgets = [
+    { id: "bg-internet", category: "Bills", limit: 8000, color: "#277c78" },
+  ];
+  const netBill: Bill = {
+    id: "b-net",
+    name: "Internet Fiber",
+    amount: 8000,
+    day: 10,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(netBill);
+
+  // Before payment: $80 is reserved in bills
+  let t = totals(state, simulatedToday);
+  assert.equal(t.bills, 8000);
+  assert.equal(t.safe, 184000); // 2000 - 80 (bills) - 80 (budget) = 1840
+
+  // Pay bill on credit card with recordBillPayment
+  const tx = recordBillPayment(state, netBill.id, {
+    accountId: "acc-credit",
+    date: "2026-10-10",
+  });
+  assert.ok(tx);
+  assert.equal(tx.billDueDate, "2026-10-10");
+
+  t = totals(state, simulatedToday);
+  // Bill reservation released:
+  assert.equal(t.bills, 0, "Bill reservation released");
+  // Credit card has $80 debt:
+  assert.equal(t.totalCreditOwed, 8000, "Credit card owes $80");
+  // Covered by Bills budget, so Ready to Pay is $80:
+  assert.equal(t.totalReadyToPay, 8000, "Ready to pay is $80");
+  // Remaining budget is $0:
+  assert.equal(t.budgets, 0, "Budget remaining is $0");
+  // Safe to Spend is $2000 - $80 (Ready to Pay) = $1,920 (192000 cents):
+  assert.equal(t.safe, 192000, "Safe to spend preserves exact Covered Credit parity");
+});
+
 
 
 

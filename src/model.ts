@@ -1537,39 +1537,99 @@ export function isBillPaid(
     return true;
   }
 
-  // 2. Explicit occurrence linkage has absolute priority
+  // 2. Explicit occurrence linkage has absolute priority (must be an expense payment)
   const hasExplicitMatch = s.transactions.some(
     (t) =>
       isLedgerStatus(t.status) &&
       t.billId === b.id &&
+      t.amount < 0 &&
       t.billDueDate === occurrenceDate,
   );
   if (hasExplicitMatch) {
     return true;
   }
 
-  // 3. Candidate legacy/unlinked transactions in the occurrence month
+  // 3. Candidate legacy/unlinked transactions in the occurrence month (must be expense payments)
   const occurrenceMonth = occurrenceDate.slice(0, 7);
-  const hasUnlinkedCandidate = s.transactions.some(
+  const unlinkedCandidates = s.transactions.filter(
     (t) =>
       isLedgerStatus(t.status) &&
       t.billId === b.id &&
+      t.amount < 0 &&
       !t.billDueDate &&
       t.date.slice(0, 7) === occurrenceMonth,
   );
 
-  if (!hasUnlinkedCandidate) {
+  if (unlinkedCandidates.length === 0) {
     return false;
   }
 
-  // 4. Ambiguity check: If there are earlier unpaid occurrences since tracking began,
+  // 4. Ambiguity check 1: If there are earlier unpaid occurrences since tracking began,
   // an unlinked payment cannot be unambiguously assigned to this occurrence without guessing.
   // We retain the obligation rather than guessing or silently releasing the wrong bill.
   if (hasEarlierUnpaidOccurrence(s, b, occurrenceDate)) {
     return false;
   }
 
+  // 5. Ambiguity check 2: If there are multiple unlinked transactions in the same month for this bill,
+  // it is ambiguous which occurrence or portion they represent. Retain obligation for reconciliation.
+  if (unlinkedCandidates.length > 1) {
+    return false;
+  }
+
   return true;
+}
+
+export function recordBillPayment(
+  s: State,
+  billId: string,
+  options?: {
+    dueDate?: string;
+    accountId?: string;
+    date?: string;
+    amount?: number;
+    name?: string;
+    status?: TransactionStatus;
+  },
+): Transaction | null {
+  const bill = s.bills.find((b) => b.id === billId);
+  if (!bill) return null;
+
+  const payDate = isValidDateString(options?.date) ? options!.date! : today();
+  let explicitDueDate = options?.dueDate;
+
+  if (!explicitDueDate || !isValidDateString(explicitDueDate)) {
+    explicitDueDate = nextUnpaidDueDate(s, bill, payDate);
+  }
+
+  if (!isValidDateString(explicitDueDate)) {
+    const [pY, pM] = payDate.split("-").map(Number);
+    explicitDueDate = getBillDueDate(bill, pY || 2026, pM || 1);
+  }
+
+  const txStatus: TransactionStatus = options?.status || "posted";
+  const defaultChecking =
+    s.accounts?.find((a) => a.type === "checking" && !a.archived)?.id ||
+    "acc-default-checking";
+
+  const tx: Transaction = {
+    id: uid(),
+    name: options?.name || bill.name,
+    amount:
+      options?.amount !== undefined ? -Math.abs(options.amount) : -bill.amount,
+    category: "Bills",
+    date: payDate,
+    billId: bill.id,
+    billDueDate: explicitDueDate,
+    status: txStatus,
+    postedDate: txStatus !== "scheduled" ? payDate : undefined,
+    accountId: options?.accountId || defaultChecking,
+    kind: "standard",
+    createdAt: new Date().toISOString(),
+  };
+
+  s.transactions.unshift(tx);
+  return tx;
 }
 
 export function settleBillOccurrence(
@@ -1624,22 +1684,28 @@ export function nextUnpaidDueDate(
   b: Bill,
   fromDate = today(),
 ): string {
+  const validFrom = isValidDateString(fromDate) ? fromDate : today();
   let trackingStart = b.trackingStartDate;
   if (!isValidDateString(trackingStart)) {
-    trackingStart = `${fromDate.slice(0, 7)}-01`;
+    trackingStart = `${validFrom.slice(0, 7)}-01`;
   }
-  const evalStart = trackingStart < fromDate ? trackingStart : fromDate;
-  const [startY, startM] = evalStart.split("-").map(Number);
-  const [fromY, fromM] = fromDate.split("-").map(Number);
+  const evalStart = trackingStart < validFrom ? trackingStart : validFrom;
+  let [startY, startM] = evalStart.split("-").map(Number);
+  let [fromY, fromM] = validFrom.split("-").map(Number);
 
-  if (!startY || !startM || startY < 1900 || (fromY && fromY > 2200)) {
-    return getBillDueDate(b, startY || 2026, startM || 1);
+  if (!startY || !startM || startY < 1900 || startY > 2200) {
+    startY = Number(validFrom.slice(0, 4)) || 2026;
+    startM = Number(validFrom.slice(5, 7)) || 1;
+  }
+  if (!fromY || !fromM || fromY < 1900 || fromY > 2200) {
+    fromY = startY;
+    fromM = startM;
   }
 
-  // Look from evalStart up to 3 years past fromDate
-  const futureHorizonYear = (fromY || startY) + 3;
-  const totalMonths = (futureHorizonYear - startY) * 12 + ((fromM || startM) - startM) + 1;
-  const maxSteps = Math.min(Math.max(totalMonths, 36), 1200);
+  // Look from evalStart up to 3 years past validFrom
+  const futureHorizonYear = fromY + 3;
+  const totalMonths = (futureHorizonYear - startY) * 12 + (fromM - startM) + 1;
+  const maxSteps = Math.min(Math.max(totalMonths, 36), 3600);
 
   let y = startY;
   let m = startM;
@@ -1694,19 +1760,35 @@ export type BillReservationDetail = {
   cycle: "current" | "following_protected";
 };
 
-export function reserveBillsBreakdown(
-  s: State,
-  now = today(),
-): {
+export type BillReservationBreakdown = {
   currentCycleBills: number;
   protectedCycleBills: number;
   total: number;
   details: BillReservationDetail[];
-} {
-  const currentPayday = getCurrentPayday(s, now);
-  const currentPaydayEnd = currentPayday >= now ? currentPayday : now;
-  const followingEnd = getFollowingPayday(s, now);
-  const maxEnd = followingEnd > currentPaydayEnd ? followingEnd : currentPaydayEnd;
+  diagnostics: string[];
+};
+
+export function reserveBillsBreakdown(
+  s: State,
+  now = today(),
+): BillReservationBreakdown {
+  const diagnostics: string[] = [];
+  const validNow = isValidDateString(now) ? now : today();
+  if (validNow !== now) {
+    diagnostics.push(`Invalid 'now' date '${now}'; fell back to '${validNow}'.`);
+  }
+
+  const currentPayday = getCurrentPayday(s, validNow);
+  const currentPaydayEnd =
+    isValidDateString(currentPayday) && currentPayday >= validNow
+      ? currentPayday
+      : validNow;
+  const rawFollowingEnd = getFollowingPayday(s, validNow);
+  const followingEnd = isValidDateString(rawFollowingEnd)
+    ? rawFollowingEnd
+    : addDays(validNow, 14);
+  const maxEnd =
+    followingEnd > currentPaydayEnd ? followingEnd : currentPaydayEnd;
 
   let currentCycleBills = 0;
   let protectedCycleBills = 0;
@@ -1715,41 +1797,93 @@ export function reserveBillsBreakdown(
   for (const b of s.bills) {
     let trackingStart = b.trackingStartDate;
     if (!isValidDateString(trackingStart)) {
-      trackingStart = `${now.slice(0, 7)}-01`;
+      diagnostics.push(
+        `Bill '${b.name}' has missing or invalid trackingStartDate '${b.trackingStartDate}'; defaulted to current month baseline.`,
+      );
+      trackingStart = `${validNow.slice(0, 7)}-01`;
     }
 
-    if (!isValidDateString(maxEnd)) {
-      continue;
+    let [startYear, startMonth] = trackingStart.split("-").map(Number);
+    let [endYear, endMonth] = maxEnd.split("-").map(Number);
+
+    if (!startYear || !startMonth || startYear < 1900) {
+      diagnostics.push(
+        `Bill '${b.name}' startYear '${startYear}' is before 1900; clamped to 1900-01.`,
+      );
+      startYear = 1900;
+      startMonth = 1;
+      trackingStart = "1900-01-01";
+    } else if (startYear > 2200) {
+      diagnostics.push(
+        `Bill '${b.name}' startYear '${startYear}' exceeds 2200; clamped to 2200-01.`,
+      );
+      startYear = 2200;
+      startMonth = 1;
+      trackingStart = "2200-01-01";
     }
 
-    const [startYear, startMonth] = trackingStart.split("-").map(Number);
-    const [endYear, endMonth] = maxEnd.split("-").map(Number);
+    if (!endYear || !endMonth || endYear > 2200) {
+      diagnostics.push(
+        `Planning horizon endYear '${endYear}' exceeds 2200; clamped to 2200-12.`,
+      );
+      endYear = 2200;
+      endMonth = 12;
+    } else if (endYear < 1900) {
+      diagnostics.push(
+        `Planning horizon endYear '${endYear}' is before 1900; clamped to 1900-12.`,
+      );
+      endYear = 1900;
+      endMonth = 12;
+    }
 
     if (
-      !startYear ||
-      !startMonth ||
-      !endYear ||
-      !endMonth ||
-      startYear < 1900 ||
-      endYear > 2200 ||
       endYear < startYear ||
       (endYear === startYear && endMonth < startMonth)
     ) {
+      // Future-dated tracking start outside current planning window
       continue;
     }
 
-    const totalMonths = (endYear - startYear) * 12 + (endMonth - startMonth) + 1;
-    // Calculation based on actual month range between trackingStartDate and planning horizon,
-    // with a defensive guard against pathological input (up to 100 years = 1200 months).
-    const maxSteps = Math.min(totalMonths, 1200);
+    const totalMonths =
+      (endYear - startYear) * 12 + (endMonth - startMonth) + 1;
+    if (totalMonths <= 0) {
+      diagnostics.push(
+        `Bill '${b.name}' calculated non-positive totalMonths (${totalMonths}); safely reserving current cycle amount.`,
+      );
+      currentCycleBills += b.amount;
+      details.push({
+        bill: b,
+        dueDate: validNow,
+        amount: b.amount,
+        cycle: "current",
+      });
+      continue;
+    }
+
+    const SAFETY_CAP_MONTHS = 3600;
+    let maxSteps = totalMonths;
+    if (totalMonths > SAFETY_CAP_MONTHS) {
+      diagnostics.push(
+        `Bill '${b.name}' totalMonths (${totalMonths}) exceeds safety cap of ${SAFETY_CAP_MONTHS} months; evaluating latest ${SAFETY_CAP_MONTHS} months up to planning horizon.`,
+      );
+      maxSteps = SAFETY_CAP_MONTHS;
+      const shiftMonths = totalMonths - SAFETY_CAP_MONTHS;
+      startMonth += shiftMonths;
+      while (startMonth > 12) {
+        startMonth -= 12;
+        startYear++;
+      }
+    }
 
     let y = startYear;
     let m = startMonth;
+    let evaluatedCount = 0;
 
     for (let step = 0; step < maxSteps; step++) {
       const due = getBillDueDate(b, y, m);
 
       if (due >= trackingStart && due <= maxEnd) {
+        evaluatedCount++;
         if (!isBillPaid(s, b, due)) {
           if (due <= currentPaydayEnd) {
             currentCycleBills += b.amount;
@@ -1777,6 +1911,19 @@ export function reserveBillsBreakdown(
         y++;
       }
     }
+
+    if (evaluatedCount === 0 && trackingStart <= maxEnd) {
+      diagnostics.push(
+        `Bill '${b.name}' yielded 0 evaluated occurrences within window; safely reserving current cycle amount.`,
+      );
+      currentCycleBills += b.amount;
+      details.push({
+        bill: b,
+        dueDate: validNow,
+        amount: b.amount,
+        cycle: "current",
+      });
+    }
   }
 
   return {
@@ -1784,6 +1931,7 @@ export function reserveBillsBreakdown(
     protectedCycleBills,
     total: currentCycleBills + protectedCycleBills,
     details,
+    diagnostics,
   };
 }
 
@@ -1921,6 +2069,7 @@ export function totals(s: State, now = today()) {
     rawSafe,
     safe,
     shortfall,
+    diagnostics: billBreakdown.diagnostics,
   };
 }
 
