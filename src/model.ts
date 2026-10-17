@@ -3370,6 +3370,514 @@ export function getOrganizedBills(
   });
 }
 
+// ============================================================================
+// Phase 4A: Daily Home Dashboard Selectors
+// ============================================================================
+
+export type AttentionItemCategory =
+  | "shortfall"
+  | "overdue_minimum"
+  | "overdue_bill"
+  | "scheduled_expense"
+  | "uncovered_minimum"
+  | "due_soon_bill";
+
+export type AttentionItemSeverity = "critical" | "warning" | "info";
+
+export interface DailyAttentionItem {
+  id: string;
+  category: AttentionItemCategory;
+  severity: AttentionItemSeverity;
+  title: string;
+  description: string;
+  amount?: number;
+  dueDate?: string;
+  actionLabel: string;
+  targetPage?: string;
+  billId?: string;
+  billDueDate?: string;
+  accountId?: string;
+  transactionId?: string;
+  urgencyRank: number;
+}
+
+export interface DailyAttentionSummary {
+  items: DailyAttentionItem[];
+  totalCount: number;
+  hasMore: boolean;
+  moreTargetPage?: string;
+  moreLabel?: string;
+}
+
+export interface DailySuggestedAction {
+  id: string;
+  title: string;
+  description: string;
+  actionLabel: string;
+  targetPage?: string;
+  modalAction?: {
+    modal: string;
+    id?: string;
+    category?: string;
+  };
+  isUrgent: boolean;
+}
+
+export interface DailyPaydayPresentation {
+  date: string;
+  daysAway: number;
+  daysLabel: string;
+  isConfirmed: boolean;
+  isProjected: boolean;
+  statusLabel: string;
+  statusDescription: string;
+  frequency: PaydayFrequency;
+  hasUpcomingPayday: boolean;
+}
+
+/**
+ * Derives daily attention items from existing state, prioritizing by urgency and financial impact.
+ * Limits returned items to a maximum of 3, providing a path to more if additional items exist.
+ * Deduplicates related concerns (e.g. scheduled transactions linked to an overdue bill).
+ */
+export function getDailyAttentionItems(
+  s: State,
+  now = today(),
+): DailyAttentionSummary {
+  const validNow = isValidDateString(now) ? now : today();
+  const candidates: DailyAttentionItem[] = [];
+
+  // 1. Safe to Spend Shortfall (Highest urgency: Rank 10)
+  const t = totals(s, validNow);
+  if (t.shortfall > 0) {
+    const formattedShortfall = `$${(t.shortfall / 100).toFixed(2)}`;
+    candidates.push({
+      id: "attention-shortfall",
+      category: "shortfall",
+      severity: "critical",
+      title: "Reserve Shortfall",
+      description: `Planned reserves exceed available cash by ${formattedShortfall}. Adjust budgets, pots, or bills.`,
+      amount: t.shortfall,
+      actionLabel: "Review budgets",
+      targetPage: "Budgets",
+      urgencyRank: 10,
+    });
+  }
+
+  // 2. Overdue Credit Card Minimums (Rank 20)
+  const ccBreakdown = getCreditCardMinimumBreakdown(s, validNow);
+  for (const d of ccBreakdown.details) {
+    if (d.additionalProtection > 0 && d.isOverdue && d.dueDate) {
+      const formattedAmt = `$${(d.additionalProtection / 100).toFixed(2)}`;
+      candidates.push({
+        id: `attention-overdue-min-${d.account.id}`,
+        category: "overdue_minimum",
+        severity: "critical",
+        title: `${d.account.name} Minimum Overdue`,
+        description: `Minimum payment of ${formattedAmt} was due on ${d.dueDate}.`,
+        amount: d.additionalProtection,
+        dueDate: d.dueDate,
+        actionLabel: "Review card",
+        targetPage: "Accounts",
+        accountId: d.account.id,
+        urgencyRank: 20,
+      });
+    }
+  }
+
+  // 3. Overdue Recurring Bills (Rank 30)
+  const organizedBills = getOrganizedBills(s, validNow);
+  for (const b of organizedBills) {
+    if (b.status === "overdue" && b.remainingAmount > 0) {
+      const formattedAmt = `$${(b.remainingAmount / 100).toFixed(2)}`;
+      candidates.push({
+        id: `attention-overdue-bill-${b.bill.id}`,
+        category: "overdue_bill",
+        severity: "warning",
+        title: `${b.bill.name} Overdue`,
+        description: `Was due on ${b.dueDate} · ${formattedAmt} remaining.`,
+        amount: b.remainingAmount,
+        dueDate: b.dueDate,
+        actionLabel: "Pay bill",
+        targetPage: "Recurring Bills",
+        billId: b.bill.id,
+        billDueDate: b.dueDate,
+        urgencyRank: 30,
+      });
+    }
+  }
+
+  // Set of bill keys already tracked in attention items to prevent duplicate scheduled alerts
+  const activeBillKeys = new Set(
+    candidates
+      .filter((c) => c.billId)
+      .map((c) => `${c.billId}::${c.billDueDate || ""}`),
+  );
+
+  // 4. Scheduled Expenses Due Today or Past Due (Rank 40)
+  if (Array.isArray(s.transactions)) {
+    for (const tx of s.transactions) {
+      if (tx.status === "scheduled" && tx.amount < 0 && tx.date <= validNow) {
+        if (
+          tx.billId &&
+          activeBillKeys.has(`${tx.billId}::${tx.billDueDate || ""}`)
+        ) {
+          // Omit duplicate alert for bill already listed in attention items
+          continue;
+        }
+        const formattedAmt = `$${(Math.abs(tx.amount) / 100).toFixed(2)}`;
+        const dateNote = tx.date === validNow ? "today" : tx.date;
+        candidates.push({
+          id: `attention-scheduled-${tx.id}`,
+          category: "scheduled_expense",
+          severity: "info",
+          title: `${tx.name} scheduled for ${dateNote}`,
+          description: `${formattedAmt} scheduled expense is ready to review and confirm.`,
+          amount: Math.abs(tx.amount),
+          dueDate: tx.date,
+          actionLabel: "Review scheduled",
+          targetPage: "Transactions",
+          transactionId: tx.id,
+          urgencyRank: 40,
+        });
+      }
+    }
+  }
+
+  // 5. Uncovered Credit Card Minimums in Current Cycle (Rank 50)
+  for (const d of ccBreakdown.details) {
+    if (
+      d.additionalProtection > 0 &&
+      !d.isOverdue &&
+      d.dueCycle === "current" &&
+      d.dueDate
+    ) {
+      const formattedAmt = `$${(d.additionalProtection / 100).toFixed(2)}`;
+      candidates.push({
+        id: `attention-uncovered-min-${d.account.id}`,
+        category: "uncovered_minimum",
+        severity: "warning",
+        title: `${d.account.name} Minimum Due Soon`,
+        description: `${formattedAmt} minimum due on ${d.dueDate} needs payment coverage.`,
+        amount: d.additionalProtection,
+        dueDate: d.dueDate,
+        actionLabel: "Review card",
+        targetPage: "Accounts",
+        accountId: d.account.id,
+        urgencyRank: 50,
+      });
+    }
+  }
+
+  // 6. Bills Due Soon (within 3 days) (Rank 60)
+  for (const b of organizedBills) {
+    if (b.status === "due_soon" && b.remainingAmount > 0) {
+      const days = daysBetween(validNow, b.dueDate);
+      const timing =
+        days === 0 ? "today" : days === 1 ? "tomorrow" : `in ${days} days`;
+      const formattedAmt = `$${(b.remainingAmount / 100).toFixed(2)}`;
+      candidates.push({
+        id: `attention-due-soon-bill-${b.bill.id}`,
+        category: "due_soon_bill",
+        severity: "info",
+        title: `${b.bill.name} Due Soon`,
+        description: `Due ${timing} (${b.dueDate}) · ${formattedAmt} remaining.`,
+        amount: b.remainingAmount,
+        dueDate: b.dueDate,
+        actionLabel: "Pay bill",
+        targetPage: "Recurring Bills",
+        billId: b.bill.id,
+        billDueDate: b.dueDate,
+        urgencyRank: 60,
+      });
+    }
+  }
+
+  // Deterministic sort: urgencyRank ascending, dueDate ascending, amount descending, id ascending
+  candidates.sort((a, b) => {
+    if (a.urgencyRank !== b.urgencyRank) {
+      return a.urgencyRank - b.urgencyRank;
+    }
+    if (a.dueDate && b.dueDate && a.dueDate !== b.dueDate) {
+      return a.dueDate.localeCompare(b.dueDate);
+    }
+    if (
+      a.amount !== undefined &&
+      b.amount !== undefined &&
+      a.amount !== b.amount
+    ) {
+      return b.amount - a.amount;
+    }
+    return a.id.localeCompare(b.id);
+  });
+
+  const totalCount = candidates.length;
+  const items = candidates.slice(0, 3);
+  const hasMore = totalCount > 3;
+  let moreTargetPage: string | undefined;
+  let moreLabel: string | undefined;
+
+  if (hasMore) {
+    const remaining = candidates.slice(3);
+    const billCount = remaining.filter(
+      (i) => i.category === "overdue_bill" || i.category === "due_soon_bill",
+    ).length;
+    const cardCount = remaining.filter(
+      (i) =>
+        i.category === "overdue_minimum" || i.category === "uncovered_minimum",
+    ).length;
+
+    if (billCount >= cardCount) {
+      moreTargetPage = "Recurring Bills";
+      moreLabel = `View all bills (${totalCount - 3} more)`;
+    } else {
+      moreTargetPage = "Accounts";
+      moreLabel = `View accounts (${totalCount - 3} more)`;
+    }
+  }
+
+  return {
+    items,
+    totalCount,
+    hasMore,
+    moreTargetPage,
+    moreLabel,
+  };
+}
+
+/**
+ * Derives at most one suggested primary next action based on the highest-priority actionable issue.
+ * Never implies automatic execution, and provides a calm, neutral suggestion when no urgent issues exist.
+ */
+export function getDailySuggestedAction(
+  s: State,
+  items?: DailyAttentionItem[],
+  now = today(),
+): DailySuggestedAction {
+  const validNow = isValidDateString(now) ? now : today();
+  const attentionItems = items || getDailyAttentionItems(s, validNow).items;
+
+  if (attentionItems.length > 0) {
+    const top = attentionItems[0]!;
+    if (top.category === "shortfall") {
+      const formattedDeficit = `$${((top.amount || 0) / 100).toFixed(2)}`;
+      return {
+        id: "action-shortfall",
+        title: "Check your Safe to Spend shortfall",
+        description: `Your planned reserves exceed cash by ${formattedDeficit}. Adjust budgets or pot allocations to bring your plan into balance.`,
+        actionLabel: "Review budgets",
+        targetPage: "Budgets",
+        isUrgent: true,
+      };
+    }
+    if (top.category === "overdue_minimum") {
+      return {
+        id: `action-overdue-min-${top.accountId || ""}`,
+        title: `Review overdue ${top.title}`,
+        description: top.description,
+        actionLabel: "Review card",
+        targetPage: "Accounts",
+        isUrgent: true,
+      };
+    }
+    if (top.category === "overdue_bill") {
+      return {
+        id: `action-overdue-bill-${top.billId || ""}`,
+        title: `Pay overdue bill: ${top.title.replace(" Overdue", "")}`,
+        description: top.description,
+        actionLabel: "Pay bill",
+        targetPage: "Recurring Bills",
+        modalAction: {
+          modal: "Pay bill",
+          id: top.billId,
+          category: top.billDueDate,
+        },
+        isUrgent: true,
+      };
+    }
+    if (top.category === "scheduled_expense") {
+      return {
+        id: `action-scheduled-${top.id}`,
+        title: "Review scheduled expense",
+        description: top.description,
+        actionLabel: "Review scheduled",
+        targetPage: "Transactions",
+        isUrgent: false,
+      };
+    }
+    if (top.category === "uncovered_minimum") {
+      return {
+        id: `action-uncovered-min-${top.accountId || ""}`,
+        title: `Protect card minimum: ${top.title.replace(" Minimum Due Soon", "")}`,
+        description: top.description,
+        actionLabel: "Review card",
+        targetPage: "Accounts",
+        isUrgent: false,
+      };
+    }
+    if (top.category === "due_soon_bill") {
+      return {
+        id: `action-due-bill-${top.billId || ""}`,
+        title: `Pay upcoming bill: ${top.title.replace(" Due Soon", "")}`,
+        description: top.description,
+        actionLabel: "Pay bill",
+        targetPage: "Recurring Bills",
+        modalAction: {
+          modal: "Pay bill",
+          id: top.billId,
+          category: top.billDueDate,
+        },
+        isUrgent: false,
+      };
+    }
+  }
+
+  // Neutral, optional actions when no urgent attention items exist
+  const hasConfiguredBalance =
+    (Array.isArray(s.accounts) &&
+      s.accounts.some((a) => (a.opening || 0) > 0 || (a.balance || 0) > 0)) ||
+    (Number.isFinite(s.opening) && s.opening > 0);
+  const hasTransactions =
+    Array.isArray(s.transactions) && s.transactions.length > 0;
+
+  if (!hasConfiguredBalance && !hasTransactions) {
+    return {
+      id: "action-add-account",
+      title: "Set up your accounts",
+      description:
+        "Add your starting bank balance to calculate your Safe to Spend accurately.",
+      actionLabel: "Add account",
+      modalAction: { modal: "Add account" },
+      isUrgent: false,
+    };
+  }
+
+  const isManual =
+    !s.paydaySchedule || s.paydaySchedule.frequency === "manual";
+  if (isManual && isValidDateString(s.payday) && s.payday < validNow) {
+    return {
+      id: "action-update-payday",
+      title: "Update your next payday",
+      description:
+        "Your previous payday date has passed. Set your next payday in Settings to keep daily calculations accurate.",
+      actionLabel: "Update payday",
+      targetPage: "Settings",
+      isUrgent: false,
+    };
+  }
+
+  return {
+    id: "action-record-spending",
+    title: "Record daily spending",
+    description:
+      "Your budget is in good shape today. Record purchases as they happen to keep your Safe to Spend accurate.",
+    actionLabel: "Add expense",
+    modalAction: { modal: "Add transaction", category: "Expense" },
+    isUrgent: false,
+  };
+}
+
+/**
+ * Derives next payday presentation for the daily home dashboard, explicitly distinguishing
+ * between confirmed deposit dates and automated projected dates.
+ * Never treats projected income as confirmed available cash.
+ */
+export function getDailyPaydayPresentation(
+  s: State,
+  now = today(),
+): DailyPaydayPresentation {
+  const validNow = isValidDateString(now) ? now : today();
+  const schedule = s.paydaySchedule;
+  const frequency: PaydayFrequency = schedule?.frequency || "manual";
+
+  let targetDate = "";
+  let isConfirmed = false;
+  let isProjected = false;
+  let statusLabel = "";
+  let statusDescription = "";
+
+  if (frequency === "manual") {
+    const hasManualAnchor =
+      isValidDateString(schedule?.anchorDate) || isValidDateString(s.payday);
+    const confirmed = hasManualAnchor
+      ? getConfirmedUpcomingPaydays(schedule, validNow)
+      : [];
+    if (confirmed.length > 0) {
+      targetDate = confirmed[0]!;
+      isConfirmed = true;
+      isProjected = false;
+      statusLabel = "Confirmed next payday";
+      statusDescription = "Explicitly scheduled deposit date.";
+    } else if (isValidDateString(s.payday) && s.payday < validNow) {
+      targetDate = s.payday;
+      isConfirmed = false;
+      isProjected = false;
+      statusLabel = "Payday passed";
+      statusDescription =
+        "Your payday has passed. Update it in Settings to refresh your daily plan.";
+    } else {
+      targetDate = "";
+      isConfirmed = false;
+      isProjected = false;
+      statusLabel = "No payday set";
+      statusDescription = "Set your next payday in Settings.";
+    }
+  } else {
+    // Automated cadence
+    const current = getCurrentPayday(s, validNow);
+    if (isValidDateString(current)) {
+      targetDate = current;
+      const hasOverride = schedule?.overrides?.some(
+        (o) =>
+          o.overrideDate === targetDate || o.scheduledDate === targetDate,
+      );
+      if (hasOverride) {
+        isConfirmed = true;
+        isProjected = false;
+        statusLabel = "Confirmed (adjusted)";
+        statusDescription = "One-time payday adjustment for this cycle.";
+      } else {
+        isConfirmed = false;
+        isProjected = true;
+        statusLabel = "Projected next payday";
+        statusDescription = `Calculated from your ${frequency} cadence.`;
+      }
+    }
+  }
+
+  let daysAway = 0;
+  let daysLabel = "";
+  const hasUpcomingPayday =
+    isValidDateString(targetDate) && targetDate >= validNow;
+
+  if (isValidDateString(targetDate)) {
+    if (targetDate === validNow) {
+      daysAway = 0;
+      daysLabel = "Today";
+    } else if (targetDate > validNow) {
+      daysAway = daysBetween(validNow, targetDate);
+      daysLabel = daysAway === 1 ? "Tomorrow" : `in ${daysAway} days`;
+    } else {
+      daysAway = -daysBetween(targetDate, validNow);
+      daysLabel = "Past due";
+    }
+  } else {
+    daysLabel = "Not set";
+  }
+
+  return {
+    date: targetDate,
+    daysAway,
+    daysLabel,
+    isConfirmed,
+    isProjected,
+    statusLabel,
+    statusDescription,
+    frequency,
+    hasUpcomingPayday,
+  };
+}
+
 export function getUncoveredScheduledExpenses(s: State, now = today()): number {
   const validNow = isValidDateString(now) ? now : today();
   const currentMonth = validNow.slice(0, 7);

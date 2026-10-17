@@ -80,6 +80,13 @@ import {
   type BillItemPresentation,
   type BillDisplayStatus,
   type BillProtectionStatus,
+  getDailyAttentionItems,
+  getDailySuggestedAction,
+  getDailyPaydayPresentation,
+  type DailyAttentionItem,
+  type DailyAttentionSummary,
+  type DailySuggestedAction,
+  type DailyPaydayPresentation,
 } from "../src/model.ts";
 import { useBudget } from "../src/composables/useBudget.ts";
 import { useModal } from "../src/composables/useModal.ts";
@@ -10891,5 +10898,473 @@ test("Test 3D.23 — Payday protection displays actual reserved amount and handl
   assert.equal(pres1Updated.protectionLabel, "Reserved through payday ($60.00)");
 });
 
+// ============================================================================
+// Phase 4A: Daily Home Dashboard Regression Tests
+// ============================================================================
 
+test("Test 4A.1 — Safe to Spend matches existing totals and preserves shortfall invariants", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  state.payday = "2026-10-24";
+  state.followingPayday = "2026-11-07";
 
+  const checking: Account = {
+    id: "acc-check",
+    name: "Primary Checking",
+    type: "checking",
+    balance: 50000, // $500.00 cash
+    opening: 50000,
+    includeInSafeToSpend: true,
+  };
+  state.accounts = [checking];
+
+  // Add bill of $600.00 due before payday
+  const bill: Bill = {
+    id: "bill-rent",
+    name: "Rent",
+    amount: 60000,
+    day: 20,
+  };
+  state.bills = [bill];
+
+  const t = totals(state, simulatedToday);
+  assert.equal(t.balance, 50000, "Cash balance is $500.00");
+  assert.equal(t.currentCycleBills, 60000, "Reserved bills $600.00");
+  assert.equal(t.rawSafe, -10000, "Raw safe is -$100.00");
+  assert.equal(t.shortfall, 10000, "Shortfall is $100.00 deficit");
+  assert.equal(t.safe, 0, "Displayed safe is clamped to $0.00");
+
+  const summary = getDailyAttentionItems(state, simulatedToday);
+  const shortfallItem = summary.items.find((i) => i.category === "shortfall");
+  assert.ok(shortfallItem, "Shortfall attention item is generated");
+  assert.equal(shortfallItem!.severity, "critical");
+  assert.equal(shortfallItem!.amount, 10000);
+  assert.equal(shortfallItem!.urgencyRank, 10);
+  assert.equal(shortfallItem!.actionLabel, "Review budgets");
+  assert.equal(shortfallItem!.targetPage, "Budgets");
+});
+
+test("Test 4A.2 — Shortfall is prioritized at rank 10 and displayed without masking meaning", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  state.payday = "2026-10-24";
+
+  state.accounts = [
+    {
+      id: "acc-1",
+      name: "Checking",
+      type: "checking",
+      balance: 20000, // $200.00
+      opening: 20000,
+      includeInSafeToSpend: true,
+    },
+  ];
+
+  // Bill 1: $300 due Oct 20 (causes $100 shortfall)
+  // Bill 2: $50 overdue from Oct 5
+  // Bill 3: $30 due Oct 18 (due soon)
+  state.bills = [
+    { id: "b1", name: "Rent", amount: 30000, day: 20 },
+    { id: "b2", name: "Water", amount: 5000, day: 5, trackingStartDate: "2026-10-01" },
+    { id: "b3", name: "Electric", amount: 3000, day: 18 },
+  ];
+
+  const summary = getDailyAttentionItems(state, simulatedToday);
+  assert.equal(summary.items.length, 3);
+  assert.equal(summary.items[0]!.category, "shortfall", "Shortfall is ranked #1 (rank 10)");
+  assert.equal(summary.items[1]!.category, "overdue_bill", "Overdue bill is ranked #2 (rank 30)");
+  assert.equal(summary.items[2]!.category, "due_soon_bill", "Due soon bill is ranked #3 (rank 60)");
+
+  const suggested = getDailySuggestedAction(state, summary.items, simulatedToday);
+  assert.equal(suggested.isUrgent, true);
+  assert.equal(suggested.title, "Check your Safe to Spend shortfall");
+  assert.equal(suggested.actionLabel, "Review budgets");
+  assert.equal(suggested.targetPage, "Budgets");
+});
+
+test("Test 4A.3 — Attention priority is deterministic across all categories", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  state.payday = "2026-10-24";
+  state.followingPayday = "2026-11-07";
+
+  // Cash checking: $1,000
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    balance: 100000,
+    opening: 100000,
+    includeInSafeToSpend: true,
+  };
+
+  // Card 1: Overdue minimum payment of $50 (due Oct 10)
+  const cardOverdue: Account = {
+    id: "acc-card-overdue",
+    name: "Overdue Card",
+    type: "credit",
+    balance: 50000,
+    opening: 50000,
+    minPayment: 5000,
+    dueDay: 10,
+    includeInSafeToSpend: false,
+  };
+
+  // Card 2: Current cycle uncovered minimum of $40 (due Oct 20)
+  const cardCurrent: Account = {
+    id: "acc-card-current",
+    name: "Current Card",
+    type: "credit",
+    balance: 40000,
+    opening: 40000,
+    minPayment: 4000,
+    dueDay: 20,
+    includeInSafeToSpend: false,
+  };
+
+  state.accounts = [checking, cardOverdue, cardCurrent];
+
+  // Bill 1: Overdue bill of $80 (due Oct 5)
+  // Bill 2: Due soon bill of $60 (due Oct 19)
+  state.bills = [
+    { id: "bill-overdue", name: "Gym", amount: 8000, day: 5, trackingStartDate: "2026-10-01" },
+    { id: "bill-duesoon", name: "Internet", amount: 6000, day: 19 },
+  ];
+
+  // Transaction: Scheduled expense of $25 due today
+  state.transactions = [
+    {
+      id: "tx-scheduled-today",
+      name: "Office Supplies",
+      amount: -2500,
+      category: "Work",
+      date: simulatedToday,
+      status: "scheduled",
+    },
+  ];
+
+  const summary = getDailyAttentionItems(state, simulatedToday);
+  assert.equal(summary.totalCount, 5, "Total items found across categories");
+
+  // Ranks:
+  // overdue_minimum (20)
+  // overdue_bill (30)
+  // scheduled_expense (40)
+  // uncovered_minimum (50)
+  // due_soon_bill (60)
+  assert.equal(summary.items[0]!.category, "overdue_minimum");
+  assert.equal(summary.items[1]!.category, "overdue_bill");
+  assert.equal(summary.items[2]!.category, "scheduled_expense");
+  assert.equal(summary.hasMore, true);
+});
+
+test("Test 4A.4 — At most three attention items appear in summary and hasMore is accurate", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  state.payday = "2026-10-24";
+  state.accounts = [
+    {
+      id: "acc-chk",
+      name: "Checking",
+      type: "checking",
+      balance: 100000,
+      opening: 100000,
+      includeInSafeToSpend: true,
+    },
+  ];
+
+  // Setup 5 overdue bills
+  state.bills = [
+    { id: "b1", name: "Bill 1", amount: 1000, day: 1, trackingStartDate: "2026-10-01" },
+    { id: "b2", name: "Bill 2", amount: 2000, day: 2, trackingStartDate: "2026-10-01" },
+    { id: "b3", name: "Bill 3", amount: 3000, day: 3, trackingStartDate: "2026-10-01" },
+    { id: "b4", name: "Bill 4", amount: 4000, day: 4, trackingStartDate: "2026-10-01" },
+    { id: "b5", name: "Bill 5", amount: 5000, day: 5, trackingStartDate: "2026-10-01" },
+  ];
+
+  const summary = getDailyAttentionItems(state, simulatedToday);
+  assert.equal(summary.items.length, 3, "Strictly capped at 3 items in primary dashboard");
+  assert.equal(summary.totalCount, 5, "Total count is accurately reported as 5");
+  assert.equal(summary.hasMore, true);
+  assert.equal(summary.moreLabel, "View all bills (2 more)");
+  assert.equal(summary.moreTargetPage, "Recurring Bills");
+});
+
+test("Test 4A.5 — Duplicate concerns are avoided", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  state.payday = "2026-10-24";
+  state.accounts = [
+    {
+      id: "acc-chk",
+      name: "Checking",
+      type: "checking",
+      balance: 50000,
+      opening: 50000,
+      includeInSafeToSpend: true,
+    },
+  ];
+
+  const bill: Bill = {
+    id: "bill-phone",
+    name: "Mobile Phone",
+    amount: 7500,
+    day: 5,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills = [bill];
+
+  // A scheduled transaction exists for this exact bill and occurrence
+  state.transactions = [
+    {
+      id: "tx-phone-sched",
+      name: "Mobile Phone Scheduled",
+      amount: -7500,
+      category: "Bills",
+      date: simulatedToday,
+      status: "scheduled",
+      billId: bill.id,
+      billDueDate: "2026-10-05",
+    },
+  ];
+
+  const summary = getDailyAttentionItems(state, simulatedToday);
+  // Must NOT include both the overdue bill and the scheduled transaction for the same bill
+  assert.equal(summary.items.length, 1, "Only 1 attention item, avoiding duplicate alert");
+  assert.equal(summary.items[0]!.category, "overdue_bill");
+  assert.equal(summary.totalCount, 1);
+});
+
+test("Test 4A.6 — Fully paid obligations and covered minimums do not create alerts", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  state.payday = "2026-10-24";
+
+  // Card with minimum $50 and debt $50, but covered by cash reserve
+  const card: Account = {
+    id: "acc-card",
+    name: "Apple Card",
+    type: "credit",
+    balance: 5000,
+    opening: 5000,
+    minPayment: 5000,
+    dueDay: 20,
+    includeInSafeToSpend: false,
+  };
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    balance: 100000,
+    opening: 100000,
+    includeInSafeToSpend: true,
+  };
+  state.accounts = [checking, card];
+
+  // Bill paid in full
+  const bill: Bill = {
+    id: "bill-sub",
+    name: "Streaming",
+    amount: 1500,
+    day: 10,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills = [bill];
+
+  recordBillPayment(state, bill.id, {
+    amount: 1500,
+    dueDate: "2026-10-10",
+    date: "2026-10-10",
+    status: "posted",
+  });
+
+  // Assign payment reserve covering the credit card
+  assignCardPaymentReserve(card, 5000, simulatedToday);
+
+  const summary = getDailyAttentionItems(state, simulatedToday);
+  assert.equal(summary.items.length, 0, "Zero alerts when obligations are paid and covered");
+  assert.equal(summary.totalCount, 0);
+  assert.equal(summary.hasMore, false);
+});
+
+test("Test 4A.7 — Projected payday income is not described as confirmed and not added to cash", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+
+  // Automated biweekly schedule
+  state.paydaySchedule = {
+    frequency: "biweekly",
+    anchorDate: "2026-10-09",
+    weekendRule: "preceding_friday",
+  };
+
+  state.accounts = [
+    {
+      id: "acc-chk",
+      name: "Checking",
+      type: "checking",
+      balance: 100000, // $1,000.00
+      opening: 100000,
+      includeInSafeToSpend: true,
+    },
+  ];
+
+  const pres = getDailyPaydayPresentation(state, simulatedToday);
+  assert.equal(pres.date, "2026-10-23", "Projected next payday is Oct 23");
+  assert.equal(pres.isConfirmed, false, "Automated schedule without override is not confirmed");
+  assert.equal(pres.isProjected, true, "Is identified as projected");
+  assert.equal(pres.statusLabel, "Projected next payday");
+  assert.equal(pres.daysAway, 6);
+  assert.equal(pres.daysLabel, "in 6 days");
+
+  // Verify Safe to Spend and balance are invariant to future projected payday
+  const t = totals(state, simulatedToday);
+  assert.equal(t.balance, 100000, "Balance remains $1,000.00");
+  assert.equal(t.safe, 100000, "Safe to spend remains $1,000.00");
+
+  // In manual mode with explicit upcoming date
+  const manualState: State = blank();
+  manualState.payday = "2026-10-24";
+  manualState.paydaySchedule = {
+    frequency: "manual",
+    anchorDate: "2026-10-24",
+    weekendRule: "exact",
+  };
+  const manualPres = getDailyPaydayPresentation(manualState, simulatedToday);
+  assert.equal(manualPres.isConfirmed, true, "Explicit manual upcoming date is confirmed");
+  assert.equal(manualPres.isProjected, false);
+  assert.equal(manualPres.statusLabel, "Confirmed next payday");
+});
+
+test("Test 4A.8 — Suggested next action is deterministic and selects neutral action when no urgent items exist", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  state.payday = "2026-10-24";
+
+  state.accounts = [
+    {
+      id: "acc-chk",
+      name: "Checking",
+      type: "checking",
+      balance: 50000,
+      opening: 50000,
+      includeInSafeToSpend: true,
+    },
+  ];
+
+  // Healthy state with 0 attention items
+  const suggestedNeutral = getDailySuggestedAction(state, [], simulatedToday);
+  assert.equal(suggestedNeutral.isUrgent, false);
+  assert.equal(suggestedNeutral.title, "Record daily spending");
+  assert.equal(suggestedNeutral.actionLabel, "Add expense");
+  assert.equal(suggestedNeutral.modalAction?.modal, "Add transaction");
+
+  // Add an overdue bill
+  const bill: Bill = {
+    id: "bill-overdue-wifi",
+    name: "Home Wifi",
+    amount: 5500,
+    day: 5,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills = [bill];
+
+  const suggestedUrgent = getDailySuggestedAction(state, undefined, simulatedToday);
+  assert.equal(suggestedUrgent.isUrgent, true);
+  assert.equal(suggestedUrgent.title, "Pay overdue bill: Home Wifi");
+  assert.equal(suggestedUrgent.actionLabel, "Pay bill");
+  assert.equal(suggestedUrgent.modalAction?.modal, "Pay bill");
+  assert.equal(suggestedUrgent.modalAction?.id, bill.id);
+});
+
+test("Test 4A.9 — Empty states are calm, accurate, and do not falsely claim all obligations are satisfied", () => {
+  const emptyState: State = blank();
+  const simulatedToday = "2026-10-17";
+
+  const summary = getDailyAttentionItems(emptyState, simulatedToday);
+  assert.equal(summary.items.length, 0);
+  assert.equal(summary.totalCount, 0);
+
+  const suggested = getDailySuggestedAction(emptyState, summary.items, simulatedToday);
+  assert.equal(suggested.isUrgent, false);
+  assert.equal(suggested.title, "Set up your accounts");
+  assert.equal(suggested.actionLabel, "Add account");
+  assert.equal(suggested.modalAction?.modal, "Add account");
+
+  // Check payday presentation on unconfigured empty state
+  emptyState.payday = "";
+  emptyState.paydaySchedule.anchorDate = "";
+  const paydayPres = getDailyPaydayPresentation(emptyState, simulatedToday);
+  assert.equal(paydayPres.isConfirmed, false);
+  assert.equal(paydayPres.isProjected, false);
+  assert.equal(paydayPres.daysLabel, "Not set");
+  assert.equal(paydayPres.statusLabel, "No payday set");
+});
+
+test("Test 4A.10 — Phase 3 bill and credit safeguards remain intact", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  state.payday = "2026-10-24";
+  state.followingPayday = "2026-11-07";
+
+  // Checking cash: $1,000.00
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    balance: 100000,
+    opening: 100000,
+    includeInSafeToSpend: true,
+  };
+
+  // Credit Card: $200 debt owed, minimum $35 due Oct 20
+  const creditCard: Account = {
+    id: "acc-cc",
+    name: "Visa",
+    type: "credit",
+    balance: 20000,
+    opening: 20000,
+    minPayment: 3500,
+    dueDay: 20,
+    includeInSafeToSpend: false,
+  };
+
+  state.accounts = [checking, creditCard];
+
+  // Bill: $100 due Oct 19
+  const bill: Bill = {
+    id: "bill-water",
+    name: "Water Utility",
+    amount: 10000,
+    day: 19,
+  };
+  state.bills = [bill];
+
+  // Safe to Spend check:
+  // Checking cash: $1,000
+  // Bills: $100
+  // Minimum: $35
+  // Safe: $1,000 - $100 - $35 = $865.00
+  const t = totals(state, simulatedToday);
+  assert.equal(t.currentCycleBills, 10000);
+  assert.equal(t.currentCycleMinimums, 3500);
+  assert.equal(t.safe, 86500);
+
+  // Pay bill partially: pay $40
+  recordBillPayment(state, bill.id, {
+    amount: 4000,
+    dueDate: "2026-10-19",
+    date: simulatedToday,
+    status: "posted",
+    accountId: checking.id,
+  });
+
+  // Checking balance decreases by $40 -> $960
+  // Remaining bill reservation is $60
+  // Card min is $35
+  // Safe: $960 - $60 - $35 = $865.00 (INVARIANT PRESERVED!)
+  const tAfter = totals(state, simulatedToday);
+  assert.equal(tAfter.balance, 96000);
+  assert.equal(tAfter.currentCycleBills, 6000);
+  assert.equal(tAfter.safe, 86500, "Safe to Spend is invariant under partial bill payment");
+});

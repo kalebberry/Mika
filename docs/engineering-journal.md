@@ -1231,3 +1231,138 @@ Following independent review of commit `23c06d034e0349f0e7836c01febc60a127580ae8
 #### 5. Verification Results (Corrections)
 - **Automated Tests**: 184 passing tests (`node --test tests/budget.test.ts`), 0 failures, 0 skipped.
 - **Production Build**: `npm run build` (`vue-tsc -b && vite build`) passed cleanly with 0 errors.
+
+---
+
+## Phase 4A — Daily Home Dashboard (Completed)
+
+**Branch**: `phase/4a-daily-home-dashboard`  
+**Status**: Completed, verified with full regression suite.
+
+### 1. Objective & Core Principle
+
+**Core Principle**: Make Mika Budget easier to use consistently on a daily basis, especially for users with ADHD, while preserving the financial engine, signed arithmetic invariants, and manual-first philosophy.
+
+The home dashboard is restructured to give users instant clarity within seconds of opening the app, eliminating decision paralysis, visual clutter, and anxiety.
+
+---
+
+### 2. Daily Dashboard Hierarchy
+
+The home view (`OverviewView.vue`) presents information in strict descending priority:
+
+1. **Safe to Spend** (`SafeToSpendCard.vue`):
+   - The primary number and single most prominent focal point on the page.
+   - Uses the existing totals engine (`totals(s, now)`), preserving `rawSafe`, `safe`, and `shortfall` semantics.
+   - When a shortfall exists, it is displayed clearly with honest deficit numbers without masking or false comfort.
+2. **What Needs Attention** (`DailyAttentionCard.vue`):
+   - A prioritized, deterministic card summarizing at most three urgent or upcoming actionable financial items.
+   - Highlights at most **one suggested next action** with a direct action button (e.g., "Pay bill", "Review card", "Add expense") or a calm, neutral suggestion when everything is in balance.
+   - If more than 3 items need attention, displays a calm routing link to the relevant screen (e.g. "View all bills (2 more)").
+3. **Next Payday** (`DailyPaydayCard.vue`):
+   - Clear presentation of deposit date, countdown, and cadence.
+   - **Critical Financial Distinction**: Explicitly differentiates between **Confirmed** paydays (manual entries or cadence occurrences with manual overrides) and **Projected** paydays (automated recurring schedules without overrides).
+   - Projected income is never added to available cash or Safe to Spend.
+4. **Quick Actions** (`QuickActionsCard.vue`):
+   - One-click shortcuts for primary daily tasks:
+     - **Add expense**: Opens transaction modal prefilled for Expense.
+     - **Add income**: Opens transaction modal prefilled for Income.
+     - **Record bill payment**: Smartly targets the earliest overdue or due-soon bill occurrence, or routes to Bills if multiple/none exist.
+     - **View bills**: Direct navigation to Recurring Bills.
+5. **Supporting Financial Details**:
+   - Secondary financial metrics (Monthly Cash Flow stat grid, Accounts balance cards, Budgets progress, Savings pots) remain accessible lower on the page without cluttering the initial viewport.
+
+---
+
+### 3. Pure Attention & Prioritization Engine (`src/model.ts`)
+
+All daily dashboard decisions are computed via pure, deterministic, side-effect-free selectors:
+
+#### Prioritization Rules (`getDailyAttentionItems`)
+1. **Rank 10 — Safe to Spend Shortfall (`category: "shortfall"`)**:
+   - Triggered when `totals.shortfall > 0`.
+   - Highest priority: alerts the user that planned reserves exceed available cash.
+2. **Rank 20 — Overdue Credit Card Minimums (`category: "overdue_minimum"`)**:
+   - Overdue minimum payment on an active credit card requiring cash protection.
+3. **Rank 30 — Overdue Bills (`category: "overdue_bill"`)**:
+   - Unpaid or partially paid bill occurrences where `dueDate < now`.
+4. **Rank 40 — Scheduled Expenses Due Today or Past Due (`category: "scheduled_expense"`)**:
+   - Uncovered scheduled transactions dated on or before `now` requiring confirmation.
+5. **Rank 50 — Uncovered Credit Card Minimums Due Soon (`category: "uncovered_minimum"`)**:
+   - Card minimums due within the next 3 days (`dueDate <= addDays(now, 3)`) with remaining protection needed.
+6. **Rank 60 — Bills Due Soon (`category: "due_soon_bill"`)**:
+   - Bills due within the next 3 days (`dueDate <= addDays(now, 3)`) with remaining unpaid balance.
+
+- **Tie-Breaking**: Secondary sort by due date ascending (earliest first), then by financial impact (remaining amount descending).
+- **Hard Limit**: The primary summary card presents at most 3 items (`items.slice(0, 3)`).
+- **Deduplication**:
+  - Fully paid bills and covered minimums (via Ready to Pay reserves) generate zero attention items.
+  - Scheduled transactions linked to recurring bills do not generate duplicate alerts.
+  - Credit card minimums with $0 debt or already satisfied cycles produce zero alerts.
+
+#### Suggested Next Action (`getDailySuggestedAction`)
+- Derives at most ONE primary next action based on the top attention item.
+- Includes prefilled modal actions (`modalAction`) or page navigation targets (`targetPage`).
+- **Neutral Fallback**: When no urgent issues exist, suggests a neutral, non-alarmist task:
+  - If no balance or transactions: "Set up your accounts".
+  - If manual payday has passed: "Update your next payday".
+  - Otherwise: "Record daily spending" ("Your budget is in good shape today. Record purchases as they happen.").
+- Never implies automated execution, automatic bank movement, or confirmed transactions.
+
+#### Payday Presentation (`getDailyPaydayPresentation`)
+- Identifies whether the upcoming payday is confirmed or projected.
+- Labels:
+  - `"Confirmed next payday"` (explicit manual schedule).
+  - `"Confirmed (adjusted)"` (automated schedule with a calendar override).
+  - `"Projected next payday"` (automated cadence without manual confirmation).
+  - `"Payday passed"` (manual payday date is in the past).
+  - `"No payday set"` (unconfigured schedule).
+
+---
+
+### 4. ADHD-Friendly Presentation Principles
+
+1. **One Clear Primary Focal Point**: The Safe to Spend card commands attention first with high-contrast typography.
+2. **Concise, Non-Guilt Language**: Neutral, factual descriptions (e.g. "Reserve deficit: $50.00" or "Unpaid balance: $120.00") without shame, scolding, or urgency baiting.
+3. **Calm Empty States**: When no attention items exist, a peaceful banner with a checkmark indicates "All caught up" without fabricating artificial tasks or implying obligations don't exist.
+4. **Predictable Layout & Quick Actions**: Fixed, recognizable action buttons for recording expenses, income, and bill payments reduce cognitive friction.
+5. **Zero Gamification**: No streaks, XP points, countdown timers, or distracting animations.
+6. **Accessible Navigation**: Semantic HTML buttons, visible `:focus-visible` outline rings, and responsive grid layouts tested for keyboard and mobile usage.
+
+---
+
+### 5. Financial Invariants Preserved
+
+1. **Safe to Spend Conservation**: Safe to Spend calculations are completely unchanged. `totals(state, now)` remains the authoritative calculation engine.
+2. **No Unearned Cash**: Projected payday income is strictly informational and is never credited to spendable cash or ledger balances.
+3. **Bill Reservation Source of Truth**: Attention items source directly from `reserveBillsBreakdown` and `getBillItemPresentation`.
+4. **Covered Credit Protection**: Minimum payments continue to deduct only unbacked amounts ($\max(0, \text{remainingMin} - \text{readyToPay})$).
+5. **Schema & Persistence Integrity**: Zero schema migrations or state mutations were introduced.
+
+---
+
+### 6. Verification & Test Suite
+
+All 194 automated tests pass cleanly (`npm test`):
+- Added 10 dedicated regression tests (`Test 4A.1` – `Test 4A.10`) covering:
+  - `Test 4A.1`: Safe to Spend matches existing totals and preserves shortfall invariants.
+  - `Test 4A.2`: Shortfall is prioritized at rank 10 and displayed without masking meaning.
+  - `Test 4A.3`: Attention priority is deterministic across all categories.
+  - `Test 4A.4`: At most three attention items appear in summary and `hasMore` is accurate.
+  - `Test 4A.5`: Duplicate concerns are avoided.
+  - `Test 4A.6`: Fully paid obligations and covered minimums do not create alerts.
+  - `Test 4A.7`: Projected payday income is not described as confirmed and not added to cash.
+  - `Test 4A.8`: Suggested next action is deterministic and selects neutral action when no urgent items exist.
+  - `Test 4A.9`: Empty states are calm, accurate, and do not falsely claim all obligations are satisfied.
+  - `Test 4A.10`: Phase 3 bill and credit safeguards remain intact under partial bill payments and credit reserve assignments.
+
+Production build check (`npm run build`):
+- `vue-tsc -b && vite build` passed cleanly with 0 TypeScript or bundling errors.
+
+---
+
+### 7. Known Limitations
+
+1. **Local Occurrence Resolution**: Suggested bill actions target the earliest outstanding occurrence within the current tracking horizon. If a bill has multiple overdue occurrences spanning several months, the dashboard highlights the earliest one; resolving it surfaces the subsequent occurrence on the next evaluation.
+2. **Manual Payday Updates**: Automated cadence schedules project paydays deterministically, but manual schedules require user updates in Settings once the anchor date has passed. The dashboard cleanly alerts the user with a neutral "Update your next payday" suggestion when this occurs.
+

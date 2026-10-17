@@ -26,6 +26,13 @@ import {
   getBillItemPresentation,
   getBillTargetOccurrenceDate,
   type BillItemPresentation,
+  getDailyAttentionItems,
+  getDailySuggestedAction,
+  getDailyPaydayPresentation,
+  type DailyAttentionItem,
+  type DailyAttentionSummary,
+  type DailySuggestedAction,
+  type DailyPaydayPresentation,
   settleBillOccurrence,
   unsettleBillOccurrence,
   recordBillPayment,
@@ -255,6 +262,16 @@ const days = computed(() =>
 
 const currentPayday = computed(() => getCurrentPayday(state.value));
 const followingPayday = computed(() => getFollowingPayday(state.value));
+
+const dailyAttentionSummary = computed(() =>
+  getDailyAttentionItems(state.value, today()),
+);
+const dailySuggestedAction = computed(() =>
+  getDailySuggestedAction(state.value, dailyAttentionSummary.value.items, today()),
+);
+const dailyPayday = computed(() =>
+  getDailyPaydayPresentation(state.value, today()),
+);
 
 const categoryRecent = (c: string) =>
   [...monthly.value]
@@ -945,6 +962,9 @@ export function useBudget() {
     getPastCreditCardDueDate,
     getMonthlyExpenses: (m = month.value) => getMonthlyExpenses(state.value, m),
     getMonthlyIncome: (m = month.value) => getMonthlyIncome(state.value, m),
+    dailyAttentionSummary,
+    dailySuggestedAction,
+    dailyPayday,
     registerModelContext,
   };
 }

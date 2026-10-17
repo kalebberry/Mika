@@ -293,6 +293,23 @@ export function useModal() {
       };
     } else if (
       m === "Add transaction" &&
+      (defaultCategory?.toLowerCase() === "income" || id?.toLowerCase() === "income")
+    ) {
+      form.value = {
+        ...form.value,
+        type: "Income",
+        category: "Income",
+      };
+    } else if (
+      m === "Add transaction" &&
+      (defaultCategory?.toLowerCase() === "expense" || id?.toLowerCase() === "expense")
+    ) {
+      form.value = {
+        ...form.value,
+        type: "Expense",
+      };
+    } else if (
+      m === "Add transaction" &&
       (defaultCategory === "Credit Card Payment" || defaultCategory === "payment")
     ) {
       const targetCard = (state.value.accounts || []).find(
