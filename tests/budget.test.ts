@@ -47,6 +47,7 @@ import {
   getNextPayday,
   getFollowingPaydayDate,
   getFollowingPayday,
+  getCurrentPayday,
   validatePaydayOverride,
   applyPaydayOverride,
   removePaydayOverride,
@@ -4238,7 +4239,7 @@ test("Test 3A.1 — Schema v5 migration: preserves v4 payday values, defaults to
         amount: 120000,
         day: 1,
         protected: true,
-        settledDueDates: [],
+        settledDueDates: ["2026-10-01"],
       },
     ],
     transactions: [
@@ -4990,6 +4991,481 @@ test("Test 3A.10 — Issue 4: JSON backup round trips and migration idempotence 
   assert.equal(tRestored.totalReadyToPay, tOriginal.totalReadyToPay);
   assert.equal(tRestored.bills, tOriginal.bills);
 });
+
+test("Test 3A.2.1 — Historical ledger activity does not invent overdue bills during migration", () => {
+  const simulatedToday = "2026-10-16";
+  const rawV4State = {
+    version: 4,
+    opening: 500000,
+    payday: "2026-10-23",
+    followingPayday: "2026-11-06",
+    bills: [
+      {
+        id: "b-wifi",
+        name: "Fiber Internet",
+        amount: 6000,
+        day: 5,
+        protected: false,
+        settledDueDates: [],
+        // Notice: No trackingStartDate present in legacy state
+      },
+    ],
+    transactions: [
+      {
+        id: "tx-aug",
+        name: "Old Purchase August",
+        amount: -2500,
+        date: "2026-08-10",
+        status: "posted",
+      },
+      {
+        id: "tx-sep",
+        name: "Old Purchase September",
+        amount: -3000,
+        date: "2026-09-12",
+        status: "posted",
+      },
+    ],
+  };
+
+  const migrated = migrateState(rawV4State, simulatedToday);
+
+  // Bill begins tracking from the migration month (2026-10-01)
+  const bill = migrated.bills.find((b) => b.id === "b-wifi")!;
+  assert.equal(bill.trackingStartDate, "2026-10-01", "Legacy bill tracking starts at migration month");
+
+  // Breakdown must only reserve the October occurrence, NOT earlier historical occurrences
+  const breakdown = reserveBillsBreakdown(migrated, simulatedToday);
+  assert.equal(breakdown.currentCycleBills, 6000, "Only current cycle October occurrence is reserved");
+  assert.equal(breakdown.protectedCycleBills, 0);
+  assert.equal(breakdown.details.length, 1);
+  assert.equal(breakdown.details[0]!.dueDate, "2026-10-05");
+});
+
+test("Test 3A.2.2 — Bill created after its due day does not automatically create an overdue occurrence", () => {
+  const simulatedToday = "2026-10-16";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+
+  // Bill created on Oct 16 with due day on the 5th
+  const newBill: Bill = {
+    id: "b-streaming",
+    name: "Video Stream",
+    amount: 1500,
+    day: 5,
+    protected: true,
+    trackingStartDate: "2026-10-16", // Explicit tracking start date
+  };
+  state.bills.push(newBill);
+
+  // Next unpaid due date must be Nov 5, NOT Oct 5
+  const nextDue = nextUnpaidDueDate(state, newBill, simulatedToday);
+  assert.equal(nextDue, "2026-11-05", "Must skip pre-tracking Oct 5 occurrence and project Nov 5");
+
+  // Not unpaid for current month
+  assert.equal(isBillUnpaidThisMonth(state, newBill, simulatedToday), false, "Must not be unpaid this month");
+
+  // Breakdown does not reserve October 5 in current cycle
+  const breakdown = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(breakdown.currentCycleBills, 0, "Pre-tracking due date must not become overdue debt");
+  assert.equal(breakdown.protectedCycleBills, 1500, "Protected Nov 5 occurrence is reserved in following cycle");
+  assert.equal(breakdown.details.length, 1);
+  assert.equal(breakdown.details[0]!.dueDate, "2026-11-05");
+});
+
+test("Test 3A.2.3 — Multi-occurrence overdue bill reservations (> 60 days lookback)", () => {
+  const simulatedToday = "2026-10-16";
+  const state: State = blank();
+  state.opening = 300000;
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+
+  // Bill tracked since July 1, unpaid for 4 months (July, Aug, Sep, Oct)
+  const longOverdueBill: Bill = {
+    id: "b-storage",
+    name: "Storage Unit",
+    amount: 5000,
+    day: 10,
+    protected: false,
+    trackingStartDate: "2026-07-01",
+  };
+  state.bills.push(longOverdueBill);
+
+  const breakdown = reserveBillsBreakdown(state, simulatedToday);
+  // July 10, Aug 10, Sep 10, Oct 10 = 4 occurrences * $50 = $200 (20000 cents)
+  assert.equal(breakdown.currentCycleBills, 20000, "Must reserve all 4 overdue occurrences");
+  assert.equal(breakdown.details.length, 4);
+  assert.deepEqual(
+    breakdown.details.map((d) => d.dueDate),
+    ["2026-07-10", "2026-08-10", "2026-09-10", "2026-10-10"],
+    "Must retain occurrences older than 60 days without arbitrary drop-off",
+  );
+
+  const earliestUnpaid = nextUnpaidDueDate(state, longOverdueBill, simulatedToday);
+  assert.equal(earliestUnpaid, "2026-07-10", "Earliest unpaid due date must be July 10");
+});
+
+test("Test 3A.2.4 — One payment settles only its intended occurrence", () => {
+  const simulatedToday = "2026-10-16";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+
+  const gymBill: Bill = {
+    id: "b-gym",
+    name: "Fitness Gym",
+    amount: 5000,
+    day: 5,
+    protected: false,
+    trackingStartDate: "2026-08-01",
+  };
+  state.bills.push(gymBill);
+
+  // Before payments: Aug 5, Sep 5, Oct 5 are unpaid = 15000 cents
+  let bd = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(bd.currentCycleBills, 15000);
+
+  // Payment 1: Explicitly tagged with billDueDate for September 5
+  state.transactions.push({
+    id: "tx-gym-sep",
+    name: "Gym Payment (Sep)",
+    amount: -5000,
+    category: "Fitness",
+    date: "2026-09-20",
+    status: "posted",
+    billId: gymBill.id,
+    billDueDate: "2026-09-05",
+  });
+
+  assert.equal(isBillPaid(state, gymBill, "2026-08-05"), false, "August remains unpaid");
+  assert.equal(isBillPaid(state, gymBill, "2026-09-05"), true, "September is paid");
+  assert.equal(isBillPaid(state, gymBill, "2026-10-05"), false, "October remains unpaid");
+
+  bd = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(bd.currentCycleBills, 10000, "Only August and October are reserved");
+  assert.deepEqual(
+    bd.details.map((d) => d.dueDate),
+    ["2026-08-05", "2026-10-05"],
+  );
+
+  // Payment 2: Transaction without billDueDate dated in October
+  state.transactions.push({
+    id: "tx-gym-oct",
+    name: "Gym Payment (Oct)",
+    amount: -5000,
+    category: "Fitness",
+    date: "2026-10-08",
+    status: "posted",
+    billId: gymBill.id,
+  });
+
+  assert.equal(isBillPaid(state, gymBill, "2026-08-05"), false, "August is STILL unpaid");
+  assert.equal(isBillPaid(state, gymBill, "2026-10-05"), true, "October is paid by October transaction");
+
+  bd = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(bd.currentCycleBills, 5000, "Only August is reserved");
+  assert.equal(bd.details[0]!.dueDate, "2026-08-05");
+
+  // Settlement: Manual settlement for August occurrence
+  settleBillOccurrence(state, gymBill.id, "2026-08-05");
+  assert.equal(isBillPaid(state, gymBill, "2026-08-05"), true, "August is now settled");
+
+  bd = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(bd.currentCycleBills, 0, "All occurrences are now resolved");
+});
+
+test("Test 3A.2.5 — Covered versus uncovered credit-card bill purchases", () => {
+  const simulatedToday = "2026-10-16";
+
+  // Scenario A: Budget-covered bill purchase on credit card
+  const stateCovered: State = blank();
+  stateCovered.accounts = [
+    {
+      id: "acc-checking",
+      name: "Checking",
+      type: "checking",
+      opening: 200000,
+      includeInSafeToSpend: true,
+      createdAt: "2026-10-01",
+      updatedAt: "2026-10-01",
+    },
+    {
+      id: "acc-card",
+      name: "Credit Card",
+      type: "credit",
+      opening: 0,
+      includeInSafeToSpend: false,
+      coveredCreditBaselineAt: "2026-10-01",
+      createdAt: "2026-10-01",
+      updatedAt: "2026-10-01",
+    },
+  ];
+  stateCovered.budgets = [
+    { id: "bg-util", category: "Utilities", limit: 20000, color: "#277c78" },
+  ];
+  const utilBill: Bill = {
+    id: "b-util",
+    name: "Power Utility",
+    amount: 12000,
+    day: 5,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  stateCovered.bills.push(utilBill);
+
+  // Before credit charge: bill is reserved ($120)
+  let t = totals(stateCovered, simulatedToday);
+  assert.equal(t.bills, 12000);
+  assert.equal(t.totalReadyToPay, 0);
+
+  // Bill charged to credit card under "Utilities" category
+  stateCovered.transactions.push({
+    id: "tx-util-card",
+    name: "Power Utility Charge",
+    amount: -12000,
+    category: "Utilities",
+    date: "2026-10-05",
+    status: "posted",
+    accountId: "acc-card",
+    kind: "standard",
+    billId: utilBill.id,
+    billDueDate: "2026-10-05",
+    createdAt: "2026-10-05T12:00:00.000Z",
+  });
+
+  t = totals(stateCovered, simulatedToday);
+  // Bill reservation must be released
+  assert.equal(t.bills, 0, "Bill reservation released after credit card purchase");
+  // Debt is covered by budget: Ready to Pay increases by $120
+  assert.equal(t.totalCreditOwed, 12000, "Credit card owes $120");
+  assert.equal(t.totalReadyToPay, 12000, "Ready to Pay is $120 backed by budget");
+  assert.equal(t.totalUncoveredDebt, 0, "Uncovered debt is $0");
+  // Checking balance intact ($2,000)
+  assert.equal(t.balance, 200000);
+  // Remaining budget: 20000 - 12000 = 8000
+  assert.equal(t.budgets, 8000);
+  // Safe to Spend: 200000 - 8000 (budget) - 12000 (readyToPay) = 180000
+  assert.equal(t.safe, 180000);
+
+  // Scenario B: Uncovered (unbudgeted) bill purchase on credit card
+  const stateUncovered: State = blank();
+  stateUncovered.accounts = [
+    {
+      id: "acc-checking",
+      name: "Checking",
+      type: "checking",
+      opening: 200000,
+      includeInSafeToSpend: true,
+      createdAt: "2026-10-01",
+      updatedAt: "2026-10-01",
+    },
+    {
+      id: "acc-card",
+      name: "Credit Card",
+      type: "credit",
+      opening: 0,
+      includeInSafeToSpend: false,
+      coveredCreditBaselineAt: "2026-10-01",
+      createdAt: "2026-10-01",
+      updatedAt: "2026-10-01",
+    },
+  ];
+  stateUncovered.bills.push(utilBill);
+  // No budget for Utilities
+
+  // Bill charged to credit card
+  stateUncovered.transactions.push({
+    id: "tx-util-card-unbudgeted",
+    name: "Power Utility Charge",
+    amount: -12000,
+    category: "Utilities",
+    date: "2026-10-05",
+    status: "posted",
+    accountId: "acc-card",
+    kind: "standard",
+    billId: utilBill.id,
+    billDueDate: "2026-10-05",
+    createdAt: "2026-10-05T12:00:00.000Z",
+  });
+
+  t = totals(stateUncovered, simulatedToday);
+  assert.equal(t.bills, 0, "Bill reservation released");
+  assert.equal(t.totalCreditOwed, 12000, "Credit card owes $120");
+  assert.equal(t.totalReadyToPay, 0, "No cash reserved in Ready to Pay for unbudgeted debt");
+  assert.equal(t.totalUncoveredDebt, 12000, "Uncovered debt accurately reported as $120");
+  assert.equal(t.safe, 200000, "Cash in checking remains unreserved");
+});
+
+test("Test 3A.2.6 — Scheduled transaction deduplication & standalone Bills category protection", () => {
+  const simulatedToday = "2026-10-16";
+  const state: State = blank();
+  state.opening = 100000;
+  state.payday = "2026-10-23";
+
+  const waterBill: Bill = {
+    id: "b-water",
+    name: "Water Utility",
+    amount: 4000,
+    day: 18,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(waterBill);
+
+  // Scheduled transaction 1: Linked to active tracked bill (must be deduplicated)
+  state.transactions.push({
+    id: "tx-sched-linked",
+    name: "Water Utility Scheduled",
+    amount: -4000,
+    category: "Bills",
+    date: "2026-10-18",
+    status: "scheduled",
+    billId: waterBill.id,
+  });
+
+  // Scheduled transaction 2: Standalone scheduled expense in "Bills" category (must NOT disappear!)
+  state.transactions.push({
+    id: "tx-sched-standalone",
+    name: "One-off Medical Bill",
+    amount: -6000,
+    category: "Bills",
+    date: "2026-10-19",
+    status: "scheduled",
+  });
+
+  const uncovered = getUncoveredScheduledExpenses(state, simulatedToday);
+  // Transaction 1 is deduplicated against b-water.
+  // Transaction 2 is counted as an uncovered scheduled expense (6000 cents).
+  assert.equal(uncovered, 6000, "Standalone scheduled bill must be reserved as uncovered expense");
+
+  const t = totals(state, simulatedToday);
+  assert.equal(t.bills, 4000, "Tracked bill reserved in bills breakdown");
+  assert.equal(t.uncoveredScheduledExpenses, 6000, "Standalone scheduled expense reserved in uncovered expenses");
+  // Safe to Spend: 100000 - 4000 (bills) - 6000 (uncovered sched) = 90000
+  assert.equal(t.safe, 90000, "Both obligations accounted for exactly once without double counting");
+});
+
+test("Test 3A.2.7 — Dynamic payday boundaries advance automatically without manual settings update", () => {
+  const state: State = blank();
+  state.opening = 500000;
+  state.paydaySchedule = {
+    frequency: "biweekly",
+    anchorDate: "2026-10-09",
+    weekendRule: "exact",
+    overrides: [],
+  };
+
+  // As of Oct 16:
+  // Next payday is Oct 23, following is Nov 6
+  assert.equal(getCurrentPayday(state, "2026-10-16"), "2026-10-23");
+  assert.equal(getFollowingPayday(state, "2026-10-16"), "2026-11-06");
+
+  const bill1: Bill = {
+    id: "b-car",
+    name: "Car Payment",
+    amount: 30000,
+    day: 20,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(bill1);
+
+  let bd = reserveBillsBreakdown(state, "2026-10-16");
+  assert.equal(bd.currentCycleBills, 30000, "Car payment due Oct 20 is in current cycle");
+
+  // Advance time to Oct 24 (past payday) without modifying state.payday or state.paydaySchedule
+  // Dynamic payday engine automatically advances:
+  assert.equal(getCurrentPayday(state, "2026-10-24"), "2026-11-06", "Payday advances to Nov 6");
+  assert.equal(getFollowingPayday(state, "2026-10-24"), "2026-11-20", "Following payday advances to Nov 20");
+
+  // If paycheck was missed, balance is unchanged
+  const t = totals(state, "2026-10-24");
+  assert.equal(t.balance, 500000, "Cash balance does not inflate on missed paycheck");
+
+  // The Oct 20 bill remains unpaid and overdue: it must NOT disappear!
+  bd = reserveBillsBreakdown(state, "2026-10-24");
+  assert.equal(bd.currentCycleBills, 30000, "Overdue unpaid bill is retained across payday transition");
+  assert.equal(bd.details[0]!.dueDate, "2026-10-20");
+});
+
+test("Test 3A.2.8 — Repeated migration idempotence and manual payday migration parity", () => {
+  const simulatedToday = "2026-10-16";
+  const rawV4State = {
+    version: 4,
+    opening: 400000,
+    payday: "2026-10-25",
+    followingPayday: "2026-11-10",
+    accounts: [
+      {
+        id: "acc-default-checking",
+        name: "Checking",
+        type: "checking",
+        opening: 400000,
+        includeInSafeToSpend: true,
+        createdAt: "2026-10-01",
+        updatedAt: "2026-10-01",
+      },
+    ],
+    bills: [
+      {
+        id: "b-phone",
+        name: "Mobile Phone",
+        amount: 8500,
+        day: 22,
+        protected: false,
+        settledDueDates: [],
+      },
+    ],
+    budgets: [],
+    pots: [],
+    transactions: [],
+  };
+
+  const m1 = migrateState(rawV4State, simulatedToday);
+  const m2 = migrateState(m1, simulatedToday);
+
+  // Migration is strictly idempotent
+  assert.deepEqual(m2, m1, "Repeated migration must be idempotent");
+
+  // Manual payday values are authoritative and preserved
+  assert.equal(m1.payday, "2026-10-25");
+  assert.equal(m1.followingPayday, "2026-11-10");
+  assert.equal(getCurrentPayday(m1, simulatedToday), "2026-10-25");
+  assert.equal(getFollowingPayday(m1, simulatedToday), "2026-11-10");
+
+  // Financial totals match expectations
+  const t = totals(m1, simulatedToday);
+  assert.equal(t.bills, 8500);
+  assert.equal(t.safe, 400000 - 8500);
+});
+
+test("Test 3A.2.9 — Negative rawSafe, safe = 0, and shortfall contract preservation", () => {
+  const state: State = blank();
+  state.opening = 10000; // $100 cash
+  state.payday = "2026-10-23";
+
+  // Bill of $250
+  state.bills.push({
+    id: "b-rent-short",
+    name: "Partial Rent",
+    amount: 25000,
+    day: 18,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  });
+
+  const t = totals(state, "2026-10-16");
+  assert.equal(t.balance, 10000);
+  assert.equal(t.bills, 25000);
+  // rawSafe: 10000 - 25000 = -15000
+  assert.equal(t.rawSafe, -15000, "rawSafe preserves signed unclamped negative value");
+  // safe: clamped to 0
+  assert.equal(t.safe, 0, "safe remains non-negative 0");
+  // shortfall: Math.abs(rawSafe)
+  assert.equal(t.shortfall, 15000, "shortfall correctly reports positive deficit of $150");
+});
+
 
 
 

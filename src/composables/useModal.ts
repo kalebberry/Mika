@@ -802,6 +802,7 @@ export function useModal() {
           amount,
           day: Number(f.day),
           protected: Boolean(f.protected),
+          trackingStartDate: today(),
         });
       }
     } else if (mode.value === "Start fresh") {

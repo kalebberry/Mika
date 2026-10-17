@@ -241,4 +241,65 @@ Following independent review of the initial Phase 3A.1 push, four specific corre
 6. **How does progressive override sanitization prevent schema v5 migration or backup import from corrupting financial state?**
    - *Answer*: If imported JSON contains malformed or conflicting overrides (such as duplicate keys, colliding target dates, or non-calendar strings), progressive sanitization validates each entry against the schedule and preceding accepted overrides. Conflicting entries are dropped while preserving valid entries. The user's accounts, transactions, and budget allocations are processed completely independently, ensuring zero financial corruption.
 
+---
+
+## Phase 3A.2 — Payday Financial Integration
+
+### 1. Objectives & Architectural Decisions
+Phase 3A.2 bridges the Smart Payday Planning engine into recurring bill reservations, scheduled expense tracking, and the core Safe to Spend calculation.
+- **Dynamic Payday Boundaries**: Non-manual payday schedules dynamically calculate the current cycle boundary (`getCurrentPayday`) and following cycle boundary (`getFollowingPayday`) without requiring manual settings updates as time advances. Manual schedules continue to respect explicit user-configured `payday` and `followingPayday` values for 100% financial parity.
+- **Per-Bill Tracking Start Policy**:
+  - Legacy bills without `trackingStartDate` begin tracking on the first of the migration month (`now.slice(0, 7) + "-01"`), preventing phantom historical debt from being inferred from pre-migration ledger gaps.
+  - Newly created bills receive an explicit `trackingStartDate` (defaulting to creation date `today()`). Due occurrences prior to `trackingStartDate` are excluded, guaranteeing that a bill created after its monthly due day does not invent an immediate overdue obligation.
+- **Multi-Occurrence Overdue Bill Reservations**: Replaced single-occurrence checks with a deterministic multi-occurrence traversal across all calendar months from `trackingStartDate` up to `followingEnd`. Legitimate overdue occurrences across multiple past months (> 60 days) remain fully reserved in `currentCycleBills` until settled or paid.
+- **Bill-to-Transaction Matching**: Payments match specific bill occurrences via `t.billDueDate === occurrenceDate` or fall back to month matching `(!t.billDueDate && t.date.startsWith(occurrenceDate.slice(0, 7)))`. One payment settles only its intended occurrence, preventing a single transaction from clearing multiple overdue months.
+- **Defensible Scheduled Expense Deduplication**: Replaced crude category-based suppression (`category === "Bills"`) with active bill linkage checks (`t.billId && s.bills.some(...)`). Standalone scheduled expenses in the "Bills" category remain protected and evaluated against category budgets, while bill-linked scheduled transactions avoid double counting.
+- **Preserved Phase 2B Covered Credit Invariants**: Charging a bill to a credit card releases its bill reservation. If budgeted, funds move into `Ready to Pay` and reserve cash; if unbudgeted, debt remains reported as `uncoveredDebt` without pretending cash is reserved.
+- **Preserved Safe to Spend Semantics**: Maintained `rawSafe`, `safe = Math.max(0, rawSafe)`, and `shortfall = rawSafe < 0 ? Math.abs(rawSafe) : 0`.
+
+---
+
+### 2. Files Changed
+- [`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts):
+  - Added `trackingStartDate?: string` to `Bill` type.
+  - Implemented `getCurrentPayday(s, asOf)`.
+  - Updated `getFollowingPayday(s, asOf)` with default parameter `asOf = today()`.
+  - Updated `nextUnpaidDueDate` to evaluate starting from `trackingStartDate || (fromDate.slice(0, 7) + "-01")`.
+  - Refactored `reserveBillsBreakdown` to loop from `trackingStartDate` to `maxEnd`, reserving every legitimately unpaid occurrence across multiple cycles.
+  - Updated `getUncoveredScheduledExpenses` to use dynamic payday boundaries and link-based deduplication (`t.billId && s.bills.some(...)`).
+  - Updated `isBillUnpaidThisMonth` to guard against pre-tracking due dates.
+  - Updated `migrateState` to initialize `trackingStartDate` for legacy bills to the start of the migration month.
+- [`src/composables/useModal.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/composables/useModal.ts):
+  - Initialized `trackingStartDate: today()` when creating new recurring bills via modal.
+- [`src/utils/format.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/utils/format.ts):
+  - Updated `billStatus` to use `getCurrentPayday(state, now)` and `getFollowingPayday(state, now)`.
+- [`tests/budget.test.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/tests/budget.test.ts):
+  - Added 9 unit and regression acceptance tests (`Test 3A.2.1` through `Test 3A.2.9`).
+
+---
+
+### 3. Verification & Test Metrics
+- **Automated Tests**: 86 passing tests (`node --test tests/budget.test.ts`), 0 failures, 0 skipped.
+  - `Test 3A.2.1`: Legacy bills migrate with `trackingStartDate` set to migration month without inventing historical debt.
+  - `Test 3A.2.2`: Bill created after its monthly due day projects to next cycle and does not become overdue.
+  - `Test 3A.2.3`: Multi-occurrence overdue bills spanning > 60 days retain all unpaid occurrences in `currentCycleBills`.
+  - `Test 3A.2.4`: One payment settles only its intended occurrence (matching `billDueDate` or month).
+  - `Test 3A.2.5`: Covered vs uncovered credit-card bill purchases (reservation released; covered funds Ready to Pay; uncovered reports debt without cash deduction).
+  - `Test 3A.2.6`: Scheduled transaction deduplication preserves standalone "Bills" transactions while deduplicating linked recurring bills.
+  - `Test 3A.2.7`: Dynamic payday advancement across multiple cycles without manual settings updates; missed paycheck does not inflate cash.
+  - `Test 3A.2.8`: Migration idempotence and manual payday migration parity.
+  - `Test 3A.2.9`: Signed negative `rawSafe`, `safe = 0`, and positive `shortfall` contract preservation.
+- **Production Build**: `vue-tsc -b && vite build` succeeded with 0 TypeScript or bundling errors.
+
+---
+
+### 4. Learning Questions
+1. **Why must existing bills without `trackingStartDate` initialize tracking from the start of the migration month rather than inspecting historical ledger activity?**
+   - *Answer*: Historical ledger activity in personal finance tools is often incomplete or imported with arbitrary starting dates. If migration attempted to infer unpaid occurrences from old ledger gaps, users importing historical data or adopting the app mid-year would suddenly find months of phantom "overdue" debt invented for bills they already paid outside the app. Initializing tracking at the migration month (`YYYY-MM-01`) creates a clean, deterministic baseline that preserves all existing transactions and settlements without fabricating earlier debt.
+2. **Why must scheduled transaction deduplication check for active bill linkage (`t.billId && s.bills.some(...)`) rather than filtering on `category === "Bills"`?**
+   - *Answer*: Categorization is orthogonal to recurring bill management. A user may schedule a one-off payment (e.g. an annual vehicle registration or doctor bill) and categorize it under "Bills". Suppressing all scheduled transactions categorized as "Bills" caused genuine standalone obligations to silently vanish from `getUncoveredScheduledExpenses`. Checking `t.billId && s.bills.some(...)` ensures only transactions directly tied to active recurring bills already reserved in `reserveBillsBreakdown` are deduplicated.
+3. **Why does charging a recurring bill to a credit card require budget coverage to fund Ready to Pay, and how does this prevent double-deducting cash from checking?**
+   - *Answer*: When a bill is paid on credit, the cash in checking has not yet left the account. The bill reservation is released because the vendor is paid. If the purchase is covered by a budget category, that budgeted amount moves into `Ready to Pay`, reserving checking cash to pay off the credit card later. If the purchase is unbudgeted, checking cash must not be locked into `Ready to Pay`, because the user has not allocated funds for it; doing so would falsely reduce Safe to Spend as if cash were reserved. In both cases, cash is deducted at most once.
+
+
 

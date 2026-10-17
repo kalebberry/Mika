@@ -45,6 +45,7 @@ export type Bill = {
   day: number;
   protected?: boolean;
   settledDueDates?: string[];
+  trackingStartDate?: string; // YYYY-MM-DD
 };
 
 export type BillSettlement = {
@@ -701,15 +702,28 @@ export function nextPayday() {
   return addDays(today(), 14);
 }
 
+export function getCurrentPayday(
+  s: {
+    payday: string;
+    paydaySchedule?: PaydaySchedule;
+  },
+  asOf: string = today(),
+): string {
+  if (s.paydaySchedule && s.paydaySchedule.frequency !== "manual") {
+    return getNextPayday(s.paydaySchedule, asOf);
+  }
+  return s.payday;
+}
+
 export function getFollowingPayday(
   s: {
     payday: string;
     followingPayday?: string;
     paydaySchedule?: PaydaySchedule;
   },
-  asOf?: string,
+  asOf: string = today(),
 ): string {
-  if (s.paydaySchedule && s.paydaySchedule.frequency !== "manual" && asOf) {
+  if (s.paydaySchedule && s.paydaySchedule.frequency !== "manual") {
     return getFollowingPaydayDate(s.paydaySchedule, asOf);
   }
   return s.followingPayday || addDays(s.payday, 14);
@@ -1542,17 +1556,15 @@ export function nextUnpaidDueDate(
   b: Bill,
   fromDate = today(),
 ): string {
-  const [startY, startM] = fromDate.split("-").map(Number);
+  const trackingStart = b.trackingStartDate || `${fromDate.slice(0, 7)}-01`;
+  const evalStart = trackingStart < fromDate ? trackingStart : fromDate;
+  const [startY, startM] = evalStart.split("-").map(Number);
   let y = startY!;
   let m = startM!;
 
-  for (let i = 0; i < 24; i++) {
+  for (let i = 0; i < 36; i++) {
     const due = getBillDueDate(b, y, m);
-    if (i === 0 && due < fromDate) {
-      if (!isBillPaid(s, b, due)) {
-        return due;
-      }
-    } else if (due >= fromDate) {
+    if (due >= trackingStart) {
       if (!isBillPaid(s, b, due)) {
         return due;
       }
@@ -1578,6 +1590,9 @@ export const isBillUnpaidThisMonth = (
 ): boolean => {
   const currentMonth = now.slice(0, 7);
   const thisMonthDue = dueDate(b, currentMonth);
+  if (b.trackingStartDate && thisMonthDue < b.trackingStartDate) {
+    return false;
+  }
   // If the occurrence for this month is already paid or settled, it is not unpaid this month
   if (isBillPaid(s, b, thisMonthDue)) {
     return false;
@@ -1606,33 +1621,56 @@ export function reserveBillsBreakdown(
   total: number;
   details: BillReservationDetail[];
 } {
-  const currentPaydayEnd = s.payday >= now ? s.payday : now;
-  const followingEnd = getFollowingPayday(s);
+  const currentPayday = getCurrentPayday(s, now);
+  const currentPaydayEnd = currentPayday >= now ? currentPayday : now;
+  const followingEnd = getFollowingPayday(s, now);
+  const maxEnd = followingEnd > currentPaydayEnd ? followingEnd : currentPaydayEnd;
 
   let currentCycleBills = 0;
   let protectedCycleBills = 0;
   const details: BillReservationDetail[] = [];
 
   for (const b of s.bills) {
-    const due = nextUnpaidDueDate(s, b, now);
-    if (isBillPaid(s, b, due)) continue;
+    const trackingStart = b.trackingStartDate || `${now.slice(0, 7)}-01`;
+    const [startYear, startMonth] = trackingStart.split("-").map(Number);
+    const [endYear, endMonth] = maxEnd.split("-").map(Number);
 
-    if (due <= currentPaydayEnd) {
-      currentCycleBills += b.amount;
-      details.push({
-        bill: b,
-        dueDate: due,
-        amount: b.amount,
-        cycle: "current",
-      });
-    } else if (due <= followingEnd && b.protected) {
-      protectedCycleBills += b.amount;
-      details.push({
-        bill: b,
-        dueDate: due,
-        amount: b.amount,
-        cycle: "following_protected",
-      });
+    let y = startYear!;
+    let m = startMonth!;
+
+    for (let step = 0; step < 60; step++) {
+      if (y > endYear! || (y === endYear! && m > endMonth!)) {
+        break;
+      }
+      const due = getBillDueDate(b, y, m);
+
+      if (due >= trackingStart && due <= maxEnd) {
+        if (!isBillPaid(s, b, due)) {
+          if (due <= currentPaydayEnd) {
+            currentCycleBills += b.amount;
+            details.push({
+              bill: b,
+              dueDate: due,
+              amount: b.amount,
+              cycle: "current",
+            });
+          } else if (due <= followingEnd && b.protected) {
+            protectedCycleBills += b.amount;
+            details.push({
+              bill: b,
+              dueDate: due,
+              amount: b.amount,
+              cycle: "following_protected",
+            });
+          }
+        }
+      }
+
+      m++;
+      if (m > 12) {
+        m = 1;
+        y++;
+      }
     }
   }
 
@@ -1650,7 +1688,8 @@ export function reserveBills(s: State, now = today()): number {
 
 export function getUncoveredScheduledExpenses(s: State, now = today()): number {
   const currentMonth = now.slice(0, 7);
-  const currentPaydayEnd = s.payday >= now ? s.payday : now;
+  const currentPayday = getCurrentPayday(s, now);
+  const currentPaydayEnd = currentPayday >= now ? currentPayday : now;
   const scheduledExpensesByCategory = new Map<string, number>();
 
   for (const t of s.transactions) {
@@ -1660,8 +1699,8 @@ export function getUncoveredScheduledExpenses(s: State, now = today()): number {
       (t.kind === "standard" || !t.kind)
     ) {
       if (t.date > currentPaydayEnd) continue;
-      if (t.billId) continue;
-      if (t.category.toLowerCase() === "bills") continue;
+      // Deduplicate only scheduled transactions linked to an active tracked recurring bill
+      if (t.billId && s.bills.some((b) => b.id === t.billId)) continue;
 
       const cat = t.category;
       scheduledExpensesByCategory.set(
@@ -1844,6 +1883,7 @@ export function migrateState(raw: any, now = today()): State {
       })
     : [];
 
+  const migrationMonthStart = `${now.slice(0, 7)}-01`;
   const bills: Bill[] = Array.isArray(raw.bills)
     ? raw.bills.map((b: any) => ({
         id: String(b.id || uid()),
@@ -1854,6 +1894,9 @@ export function migrateState(raw: any, now = today()): State {
         settledDueDates: Array.isArray(b.settledDueDates)
           ? b.settledDueDates.map(String)
           : [],
+        trackingStartDate: isValidDateString(b.trackingStartDate)
+          ? b.trackingStartDate
+          : migrationMonthStart,
       }))
     : [];
 

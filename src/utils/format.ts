@@ -3,6 +3,7 @@ import {
   type State,
   isBillPaid,
   nextUnpaidDueDate,
+  getCurrentPayday,
   getFollowingPayday,
   today,
 } from "../model.ts";
@@ -44,10 +45,11 @@ export function billStatus(state: State, b: Bill, now = today()) {
   if (next === now) {
     return "Due today";
   }
-  if (next <= state.payday) {
+  const currentPayday = getCurrentPayday(state, now);
+  if (next <= currentPayday) {
     return "Due before payday";
   }
-  const followingPayday = getFollowingPayday(state);
+  const followingPayday = getFollowingPayday(state, now);
   if (next <= followingPayday) {
     return b.protected ? "Protected (Next cycle)" : "Next cycle";
   }
