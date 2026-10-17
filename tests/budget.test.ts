@@ -5915,6 +5915,100 @@ test("Test 3A.2.18 — Preserved Phase 2B Covered Credit and Safe to Spend invar
   assert.equal(t.safe, 192000, "Safe to spend preserves exact Covered Credit parity");
 });
 
+test("Test 3A.2.19 — Editing an existing transaction preserves billDueDate unless bill association changes", () => {
+  const simulatedToday = "2026-10-16";
+  const { state } = useBudget();
+  // Reset clean state
+  state.value = blank();
+  state.value.payday = "2026-10-23";
+  state.value.followingPayday = "2026-11-06";
+
+  const powerBill: Bill = {
+    id: "b-power",
+    name: "Electric Utility",
+    amount: 12000,
+    day: 5,
+    protected: false,
+    trackingStartDate: "2026-09-01",
+  };
+  const waterBill: Bill = {
+    id: "b-water",
+    name: "Water Utility",
+    amount: 6000,
+    day: 15,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.value.bills.push(powerBill, waterBill);
+
+  // September 5 is OVERDUE (unpaid)
+  assert.equal(isBillPaid(state.value, powerBill, "2026-09-05"), false, "September 5 must be unpaid");
+
+  // An October bill payment was explicitly recorded for October 5
+  const octTx: Transaction = {
+    id: "tx-oct-power",
+    name: "Electric Payment",
+    amount: -12000,
+    category: "Bills",
+    date: "2026-10-05",
+    status: "posted",
+    billId: powerBill.id,
+    billDueDate: "2026-10-05",
+    accountId: "acc-default-checking",
+    kind: "standard",
+  };
+  state.value.transactions.push(octTx);
+
+  // October 5 is paid via explicit linkage; September 5 remains overdue
+  assert.equal(isBillPaid(state.value, powerBill, "2026-10-05"), true);
+  assert.equal(isBillPaid(state.value, powerBill, "2026-09-05"), false);
+
+  // Part A: Open edit modal and modify name, amount, date, account, and status
+  const modal = useModal();
+  modal.open("Edit transaction", octTx.id);
+
+  // Assert form loaded existing bill linkage
+  assert.equal(modal.form.value.billId, powerBill.id);
+  assert.equal(modal.form.value.billDueDate, "2026-10-05");
+
+  // Modify metadata/fields without changing bill association
+  modal.form.value.name = "Evergy Electric Updated";
+  modal.form.value.amount = "125.00"; // edited amount
+  modal.form.value.date = "2026-10-06"; // edited date
+  modal.form.value.status = "cleared";
+  modal.submit();
+
+  // Verification: billDueDate MUST remain "2026-10-05" (NOT re-assigned to overdue September!)
+  assert.equal(octTx.billId, powerBill.id);
+  assert.equal(octTx.billDueDate, "2026-10-05", "Must preserve October occurrence linkage even while September is overdue");
+  assert.equal(octTx.name, "Evergy Electric Updated");
+  assert.equal(octTx.amount, -12500);
+  assert.equal(isBillPaid(state.value, powerBill, "2026-10-05"), true, "October 5 remains paid");
+  assert.equal(isBillPaid(state.value, powerBill, "2026-09-05"), false, "September 5 remains overdue");
+
+  // Part B: Reassigning to a DIFFERENT bill (waterBill) updates occurrence linkage
+  modal.open("Edit transaction", octTx.id);
+  modal.form.value.billId = waterBill.id;
+  // billDueDate not explicitly set for new bill -> resolves for waterBill
+  modal.form.value.billDueDate = undefined;
+  modal.submit();
+
+  assert.equal(octTx.billId, waterBill.id);
+  assert.equal(octTx.billDueDate, "2026-10-15", "Reassigning to waterBill updates occurrence linkage to Water's due date");
+  assert.equal(isBillPaid(state.value, waterBill, "2026-10-15"), true);
+  assert.equal(isBillPaid(state.value, powerBill, "2026-10-05"), false, "Power bill October is now unpaid");
+
+  // Part C: Removing billId clears occurrence linkage
+  modal.open("Edit transaction", octTx.id);
+  modal.form.value.billId = ""; // removed
+  modal.submit();
+
+  assert.equal(octTx.billId, undefined);
+  assert.equal(octTx.billDueDate, undefined, "Removing billId clears billDueDate consistently");
+  assert.equal(isBillPaid(state.value, waterBill, "2026-10-15"), false, "Water bill is now unpaid");
+});
+
+
 
 
 

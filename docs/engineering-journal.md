@@ -422,7 +422,45 @@ Following independent review confirmation of the initial corrections, a final ta
 1. **Why must multiple unlinked transactions in the same month be treated as ambiguous rather than summing them or picking the first one?**
    - *Answer*: When a user has two unlinked transactions in a single month (e.g. two $50 payments on a $100 utility bill), Mika cannot guess whether the user made a split payment, accidentally entered a duplicate, or paid a late fee/prior balance. Summing or arbitrarily picking one could prematurely release the reservation when partial funds or duplicates are involved. Treating multiple unlinked records as ambiguous preserves the full reservation and prompts user reconciliation without making irreversible financial guesses.
 
-2. **Why is a non-omission safe failure policy critical for personal finance software when encountering corrupted or out-of-bounds dates?**
-   - *Answer*: In general software engineering, invalid input often fails closed by returning empty results (`continue` or null). However, in financial budgeting, omitting an obligation because of a malformed date leads to false spending confidence, reporting that money is "safe to spend" when it is actually owed. A non-omission policy clamps dates into safe bounds and, in worst-case corrupted states, retains the reservation in `currentCycleBills` while emitting diagnostic warnings.
+
+
+---
+
+## Phase 3A.2 — Transaction Editing Occurrence Fix
+
+### 1. Issue & Rationale
+
+During final independent review, an issue was identified in [`src/composables/useModal.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/composables/useModal.ts):
+- **Problem**: When editing an existing transaction, the modal form did not load `t.billId` and `t.billDueDate`. When saved, if a bill association existed, the logic treated `explicitBillDueDate` as missing and called `nextUnpaidDueDate(state, linkedBill, f.date)`. If an earlier month (e.g. September) was overdue, editing an October bill payment's description, amount, date, account, or status would silently reassign the transaction's `billDueDate` to the overdue September occurrence!
+- **Solution & Invariant Preservation**:
+  1. In `open("Edit transaction", id)`, `form.value.billId` and `form.value.billDueDate` are populated directly from the existing transaction record.
+  2. In `save()`:
+     - **Unchanged Bill Association**: If `targetBillId === existing.billId`, `existing.billDueDate` is strictly preserved unless the user explicitly provided a different occurrence date in `f.billDueDate`. Editing description, amount, date, account, or status will NEVER silently reassign the bill occurrence.
+     - **Bill Reassignment**: If the user explicitly selects a different recurring bill (`targetBillId !== existing.billId`), `billDueDate` is updated consistently (using caller-supplied `f.billDueDate` or resolving `nextUnpaidDueDate` for the new bill).
+     - **Bill Removal**: If the user unlinks the bill (`!targetBillId`), both `billId` and `billDueDate` are cleared to `undefined`.
+
+---
+
+### 2. Files Changed
+- [`src/composables/useModal.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/composables/useModal.ts):
+  - Populated `billId` and `billDueDate` in `form` initial state and in `open("Edit transaction")`.
+  - Preserved `existing.billDueDate` when saving edits to an existing transaction where the bill association is unchanged.
+  - Added `isValidDateString` import from `../model.ts`.
+- [`tests/budget.test.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/tests/budget.test.ts):
+  - Added `Test 3A.2.19`: Editing an existing transaction preserves `billDueDate` even when earlier occurrences (e.g. September) remain overdue, while reassigning or unlinking bills updates occurrence linkage consistently.
+
+---
+
+### 3. Verification & Test Metrics
+- **Automated Tests**: 96 passing tests (`npm test` / `node --test tests/budget.test.ts`), 0 failures, 0 skipped.
+- **Production Build**: `npm run build` (`vue-tsc -b && vite build`) passed with 0 errors.
+
+---
+
+### 4. Learning Question
+
+1. **Why must transaction editing treat existing occurrence linkage as immutable unless explicitly altered by the user?**
+   - *Answer*: Recurring bill payments often occur out of strict chronological order in the real world (e.g. a user pays current October utilities online while disputing or delaying an August charge). If editing unrelated fields like the payee note or payment account recalculated the occurrence via `nextUnpaidDueDate`, the system would retroactively rewrite financial history, shifting funds to earlier overdue cycles and silently destabilizing the user's current cycle reservations. Preserving the existing `billDueDate` guarantees that routine edits never alter financial attribution.
+
 
 

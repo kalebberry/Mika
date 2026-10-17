@@ -10,6 +10,7 @@ import {
   isBillPaid,
   settleBillOccurrence,
   recordBillPayment,
+  isValidDateString,
   type TransactionStatus,
   type TransactionKind,
 } from "../model.ts";
@@ -76,6 +77,8 @@ const form = ref<ModalFormState>({
   accountId: "acc-default-checking",
   targetAccountId: "",
   reserveAction: "reserve",
+  billId: undefined,
+  billDueDate: undefined,
 });
 
 export function useModal() {
@@ -157,6 +160,8 @@ export function useModal() {
       customColor: initialColor,
       accountId: defaultAccountId,
       targetAccountId: "",
+      billId: undefined,
+      billDueDate: undefined,
     };
 
     if (m === "Edit transaction") {
@@ -185,6 +190,8 @@ export function useModal() {
           status: normalizedStatus,
           accountId: t.accountId || defaultAccountId,
           targetAccountId: t.targetAccountId || "",
+          billId: t.billId,
+          billDueDate: t.billDueDate,
         };
       }
     } else if (m === "Edit budget") {
@@ -645,15 +652,15 @@ export function useModal() {
         txAmount = amount;
       }
 
-      let explicitBillDueDate = f.billDueDate;
-      if (f.billId && !explicitBillDueDate) {
-        const linkedBill = state.value.bills.find((b) => b.id === f.billId);
-        if (linkedBill) {
-          explicitBillDueDate = nextUnpaidDueDate(state.value, linkedBill, f.date);
-        }
-      }
-
       if (mode.value === "Add transaction") {
+        let explicitBillDueDate = f.billDueDate;
+        if (f.billId && !explicitBillDueDate) {
+          const linkedBill = state.value.bills.find((b) => b.id === f.billId);
+          if (linkedBill) {
+            explicitBillDueDate = nextUnpaidDueDate(state.value, linkedBill, f.date);
+          }
+        }
+
         state.value.transactions.unshift({
           id: uid(),
           name: txName,
@@ -675,6 +682,35 @@ export function useModal() {
           (t) => t.id === selected.value,
         );
         if (existing) {
+          const billIdExplicitlyProvided = f.billId !== undefined;
+          const targetBillId = billIdExplicitlyProvided
+            ? f.billId || undefined
+            : existing.billId;
+
+          let targetBillDueDate: string | undefined;
+
+          if (!targetBillId) {
+            targetBillDueDate = undefined;
+          } else if (targetBillId === existing.billId) {
+            // Bill association remains unchanged: preserve existing.billDueDate
+            // unless the user explicitly provided a different billDueDate
+            if (f.billDueDate !== undefined && f.billDueDate !== existing.billDueDate) {
+              targetBillDueDate = f.billDueDate || undefined;
+            } else {
+              targetBillDueDate = existing.billDueDate;
+            }
+          } else {
+            // User assigned a DIFFERENT recurring bill
+            if (f.billDueDate && isValidDateString(f.billDueDate)) {
+              targetBillDueDate = f.billDueDate;
+            } else {
+              const newBill = state.value.bills.find((b) => b.id === targetBillId);
+              targetBillDueDate = newBill
+                ? nextUnpaidDueDate(state.value, newBill, f.date)
+                : undefined;
+            }
+          }
+
           Object.assign(existing, {
             name: txName,
             amount: txAmount,
@@ -689,11 +725,8 @@ export function useModal() {
             kind,
             targetAccountId:
               kind !== "standard" ? f.targetAccountId : undefined,
-            billId: f.billId !== undefined ? f.billId || undefined : existing.billId,
-            billDueDate:
-              f.billId !== undefined
-                ? f.billId ? explicitBillDueDate : undefined
-                : existing.billDueDate,
+            billId: targetBillId,
+            billDueDate: targetBillDueDate,
           });
         }
       }
