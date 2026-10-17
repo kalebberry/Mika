@@ -73,6 +73,12 @@ import {
   getMonthlyIncome,
   type CreditCardMinimumProtection,
   type CreditCardMinimumStatus,
+  isBillDueSoon,
+  getBillItemPresentation,
+  getOrganizedBills,
+  type BillItemPresentation,
+  type BillDisplayStatus,
+  type BillProtectionStatus,
 } from "../src/model.ts";
 import { useBudget } from "../src/composables/useBudget.ts";
 import { useModal } from "../src/composables/useModal.ts";
@@ -9974,5 +9980,673 @@ test("Test 3C.37 — A new card configured after its previous due date does not 
   assert.equal(protNone.obligationType, "none");
   assert.equal(protNone.isEstimated, false);
 });
+
+// ============================================================================
+// Phase 3D — Simplified Bills UI & Regression Suite
+// ============================================================================
+
+test("Test 3D.1 — isBillDueSoon boundary conditions", () => {
+  const asOf = "2026-10-17";
+
+  // Due today (0 days)
+  assert.equal(isBillDueSoon("2026-10-17", asOf, 3), true, "Due today is due soon");
+  // Due tomorrow (1 day)
+  assert.equal(isBillDueSoon("2026-10-18", asOf, 3), true, "Due tomorrow is due soon");
+  // Due in 3 days (+3 days)
+  assert.equal(isBillDueSoon("2026-10-20", asOf, 3), true, "Due in 3 days is due soon");
+  // Due in 4 days (+4 days) — outside 3-day window
+  assert.equal(isBillDueSoon("2026-10-21", asOf, 3), false, "Due in 4 days is not due soon");
+  // Due in past (yesterday) — overdue, not due soon
+  assert.equal(isBillDueSoon("2026-10-16", asOf, 3), false, "Past due date is not due soon");
+  // Invalid date inputs
+  assert.equal(isBillDueSoon("not-a-date", asOf, 3), false, "Invalid due date returns false");
+  assert.equal(isBillDueSoon("2026-10-18", "invalid", 3), false, "Invalid asOf returns false");
+});
+
+test("Test 3D.2 — Unpaid bill presentation answers the 4 core questions", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  const bill: Bill = {
+    id: "bill-electric",
+    name: "Electricity",
+    amount: 12000, // $120.00
+    day: 25,
+  };
+  state.bills.push(bill);
+
+  const pres = getBillItemPresentation(state, bill, simulatedToday);
+
+  // 1. What do I owe?
+  assert.equal(pres.expectedAmount, 12000, "Answers: What do I owe? ($120.00)");
+  // 2. When is it due?
+  assert.equal(pres.dueDate, "2026-10-25", "Answers: When is it due? (2026-10-25)");
+  // 3. How much have I already paid?
+  assert.equal(pres.paidAmount, 0, "Answers: How much have I already paid? ($0.00)");
+  // 4. What still needs to be paid?
+  assert.equal(pres.remainingAmount, 12000, "Answers: What still needs to be paid? ($120.00)");
+
+  // Status & classification
+  assert.equal(pres.status, "upcoming");
+  assert.equal(pres.statusLabel, "Upcoming");
+  assert.equal(pres.isOverdue, false);
+  assert.equal(pres.isDueSoon, false);
+  assert.equal(pres.isPartiallyPaid, false);
+  assert.equal(pres.isPaid, false);
+  assert.equal(pres.sortRank, 2, "Upcoming bills have sort rank 2");
+});
+
+test("Test 3D.3 — Due soon bill presentation", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  const bill: Bill = {
+    id: "bill-water",
+    name: "Water Utility",
+    amount: 4500, // $45.00
+    day: 19, // 2 days away from Oct 17
+  };
+  state.bills.push(bill);
+
+  const pres = getBillItemPresentation(state, bill, simulatedToday);
+
+  assert.equal(pres.dueDate, "2026-10-19");
+  assert.equal(pres.expectedAmount, 4500);
+  assert.equal(pres.paidAmount, 0);
+  assert.equal(pres.remainingAmount, 4500);
+  assert.equal(pres.isDueSoon, true);
+  assert.equal(pres.status, "due_soon");
+  assert.equal(pres.statusLabel, "Due soon");
+  assert.equal(pres.sortRank, 1, "Due soon bills have sort rank 1");
+});
+
+test("Test 3D.4 — Overdue bill presentation", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  const bill: Bill = {
+    id: "bill-gas",
+    name: "Gas Bill",
+    amount: 8500, // $85.00
+    day: 5, // Due Oct 5, evaluated Oct 17 -> overdue
+  };
+  state.bills.push(bill);
+
+  const pres = getBillItemPresentation(state, bill, simulatedToday);
+
+  assert.equal(pres.dueDate, "2026-10-05");
+  assert.equal(pres.expectedAmount, 8500);
+  assert.equal(pres.paidAmount, 0);
+  assert.equal(pres.remainingAmount, 8500);
+  assert.equal(pres.isOverdue, true);
+  assert.equal(pres.status, "overdue");
+  assert.equal(pres.statusLabel, "Overdue");
+  assert.equal(pres.sortRank, 0, "Overdue bills have top priority (rank 0)");
+});
+
+test("Test 3D.5 — Partial payment reduces remaining obligation correctly", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  const bill: Bill = {
+    id: "bill-internet",
+    name: "Fiber Internet",
+    amount: 10000, // $100.00
+    day: 25,
+  };
+  state.bills.push(bill);
+
+  // Record a partial payment of $40.00
+  const tx = recordBillPayment(state, bill.id, {
+    amount: 4000,
+    dueDate: "2026-10-25",
+    date: "2026-10-17",
+    status: "posted",
+  });
+  assert.ok(tx);
+
+  const pres = getBillItemPresentation(state, bill, simulatedToday);
+
+  assert.equal(pres.expectedAmount, 10000, "Expected: $100.00");
+  assert.equal(pres.paidAmount, 4000, "Already paid: $40.00");
+  assert.equal(pres.remainingAmount, 6000, "Remaining obligation: $60.00");
+  assert.equal(pres.isPartiallyPaid, true);
+  assert.equal(pres.isPaid, false);
+  assert.equal(pres.status, "partially_paid");
+  assert.equal(pres.statusLabel, "Partially paid");
+});
+
+test("Test 3D.6 — Full payment removes unpaid reservation and presents as Paid", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  state.payday = "2026-10-21";
+  const bill: Bill = {
+    id: "bill-gym",
+    name: "Gym Membership",
+    amount: 5000, // $50.00
+    day: 19,
+  };
+  state.bills.push(bill);
+
+  // Before payment: reserved through current payday
+  const resBefore = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(resBefore.currentCycleBills, 5000);
+
+  // Record full payment
+  const tx = recordBillPayment(state, bill.id, {
+    amount: 5000,
+    dueDate: "2026-10-19",
+    date: "2026-10-17",
+    status: "posted",
+  });
+  assert.ok(tx);
+
+  // After payment: reservation released
+  const resAfter = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(resAfter.currentCycleBills, 0, "Full payment removes reservation");
+
+  // Presentation shows Paid
+  const pres = getBillItemPresentation(state, bill, simulatedToday);
+  assert.equal(pres.expectedAmount, 5000);
+  assert.equal(pres.paidAmount, 5000);
+  assert.equal(pres.remainingAmount, 0);
+  assert.equal(pres.isPaid, true);
+  assert.equal(pres.status, "paid");
+  assert.equal(pres.statusLabel, "Paid");
+  assert.equal(pres.sortRank, 3, "Paid bills have sort rank 3 (visually quieter)");
+  assert.equal(pres.protectionStatus, "unprotected");
+  assert.equal(pres.protectionLabel, "Paid");
+});
+
+test("Test 3D.7 — Overpayment does not create negative remaining amounts", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  const bill: Bill = {
+    id: "bill-streaming",
+    name: "Streaming Service",
+    amount: 1500, // $15.00
+    day: 20,
+  };
+  state.bills.push(bill);
+
+  // Record overpayment of $20.00 ($5 over)
+  recordBillPayment(state, bill.id, {
+    amount: 2000,
+    dueDate: "2026-10-20",
+    date: "2026-10-17",
+    status: "posted",
+  });
+
+  const pres = getBillItemPresentation(state, bill, simulatedToday);
+
+  assert.equal(pres.expectedAmount, 1500);
+  assert.equal(pres.paidAmount, 2000);
+  assert.equal(pres.remainingAmount, 0, "Remaining obligation clamped at 0, never negative");
+  assert.equal(pres.overpaidAmount, 500, "Overpaid amount tracked accurately");
+  assert.equal(pres.isPaid, true);
+  assert.equal(pres.status, "paid");
+  assert.equal(pres.statusLabel, "Overpaid");
+  assert.equal(pres.sortRank, 3);
+});
+
+test("Test 3D.8 — Multiple payments linked to one occurrence accumulate", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  const bill: Bill = {
+    id: "bill-rent",
+    name: "Apartment Rent",
+    amount: 120000, // $1,200.00
+    day: 28,
+  };
+  state.bills.push(bill);
+
+  // Payment 1: $400.00
+  recordBillPayment(state, bill.id, {
+    amount: 40000,
+    dueDate: "2026-10-28",
+    date: "2026-10-15",
+    status: "posted",
+  });
+
+  // Payment 2: $350.00
+  recordBillPayment(state, bill.id, {
+    amount: 35000,
+    dueDate: "2026-10-28",
+    date: "2026-10-17",
+    status: "posted",
+  });
+
+  const pres = getBillItemPresentation(state, bill, simulatedToday);
+
+  assert.equal(pres.expectedAmount, 120000);
+  assert.equal(pres.paidAmount, 75000, "Accumulates both payments: $750.00");
+  assert.equal(pres.remainingAmount, 45000, "Remaining obligation: $450.00");
+  assert.equal(pres.isPartiallyPaid, true);
+  assert.equal(pres.isPaid, false);
+});
+
+test("Test 3D.9 — Bill payment affects account balances exactly once", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  const checking: Account = {
+    id: "acc-checking-1",
+    name: "Primary Checking",
+    type: "checking",
+    opening: 250000, // $2,500.00
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [checking];
+
+  const bill: Bill = {
+    id: "bill-trash",
+    name: "Trash Service",
+    amount: 3000, // $30.00
+    day: 20,
+  };
+  state.bills.push(bill);
+
+  assert.equal(getAccountBalance(checking, state), 250000, "Opening balance is $2,500.00");
+
+  // Pay $30.00 bill from checking
+  recordBillPayment(state, bill.id, {
+    amount: 3000,
+    dueDate: "2026-10-20",
+    date: "2026-10-17",
+    accountId: checking.id,
+    status: "posted",
+  });
+
+  // Balance decreased exactly once
+  const updatedBal = getAccountBalance(checking, state);
+  assert.equal(updatedBal, 247000, "Checking balance decreased by exactly $30.00 to $2,470.00");
+
+  const ledgerDelta = getAccountLedgerDelta(checking, state);
+  assert.equal(ledgerDelta, -3000, "Ledger delta is exactly -$30.00");
+});
+
+test("Test 3D.10 — Credit card bill payments preserve Covered Credit rules", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  const checking: Account = {
+    id: "acc-checking-1",
+    name: "Primary Checking",
+    type: "checking",
+    opening: 300000, // $3,000.00
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  const creditCard: Account = {
+    id: "acc-card-1",
+    name: "Rewards Card",
+    type: "credit",
+    opening: 0, // $0 debt
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [checking, creditCard];
+
+  const bill: Bill = {
+    id: "bill-phone",
+    name: "Mobile Phone",
+    amount: 8000, // $80.00
+    day: 22,
+  };
+  state.bills.push(bill);
+
+  // Pay bill using credit card
+  const tx = recordBillPayment(state, bill.id, {
+    amount: 8000,
+    dueDate: "2026-10-22",
+    date: "2026-10-17",
+    accountId: creditCard.id,
+    status: "posted",
+  });
+  assert.ok(tx);
+
+  // 1. Bill occurrence registers as paid
+  const pres = getBillItemPresentation(state, bill, simulatedToday);
+  assert.equal(pres.remainingAmount, 0);
+  assert.equal(pres.isPaid, true);
+
+  // 2. Credit card balance reflects $80 debt
+  const cardBal = getAccountBalance(creditCard, state);
+  assert.equal(cardBal, 8000, "Credit card owes $80.00");
+
+  // 3. Covered Credit tracks the $80 debt owed on the card
+  const coverage = getCreditCardCoverage(creditCard, state);
+  assert.equal(coverage.totalOwed, 8000, "Credit card reflects $80 debt owed");
+  assert.equal(coverage.uncoveredDebt, 8000, "Uncovered debt matches total owed prior to reserve assignment");
+});
+
+test("Test 3D.11 — Scheduled expenses deduplication against tracked bills", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  state.payday = "2026-10-21";
+  const bill: Bill = {
+    id: "bill-cloud",
+    name: "Cloud Hosting",
+    amount: 2500, // $25.00
+    day: 19,
+  };
+  state.bills.push(bill);
+
+  // User has a scheduled transaction linked to this bill occurrence
+  const scheduledTx: Transaction = {
+    id: "tx-sched-cloud",
+    name: "Cloud Hosting Payment",
+    amount: -2500,
+    category: "Hosting",
+    date: "2026-10-19",
+    status: "scheduled",
+    billId: bill.id,
+    billDueDate: "2026-10-19",
+  };
+  state.transactions.push(scheduledTx);
+
+  // Tracked bill breakdown reserves the remaining obligation
+  const billBreakdown = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(billBreakdown.currentCycleBills, 2500);
+
+  // Scheduled expenses calculation does NOT duplicate the bill reservation
+  const uncoveredSched = getUncoveredScheduledExpenses(state, simulatedToday);
+  assert.equal(uncoveredSched, 0, "Scheduled transaction linked to tracked bill is not double-reserved");
+});
+
+test("Test 3D.12 — Payday protection classification (current, following_protected, unprotected)", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  state.payday = "2026-10-21";
+  state.followingPayday = "2026-11-04";
+
+  // Bill 1: Due Oct 19 (before current payday) -> current_cycle
+  const billCurrent: Bill = {
+    id: "bill-1",
+    name: "Water",
+    amount: 4000,
+    day: 19,
+  };
+
+  // Bill 2: Due Oct 28 (between current and following payday, protected = true) -> following_protected
+  const billProtected: Bill = {
+    id: "bill-2",
+    name: "Car Insurance",
+    amount: 11000,
+    day: 28,
+    protected: true,
+  };
+
+  // Bill 3: Due Oct 28 (between current and following payday, protected = false) -> unprotected
+  const billUnprotected: Bill = {
+    id: "bill-3",
+    name: "Gym",
+    amount: 5000,
+    day: 28,
+    protected: false,
+  };
+
+  // Bill 4: Due Nov 15 (after following payday) -> unprotected
+  const billOutside: Bill = {
+    id: "bill-4",
+    name: "Tuition",
+    amount: 50000,
+    day: 15,
+    trackingStartDate: "2026-11-01",
+  };
+
+  state.bills = [billCurrent, billProtected, billUnprotected, billOutside];
+
+  const pres1 = getBillItemPresentation(state, billCurrent, simulatedToday);
+  assert.equal(pres1.protectionStatus, "current_cycle");
+  assert.equal(pres1.protectionLabel, "Reserved through payday");
+
+  const pres2 = getBillItemPresentation(state, billProtected, simulatedToday);
+  assert.equal(pres2.protectionStatus, "following_protected");
+  assert.equal(pres2.protectionLabel, "Protected next cycle");
+
+  const pres3 = getBillItemPresentation(state, billUnprotected, simulatedToday);
+  assert.equal(pres3.protectionStatus, "unprotected");
+  assert.equal(pres3.protectionLabel, "Not reserved");
+
+  const pres4 = getBillItemPresentation(state, billOutside, simulatedToday);
+  assert.equal(pres4.protectionStatus, "unprotected");
+  assert.equal(pres4.protectionLabel, "Not reserved");
+});
+
+test("Test 3D.13 — Editing or deleting linked payments dynamically updates presentation", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  const bill: Bill = {
+    id: "bill-cable",
+    name: "Cable TV",
+    amount: 8000, // $80.00
+    day: 24,
+  };
+  state.bills.push(bill);
+
+  // Step 1: Initial state (unpaid)
+  let pres = getBillItemPresentation(state, bill, simulatedToday);
+  assert.equal(pres.remainingAmount, 8000);
+  assert.equal(pres.status, "upcoming");
+
+  // Step 2: Add full payment
+  const tx = recordBillPayment(state, bill.id, {
+    amount: 8000,
+    dueDate: "2026-10-24",
+    date: "2026-10-17",
+    status: "posted",
+  });
+  assert.ok(tx);
+  pres = getBillItemPresentation(state, bill, simulatedToday);
+  assert.equal(pres.remainingAmount, 0);
+  assert.equal(pres.status, "paid");
+
+  // Step 3: Edit payment to partial ($50.00 instead of $80.00)
+  const txInState = state.transactions.find((t) => t.id === tx.id);
+  assert.ok(txInState);
+  txInState.amount = -5000;
+
+  pres = getBillItemPresentation(state, bill, simulatedToday);
+  assert.equal(pres.paidAmount, 5000);
+  assert.equal(pres.remainingAmount, 3000, "Dynamically recalculates remaining to $30.00");
+  assert.equal(pres.status, "partially_paid");
+
+  // Step 4: Delete payment
+  state.transactions = state.transactions.filter((t) => t.id !== tx.id);
+  pres = getBillItemPresentation(state, bill, simulatedToday);
+  assert.equal(pres.paidAmount, 0);
+  assert.equal(pres.remainingAmount, 8000, "Dynamically resets remaining to $80.00");
+  assert.equal(pres.status, "upcoming");
+});
+
+test("Test 3D.14 — Bill organization ordering (Overdue -> Due soon -> Upcoming -> Paid)", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+
+  // 1. Paid bill (due Oct 5, paid Oct 5)
+  const billPaid: Bill = {
+    id: "bill-paid",
+    name: "Early Paid Utility",
+    amount: 6000,
+    day: 5,
+  };
+  // 2. Upcoming bill (due Oct 28)
+  const billUpcoming: Bill = {
+    id: "bill-upcoming",
+    name: "Future Subscription",
+    amount: 1500,
+    day: 28,
+  };
+  // 3. Overdue bill (due Oct 10, unpaid)
+  const billOverdue: Bill = {
+    id: "bill-overdue",
+    name: "Late Energy Bill",
+    amount: 9000,
+    day: 10,
+  };
+  // 4. Due soon bill (due Oct 19, within 3 days of Oct 17)
+  const billDueSoon: Bill = {
+    id: "bill-duesoon",
+    name: "Urgent Internet",
+    amount: 7000,
+    day: 19,
+  };
+
+  state.bills = [billPaid, billUpcoming, billOverdue, billDueSoon];
+
+  // Record payment for billPaid on Oct 5
+  recordBillPayment(state, billPaid.id, {
+    amount: 6000,
+    dueDate: "2026-10-05",
+    date: "2026-10-05",
+    status: "posted",
+  });
+
+  const organized = getOrganizedBills(state, simulatedToday);
+
+  assert.equal(organized.length, 4);
+
+  // Position 0: Overdue
+  assert.equal(organized[0]!.bill.id, "bill-overdue");
+  assert.equal(organized[0]!.sortRank, 0);
+  assert.equal(organized[0]!.status, "overdue");
+
+  // Position 1: Due soon
+  assert.equal(organized[1]!.bill.id, "bill-duesoon");
+  assert.equal(organized[1]!.sortRank, 1);
+  assert.equal(organized[1]!.status, "due_soon");
+
+  // Position 2: Upcoming
+  assert.equal(organized[2]!.bill.id, "bill-upcoming");
+  assert.equal(organized[2]!.sortRank, 2);
+  assert.equal(organized[2]!.status, "upcoming");
+
+  // Position 3: Paid (quiet at the bottom)
+  assert.equal(organized[3]!.bill.id, "bill-paid");
+  assert.equal(organized[3]!.sortRank, 3);
+  assert.equal(organized[3]!.status, "paid");
+});
+
+test("Test 3D.15 — Edge cases: future tracking start date and out-of-horizon bills", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  state.payday = "2026-10-21";
+
+  // Bill configured with tracking start date in December 2026
+  const billFuture: Bill = {
+    id: "bill-future",
+    name: "New Lease",
+    amount: 150000,
+    day: 1,
+    trackingStartDate: "2026-12-01",
+  };
+  state.bills.push(billFuture);
+
+  const pres = getBillItemPresentation(state, billFuture, simulatedToday);
+
+  // Target occurrence should be in December 2026
+  assert.equal(pres.dueDate, "2026-12-01", "Evaluates first occurrence on or after trackingStartDate");
+  assert.equal(pres.isOverdue, false, "Does not mark pre-tracking months overdue");
+  assert.equal(pres.status, "upcoming");
+  assert.equal(pres.protectionStatus, "unprotected", "Outside current planning horizon, not reserved");
+});
+
+test("Test 3D.16 — Safe to Spend and Credit Card Minimum safeguards (Phase 3C) remain intact", () => {
+  const state: State = blank();
+  const simulatedToday = "2026-10-17";
+  state.payday = "2026-10-21";
+
+  const checking: Account = {
+    id: "acc-checking-1",
+    name: "Checking",
+    type: "checking",
+    opening: 500000, // $5,000.00
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  const card: Account = {
+    id: "acc-card-1",
+    name: "Credit Card",
+    type: "credit",
+    opening: 100000, // owes $1,000.00
+    dueDay: 20,
+    minPayment: 5000, // $50.00 min payment due Oct 20
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [checking, card];
+
+  const bill: Bill = {
+    id: "bill-electric",
+    name: "Electric",
+    amount: 12000, // $120.00 due Oct 19
+    day: 19,
+  };
+  state.bills = [bill];
+
+  // Bill reservation: $120.00
+  const billRes = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(billRes.total, 12000);
+
+  // Credit card minimum protection: $50.00
+  const minProt = getCreditCardMinimumProtection(card, state, simulatedToday);
+  assert.equal(minProt.additionalProtection, 5000);
+
+  // Safe to Spend check
+  const t = totals(state, simulatedToday);
+  // Total reservations = bills ($120) + credit min ($50) = $170
+  // Safe to spend = $5,000 - $170 = $4,830.00 (483000 cents)
+  assert.equal(t.bills, 12000);
+  assert.equal(t.creditCardMinimums, 5000);
+  assert.equal(t.safe, 483000, "Preserves Safe to Spend invariant with Phase 3C safeguards");
+});
+
+test("Test 3D.17 — Composable & Modal workflow integration", () => {
+  const { state: budgetState } = useBudget();
+  const { form, open, submit } = useModal();
+
+  // Reset state to clean fixture
+  budgetState.value = blank();
+  const simulatedToday = "2026-10-17";
+  const checking: Account = {
+    id: "acc-default-checking",
+    name: "Checking",
+    type: "checking",
+    opening: 100000, // $1,000.00
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  const bill: Bill = {
+    id: "bill-test-modal",
+    name: "Water Utility",
+    amount: 6500, // $65.00
+    day: 25,
+  };
+  budgetState.value.accounts = [checking];
+  budgetState.value.bills = [bill];
+
+  // 1. Open modal preselecting specific due date occurrence
+  open("Pay bill", bill.id, "2026-10-25");
+
+  assert.equal(form.value.billId, bill.id);
+  assert.equal(form.value.billDueDate, "2026-10-25", "Preselects explicit target occurrence due date");
+  assert.equal(form.value.amount, "65", "Pre-fills full remaining amount");
+  assert.equal(form.value.accountId, checking.id, "Preselects valid default source account");
+
+  // 2. Change amount to partial payment of $25.00
+  form.value.amount = "25";
+  form.value.date = simulatedToday;
+
+  submit();
+
+  // 3. Verify transaction created and occurrence has remaining $40.00
+  const occStatus = getBillOccurrenceStatus(budgetState.value, bill, "2026-10-25");
+  assert.equal(occStatus.paidAmount, 2500, "Paid $25.00");
+  assert.equal(occStatus.remainingAmount, 4000, "Remaining $40.00");
+  assert.equal(occStatus.status, "partially_paid");
+});
+
 
 

@@ -1070,6 +1070,126 @@ Production build check (`npm run build`):
     - `Test 3C.37`: A new card configured after its previous due date does not acquire a fabricated overdue statement.
 - **Production Build**: `npm run build` (`vue-tsc -b && vite build`) passed cleanly with 0 TypeScript or bundling errors.
 
+---
+
+## Phase 3D — Simplified Bills UI & Regression (Completed)
+
+**Branch**: `phase/3d-simplified-bills-ui-regression`  
+**Status**: Completed, verified with full regression suite.
+
+### 1. Objective & Core Principle
+
+**Core Principle**: Make bills easier to understand, not more complicated to manage.
+
+Phase 3D focuses on improving the usability, clarity, and actionable organization of Bills without rewriting the underlying financial calculation engine established in Phases 3A–3C.
+
+The Bills interface directly and immediately answers four core questions for every tracked bill:
+1. **What do I owe?** (`expectedAmount`)
+2. **When is it due?** (`dueDate`)
+3. **How much have I already paid?** (`paidAmount`)
+4. **What still needs to be paid?** (`remainingAmount`)
+
+---
+
+### 2. Architecture & Presentation Model
+
+#### Pure Model Functions (`src/model.ts`)
+- **`isBillDueSoon(dueDate: string, asOf = today(), windowDays = 3): boolean`**:
+  - Deterministically evaluates if an active due date falls within a standardized date-based window (`dueDate >= asOf && dueDate <= addDays(asOf, windowDays)`).
+  - Past due dates (`dueDate < asOf`) are categorized as overdue, never due soon.
+  - Dates beyond the window are categorized as upcoming.
+- **`getBillItemPresentation(s: State, b: Bill, now = today(), precomputedBreakdown?: BillReservationBreakdown): BillItemPresentation`**:
+  - Targets the most relevant occurrence for the bill:
+    - If an earlier unpaid/partially paid occurrence is overdue (`unpaidDue < now`), prioritizes the overdue occurrence.
+    - If past occurrences are settled or paid, evaluates the current calendar month occurrence. If this month's bill is already settled or paid, presents it cleanly as `Paid` / `Overpaid` rather than silently jumping forward and giving the false impression of an unpaid obligation.
+  - Computes `expectedAmount`, `paidAmount`, `remainingAmount`, and `overpaidAmount`.
+  - Determines status:
+    - `paid`: `remainingAmount === 0` (status label: "Paid" or "Overpaid").
+    - `overdue`: `dueDate < now && remainingAmount > 0` (status label: "Overdue").
+    - `partially_paid`: `paidAmount > 0 && remainingAmount > 0` (status label: "Partially paid").
+    - `due_soon`: `dueDate >= now && dueDate <= addDays(now, 3) && paidAmount === 0 && remainingAmount > 0` (status label: "Due soon").
+    - `upcoming`: `dueDate > addDays(now, 3) && paidAmount === 0 && remainingAmount > 0` (status label: "Upcoming").
+  - Evaluates Payday Protection status from existing `reserveBillsBreakdown` details without duplicate computation:
+    - `current_cycle`: "Reserved through payday"
+    - `following_protected`: "Protected next cycle"
+    - `unprotected`: "Not reserved" (or "Paid" if fully settled)
+- **`getOrganizedBills(s: State, now = today()): BillItemPresentation[]`**:
+  - Sorts bills by urgency and actionability:
+    1. Overdue bills (rank 0)
+    2. Due soon bills (rank 1, including partially paid bills due soon)
+    3. Other upcoming bills (rank 2)
+    4. Fully paid bills (rank 3, visually quieter)
+  - Secondary sort: `dueDate` ascending; tiebreaker: bill name ascending.
+
+#### State & Composable Integration
+- **`useBudget.ts`**:
+  - Exposes reactive, cached `organizedBills` computed property and `getBillItemPresentation`.
+- **`useModal.ts`**:
+  - Supports explicit occurrence due date preselection via `open("Pay bill", billId, occurrenceDueDate)`.
+  - Dynamically computes and displays the remaining obligation in the post-payment toast notification:
+    - If remaining obligation > 0: `"Bill payment recorded. Remaining obligation: $XX.XX."`
+    - If fully paid: `"Bill payment recorded. Paid in full."`
+    - If scheduled: `"Scheduled bill payment recorded. Will not affect balance until confirmed."`
+
+#### UI Redesign (`RecurringBillsView.vue` & `_bills.css`)
+- **Card-Based Visual Hierarchy**:
+  - Replaces crowded tabular rows with structured, spacious cards (`.bill-item`).
+  - Clear accent indicators: red left border for overdue, amber for due soon, blue for partial.
+  - Visually quieter treatment for fully paid bills (`opacity: 0.72`, soft background, quiet checkmark, no competing calls to action).
+- **The 4 Questions Metric Grid**:
+  - Dedicated 4-column metric grid on desktop (responsive 2x2 on mobile):
+    - When is it due?
+    - What do I owe?
+    - Already paid (highlighted in teal if > 0)
+    - Still to pay (prominently styled in bold amber if > 0, soft neutral if $0.00)
+- **Visual Progress Bar**: Displays payment completion percentage for partially paid bills.
+- **Payday Protection Indicator**: Subtle tag with color dot indicating reservation status.
+- **Occurrence-Preserving Actions**:
+  - "Pay bill" / "Pay remaining ($XX.XX)" preselects the exact bill occurrence in `ActionDialog`.
+  - "Protect next cycle" toggle for bills due between current and following paydays.
+  - "Paid before setup" button for recording historical pre-setup occurrences without cash deductions.
+
+---
+
+### 3. Financial Invariants Preserved
+
+1. **Reservation Source of Truth**: All bill reservation amounts and payday protection cycles are sourced directly from `reserveBillsBreakdown(state, now)`. No parallel calculation or second reservation engine is introduced.
+2. **Covered Credit Integrity**: Paying bills using a credit card retains complete Covered Credit semantics: credit balance/debt increases, transaction is registered in the ledger, and Covered Credit reserves cash in checking to cover future card payoffs.
+3. **Account Balances Single-Touch**: Bill payments affect cash/checking ledger balances exactly once. No double-counting in totals or Safe to Spend.
+4. **Scheduled Expense Deduplication**: Scheduled transactions linked to recurring bills are deduplicated against tracked bill reservations; `getUncoveredScheduledExpenses()` never double-reserves the same obligation.
+5. **Phase 3C Minimum-Payment Safeguards**: Credit card minimum obligations and safeguards remain intact and fully isolated from bill UI logic. Safe to Spend continues to deduct bills and minimums with signed arithmetic.
+
+---
+
+### 4. Regression Tests Added (Test Suite 3D)
+
+Added 17 comprehensive unit and integration tests in [`tests/budget.test.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/tests/budget.test.ts):
+- `Test 3D.1`: `isBillDueSoon` boundary conditions (today, +1 day, +3 days, +4 days, past dates, invalid inputs).
+- `Test 3D.2`: Unpaid bill presentation answers the 4 core questions (`expectedAmount`, `dueDate`, `paidAmount = 0`, `remainingAmount`).
+- `Test 3D.3`: Due soon bill presentation (due within 3 days, `status === "due_soon"`, rank 1).
+- `Test 3D.4`: Overdue bill presentation (past due date, `status === "overdue"`, rank 0).
+- `Test 3D.5`: Partial payment reduces remaining obligation correctly (`isPartiallyPaid = true`, status "Partially paid").
+- `Test 3D.6`: Full payment removes unpaid reservation and presents as Paid (rank 3, visually quieter).
+- `Test 3D.7`: Overpayment does not create negative remaining amounts (clamped at 0, tracks `overpaidAmount`).
+- `Test 3D.8`: Multiple payments linked to one occurrence accumulate toward the same occurrence.
+- `Test 3D.9`: Bill payment affects account balances exactly once (ledger delta -$30, balance updated accurately).
+- `Test 3D.10`: Credit card bill payments preserve Covered Credit rules (card owes debt, Covered Credit tracks debt).
+- `Test 3D.11`: Scheduled expenses deduplication against tracked bills (zero duplicate reservation in `getUncoveredScheduledExpenses`).
+- `Test 3D.12`: Payday protection classification (`current_cycle`, `following_protected`, `unprotected`).
+- `Test 3D.13`: Editing or deleting linked payments dynamically recalculates occurrence and presentation.
+- `Test 3D.14`: Bill organization ordering (Overdue -> Due soon -> Upcoming -> Paid).
+- `Test 3D.15`: Edge cases: future tracking start date and out-of-horizon bills.
+- `Test 3D.16`: Safe to Spend and Credit Card Minimum safeguards (Phase 3C) remain intact.
+- `Test 3D.17`: Composable & Modal workflow integration (occurrence preselection, remaining obligation toast).
+
+---
+
+### 5. Verification Results
+
+- **Automated Tests**: 178 passing tests (`node --test tests/budget.test.ts`), 0 failures, 0 skipped.
+- **Production Build**: `npm run build` (`vue-tsc -b && vite build`) passed cleanly in 1.58s.
+
+
 
 
 

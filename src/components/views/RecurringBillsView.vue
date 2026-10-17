@@ -1,16 +1,22 @@
 <script setup lang="ts">
-import {
-  isBillPaid,
-  nextUnpaidDueDate,
-  getBillOccurrenceStatus,
-  getFollowingPayday,
-} from "../../model";
-import { money, formatNextDue, billStatus, date } from "../../utils/format";
+import { getFollowingPayday } from "../../model";
+import { money, date, pct } from "../../utils/format";
 import { useBudget } from "../../composables/useBudget";
 import { useModal } from "../../composables/useModal";
 
-const { state, sum, toggleProtectBill } = useBudget();
+const { state, sum, organizedBills, toggleProtectBill } = useBudget();
 const { open } = useModal();
+
+function formatDate(iso: string) {
+  if (!iso) return "—";
+  const dt = new Date(iso + "T12:00:00");
+  const isDiffYear = dt.getFullYear() !== new Date().getFullYear();
+  return dt.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    ...(isDiffYear ? { year: "numeric" } : {}),
+  });
+}
 </script>
 
 <template>
@@ -46,87 +52,136 @@ const { open } = useModal();
       </div>
     </section>
 
-    <section class="card">
-      <div v-for="b in state.bills" :key="b.id" class="bill-row">
-        <div>
-          <h3>{{ b.name }}</h3>
-          <span class="muted">{{ formatNextDue(nextUnpaidDueDate(state, b)) }}</span>
+    <section class="bills-list-card">
+      <div
+        v-for="item in organizedBills"
+        :key="item.bill.id"
+        class="bill-item"
+        :class="{
+          'is-paid': item.isPaid,
+          'is-overdue': item.isOverdue,
+          'is-due-soon': item.isDueSoon,
+          'is-partial': item.isPartiallyPaid,
+        }"
+      >
+        <div class="bill-header">
+          <div class="bill-title-group">
+            <div class="bill-title-row">
+              <h3 class="bill-name">{{ item.bill.name }}</h3>
+              <span class="badge" :class="item.status.replace('_', '-')">
+                {{ item.statusLabel }}
+              </span>
+            </div>
+            <div class="bill-protection-row">
+              <span
+                class="protection-tag"
+                :class="item.protectionStatus"
+                :title="item.protectionLabel"
+              >
+                <span class="protection-dot"></span>
+                {{ item.protectionLabel }}
+              </span>
+            </div>
+          </div>
+
+          <div class="bill-menu-actions">
+            <button
+              class="icon-btn edit-bill-btn"
+              @click="open('Edit bill', item.bill.id)"
+              title="Edit bill"
+              :aria-label="'Edit ' + item.bill.name"
+            >
+              ✎
+            </button>
+            <button
+              class="icon-btn delete-bill-btn"
+              @click="open('Delete bill', item.bill.id)"
+              title="Delete bill"
+              :aria-label="'Delete ' + item.bill.name"
+            >
+              ×
+            </button>
+          </div>
         </div>
-        <span
-          class="badge"
-          :class="billStatus(state, b).toLowerCase().replace(/[^a-z0-9]+/g, '-')"
-        >
-          {{ billStatus(state, b) }}
-        </span>
-        <div style="text-align: right;">
-          <template v-if="getBillOccurrenceStatus(state, b, nextUnpaidDueDate(state, b)).status === 'partially_paid'">
-            <strong>{{ money(getBillOccurrenceStatus(state, b, nextUnpaidDueDate(state, b)).remainingAmount) }}</strong>
-            <span class="muted" style="display: block; font-size: 0.75rem;">
-              {{ money(getBillOccurrenceStatus(state, b, nextUnpaidDueDate(state, b)).paidAmount) }} of {{ money(b.amount) }}
-            </span>
-          </template>
-          <template v-else-if="getBillOccurrenceStatus(state, b, nextUnpaidDueDate(state, b)).status === 'overpaid'">
-            <strong>$0.00</strong>
-            <span class="muted" style="display: block; font-size: 0.75rem;">
-              {{ money(getBillOccurrenceStatus(state, b, nextUnpaidDueDate(state, b)).paidAmount) }} (+{{ money(getBillOccurrenceStatus(state, b, nextUnpaidDueDate(state, b)).overpaidAmount) }})
-            </span>
-          </template>
-          <template v-else-if="getBillOccurrenceStatus(state, b, nextUnpaidDueDate(state, b)).status === 'paid'">
-            <strong>$0.00</strong>
-            <span class="muted" style="display: block; font-size: 0.75rem;">
-              Paid in full
-            </span>
-          </template>
-          <template v-else>
-            <strong>{{ money(b.amount) }}</strong>
-          </template>
+
+        <!-- The 4 Core Questions Grid -->
+        <div class="bill-grid">
+          <div class="bill-metric">
+            <span class="metric-label">When is it due?</span>
+            <strong class="metric-value due-date">{{ formatDate(item.dueDate) }}</strong>
+          </div>
+
+          <div class="bill-metric">
+            <span class="metric-label">What do I owe?</span>
+            <strong class="metric-value expected">{{ money(item.expectedAmount) }}</strong>
+          </div>
+
+          <div class="bill-metric">
+            <span class="metric-label">Already paid</span>
+            <strong class="metric-value paid" :class="{ 'has-paid': item.paidAmount > 0 }">
+              {{ money(item.paidAmount) }}
+            </strong>
+          </div>
+
+          <div class="bill-metric highlight">
+            <span class="metric-label">Still to pay</span>
+            <strong
+              class="metric-value remaining"
+              :class="{ 'zero-remaining': item.remainingAmount === 0 }"
+            >
+              {{ money(item.remainingAmount) }}
+            </strong>
+          </div>
         </div>
 
-        <!-- Protect toggle for bills due after next payday but before following payday -->
-        <button
-          v-if="
-            nextUnpaidDueDate(state, b) > state.payday &&
-            nextUnpaidDueDate(state, b) <= getFollowingPayday(state) &&
-            !isBillPaid(state, b, nextUnpaidDueDate(state, b))
-          "
-          class="secondary"
-          style="font-size: 0.75rem; padding: 0.35rem 0.6rem; white-space: nowrap;"
-          @click="toggleProtectBill(b.id)"
-          :title="b.protected ? 'Remove protection for following cycle' : 'Protect this bill out of current balance'"
-        >
-          {{ b.protected ? "Protected ✓" : "Protect" }}
-        </button>
+        <!-- Visual progress for partial payments -->
+        <div v-if="item.isPartiallyPaid" class="bill-progress">
+          <div
+            class="bill-progress-bar"
+            :style="{ width: pct(item.paidAmount, item.expectedAmount) + '%' }"
+          ></div>
+        </div>
 
-        <button
-          class="secondary"
-          @click="open('Pay bill', b.id)"
-          :disabled="isBillPaid(state, b, nextUnpaidDueDate(state, b))"
-        >
-          {{
-            isBillPaid(state, b, nextUnpaidDueDate(state, b))
-              ? "Paid ✓"
-              : getBillOccurrenceStatus(state, b, nextUnpaidDueDate(state, b)).status === 'partially_paid'
-                ? "Pay remaining"
-                : "Mark paid"
-          }}
-        </button>
+        <!-- Card Action Controls -->
+        <div class="bill-footer">
+          <div class="bill-actions-left">
+            <!-- Protect toggle for bills due after next payday but before following payday -->
+            <button
+              v-if="
+                item.remainingAmount > 0 &&
+                item.dueDate > state.payday &&
+                item.dueDate <= getFollowingPayday(state)
+              "
+              class="secondary btn-protect"
+              @click="toggleProtectBill(item.bill.id)"
+              :title="item.bill.protected ? 'Remove protection for following cycle' : 'Protect this bill out of current balance'"
+            >
+              {{ item.bill.protected ? "Protected ✓" : "Protect next cycle" }}
+            </button>
 
-        <button
-          v-if="!isBillPaid(state, b, nextUnpaidDueDate(state, b))"
-          class="secondary"
-          style="font-size: 0.75rem; padding: 0.35rem 0.6rem; white-space: nowrap;"
-          @click="open('Settle bill', b.id)"
-          title="Mark this occurrence as settled before setup without deducting cash"
-        >
-          Paid before setup
-        </button>
-        <button
-          class="delete-icon"
-          @click="open('Delete bill', b.id)"
-          :aria-label="'Delete ' + b.name"
-        >
-          ×
-        </button>
+            <button
+              v-if="!item.isPaid"
+              class="secondary btn-settle"
+              @click="open('Settle bill', item.bill.id, item.dueDate)"
+              title="Mark this occurrence as settled before setup without deducting cash"
+            >
+              Paid before setup
+            </button>
+          </div>
+
+          <div class="bill-actions-right">
+            <button
+              v-if="!item.isPaid"
+              class="secondary btn-pay"
+              @click="open('Pay bill', item.bill.id, item.dueDate)"
+            >
+              {{ item.isPartiallyPaid ? "Pay remaining (" + money(item.remainingAmount) + ")" : "Pay bill" }}
+            </button>
+            <span v-else class="paid-indicator">
+              ✓ {{ item.overpaidAmount > 0 ? "Overpaid (" + money(item.overpaidAmount) + ")" : "Paid in full" }}
+            </span>
+          </div>
+        </div>
       </div>
 
       <div v-if="!state.bills.length" class="empty">

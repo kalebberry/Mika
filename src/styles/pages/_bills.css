@@ -1,6 +1,6 @@
 .bills-layout {
   display: grid;
-  grid-template-columns: 0.6fr 1.4fr;
+  grid-template-columns: 0.65fr 1.35fr;
   gap: 1.5rem;
   align-items: start;
 }
@@ -9,6 +9,250 @@
   min-height: 11.25rem;
 }
 
+.bills-list-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border, #ededf2);
+  border-radius: var(--radius-md, 8px);
+  padding: 1.25rem;
+}
+
+.bill-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 1rem;
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--color-border, #ededf2);
+  background: var(--color-surface, #fff);
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.bill-item:hover {
+  border-color: #d0d0dc;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+}
+
+/* Priority status accent indicators */
+.bill-item.is-overdue {
+  border-left: 4px solid var(--color-danger, #e03131);
+}
+
+.bill-item.is-due-soon {
+  border-left: 4px solid #f59f00;
+}
+
+.bill-item.is-partial {
+  border-left: 4px solid #1971c2;
+}
+
+/* Fully paid bills: visually quieter */
+.bill-item.is-paid {
+  opacity: 0.72;
+  background: var(--color-surface-subtle, #f9f9fb);
+  border-color: #e9e9ee;
+}
+
+.bill-item.is-paid:hover {
+  opacity: 1;
+  box-shadow: none;
+}
+
+/* Header */
+.bill-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.bill-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.bill-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.bill-name {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--color-text, #1c1c28);
+}
+
+.bill-protection-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+/* Secondary Payday Protection indicator */
+.protection-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--color-muted, #727284);
+}
+
+.protection-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.protection-tag.current_cycle .protection-dot {
+  background: var(--color-teal, #277c78);
+}
+
+.protection-tag.following_protected .protection-dot {
+  background: #5f3dc4;
+}
+
+.protection-tag.unprotected .protection-dot {
+  background: #adb5bd;
+}
+
+.bill-menu-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--color-muted, #8c8c9e);
+  cursor: pointer;
+  padding: 0.25rem 0.45rem;
+  font-size: 0.9rem;
+  border-radius: var(--radius-sm, 4px);
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.icon-btn:hover {
+  color: var(--color-text, #1c1c28);
+  background: var(--color-surface-subtle, #f0f0f4);
+}
+
+.icon-btn.delete-bill-btn:hover {
+  color: var(--color-danger, #e03131);
+}
+
+/* The 4 Core Questions Grid */
+.bill-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.65rem;
+  background: var(--color-surface-subtle, #f9f9fb);
+  border: 1px solid var(--color-border, #ededf2);
+  border-radius: 6px;
+  padding: 0.65rem 0.85rem;
+}
+
+.bill-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.metric-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-muted, #727284);
+}
+
+.metric-value {
+  font-size: 0.98rem;
+  font-weight: 600;
+  color: var(--color-text, #1c1c28);
+}
+
+.metric-value.has-paid {
+  color: var(--color-teal, #277c78);
+}
+
+.bill-metric.highlight .metric-value.remaining {
+  color: #b25e00;
+  font-weight: 700;
+}
+
+.bill-metric.highlight .metric-value.remaining.zero-remaining {
+  color: var(--color-muted, #727284);
+  font-weight: 500;
+}
+
+/* Progress bar for partial payments */
+.bill-progress {
+  width: 100%;
+  height: 4px;
+  background: #e9ecef;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: -0.25rem;
+}
+
+.bill-progress-bar {
+  height: 100%;
+  background: var(--color-teal, #277c78);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+/* Footer / Actions */
+.bill-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.15rem;
+}
+
+.bill-actions-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.bill-actions-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.btn-pay {
+  font-size: 0.85rem;
+  padding: 0.45rem 0.9rem;
+  white-space: nowrap;
+}
+
+.btn-protect,
+.btn-settle {
+  font-size: 0.75rem;
+  padding: 0.35rem 0.6rem;
+  white-space: nowrap;
+}
+
+.paid-indicator {
+  font-size: 0.825rem;
+  color: var(--color-teal, #277c78);
+  font-weight: 600;
+}
+
+/* Legacy .bill-row compatibility */
 .bill-row {
   display: flex;
   align-items: center;
@@ -45,28 +289,27 @@
   .bill-total {
     min-height: 0;
   }
-
-  .bill-row {
-    flex-wrap: wrap;
-  }
 }
 
-@media (max-width: 37.5rem) {
-  .bill-row {
+@media (max-width: 42rem) {
+  .bill-grid {
+    grid-template-columns: repeat(2, 1fr);
     gap: 0.75rem;
   }
 
-  .bill-row .secondary {
-    font-size: 0.875rem;
-    padding: 0.625rem;
-    min-height: 2.5rem;
+  .bill-footer {
+    flex-direction: column;
+    align-items: stretch;
   }
 
-  .bill-row > div {
-    min-width: 5.9375rem;
+  .bill-actions-left,
+  .bill-actions-right {
+    justify-content: space-between;
+    width: 100%;
   }
 
-  .bill-row > strong {
-    font-size: 0.875rem;
+  .btn-pay {
+    width: 100%;
+    text-align: center;
   }
 }

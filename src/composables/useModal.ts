@@ -326,7 +326,10 @@ export function useModal() {
     } else if (m === "Pay bill" || m === "Settle bill") {
       const b = state.value.bills.find((item) => item.id === id);
       if (b) {
-        const targetDue = nextUnpaidDueDate(state.value, b, today());
+        const targetDue =
+          isValidDateString(defaultCategory)
+            ? defaultCategory
+            : nextUnpaidDueDate(state.value, b, today());
         const occStatus = getBillOccurrenceStatus(state.value, b, targetDue);
         const defaultAmt =
           occStatus.remainingAmount > 0
@@ -355,6 +358,7 @@ export function useModal() {
 
   function submit() {
     error.value = "";
+    let billToastMessage = "Bill payment recorded.";
     const f = form.value;
     const amount = cents(Number(f.amount));
     const target = cents(Number(f.target));
@@ -959,13 +963,22 @@ export function useModal() {
             accountId: form.value.accountId || defaultChecking,
             status: chosenStatus,
           });
+
+          const postStatus = getBillOccurrenceStatus(state.value, b, targetDue);
+          if (chosenStatus === "scheduled") {
+            billToastMessage =
+              "Scheduled bill payment recorded. Will not affect balance until confirmed.";
+          } else if (postStatus.remainingAmount > 0) {
+            billToastMessage = `Bill payment recorded. Remaining obligation: $${(postStatus.remainingAmount / 100).toFixed(2)}.`;
+          } else {
+            billToastMessage = "Bill payment recorded. Paid in full.";
+          }
         }
       }
     }
 
     const currentMode = mode.value;
     const currentMethod = payMethod.value;
-    const recordedStatus = form.value.status;
     close();
 
     toast(
@@ -976,9 +989,7 @@ export function useModal() {
           : currentMode === "Settle bill" || (currentMode === "Pay bill" && currentMethod === "settled")
             ? "Marked settled before setup without deducting cash."
             : currentMode === "Pay bill"
-              ? recordedStatus === "scheduled"
-                ? "Scheduled bill payment recorded. Will not affect balance until confirmed."
-                : "Bill payment recorded."
+              ? billToastMessage
               : currentMode === "Add transaction" && showCompanion.value
                 ? "Mika: Logged. One less thing to remember."
                 : "Saved. You’re up to date.",

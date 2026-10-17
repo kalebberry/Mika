@@ -22,6 +22,9 @@ import {
   isBillPaid,
   nextUnpaidDueDate,
   getBillOccurrenceStatus,
+  getOrganizedBills,
+  getBillItemPresentation,
+  type BillItemPresentation,
   settleBillOccurrence,
   unsettleBillOccurrence,
   recordBillPayment,
@@ -502,6 +505,10 @@ export function useBudget() {
     return tx;
   }
 
+  const organizedBills = computed<BillItemPresentation[]>(() =>
+    getOrganizedBills(state.value, today()),
+  );
+
   function addAccount(accData: {
     name: string;
     type: AccountType;
@@ -850,6 +857,9 @@ export function useBudget() {
     settleBill,
     unsettleBill,
     payBill,
+    organizedBills,
+    getBillItemPresentation: (bill: Bill, now?: string) =>
+      getBillItemPresentation(state.value, bill, now),
     getBillOccurrenceStatus: (bill: Bill, occurrenceDate?: string) =>
       getBillOccurrenceStatus(state.value, bill, occurrenceDate),
     accounts,

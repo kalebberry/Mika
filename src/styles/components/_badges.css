@@ -29,6 +29,18 @@
   color: var(--color-danger);
 }
 
+.badge.due-soon {
+  background: #fff8e6;
+  color: #8a6100;
+  border: 1px solid #ffe8aa;
+}
+
+.badge.upcoming {
+  background: #f0f0f4;
+  color: #555566;
+  border: 1px solid #e0e0e6;
+}
+
 .badge.due-before-payday {
   background: #fff8e6;
   color: #8a6100;

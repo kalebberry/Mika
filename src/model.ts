@@ -3062,6 +3062,201 @@ export function reserveBills(s: State, now = today()): number {
   return reserveBillsBreakdown(s, now).total;
 }
 
+export type BillDisplayStatus =
+  | "overdue"
+  | "due_soon"
+  | "partially_paid"
+  | "upcoming"
+  | "paid";
+
+export type BillProtectionStatus =
+  | "current_cycle"
+  | "following_protected"
+  | "unprotected";
+
+export interface BillItemPresentation {
+  bill: Bill;
+  dueDate: string;
+  expectedAmount: number;
+  paidAmount: number;
+  remainingAmount: number;
+  overpaidAmount: number;
+  status: BillDisplayStatus;
+  statusLabel: string;
+  isOverdue: boolean;
+  isDueSoon: boolean;
+  isPartiallyPaid: boolean;
+  isPaid: boolean;
+  isSettled: boolean;
+  protectionStatus: BillProtectionStatus;
+  protectionLabel: string;
+  sortRank: number;
+}
+
+/**
+ * Checks if a bill occurrence is "due soon" from asOf date.
+ * Default window is 3 days: inclusive of asOf through addDays(asOf, windowDays).
+ * Returns false if dueDate is in the past (overdue) or beyond windowDays.
+ */
+export function isBillDueSoon(
+  dueDate: string,
+  asOf = today(),
+  windowDays = 3,
+): boolean {
+  if (!isValidDateString(dueDate) || !isValidDateString(asOf)) {
+    return false;
+  }
+  if (dueDate < asOf) {
+    return false; // Past due dates are overdue, not due soon
+  }
+  const horizon = addDays(asOf, windowDays);
+  return dueDate <= horizon;
+}
+
+/**
+ * Derives the active presentation model for a single bill, answering:
+ * 1. What do I owe? (expectedAmount)
+ * 2. When is it due? (dueDate)
+ * 3. How much have I already paid? (paidAmount)
+ * 4. What still needs to be paid? (remainingAmount)
+ * Along with payment status, payday protection status, and sort rank.
+ */
+export function getBillItemPresentation(
+  s: State,
+  b: Bill,
+  now = today(),
+  precomputedBreakdown?: BillReservationBreakdown,
+): BillItemPresentation {
+  const validNow = isValidDateString(now) ? now : today();
+  const unpaidDue = nextUnpaidDueDate(s, b, validNow);
+
+  let targetDue = unpaidDue;
+
+  if (unpaidDue >= validNow) {
+    const [y, m] = validNow.split("-").map(Number);
+    const currentMonthDue = getBillDueDate(b, y!, m!);
+    const trackingStart = b.trackingStartDate;
+    const hasValidTracking = !trackingStart || currentMonthDue >= trackingStart;
+
+    if (hasValidTracking) {
+      const currentMonthOcc = getBillOccurrenceStatus(s, b, currentMonthDue);
+      if (currentMonthOcc.remainingAmount === 0) {
+        targetDue = currentMonthDue;
+      } else {
+        targetDue = currentMonthDue;
+      }
+    }
+  }
+
+  const occStatus = getBillOccurrenceStatus(s, b, targetDue);
+  const expectedAmount = occStatus.expectedAmount;
+  const paidAmount = occStatus.paidAmount;
+  const remainingAmount = occStatus.remainingAmount;
+  const overpaidAmount = occStatus.overpaidAmount;
+  const isSettled = occStatus.isSettled;
+
+  const isPaid = remainingAmount === 0;
+  const isOverdue = !isPaid && targetDue < validNow;
+  const isDueSoon = !isPaid && !isOverdue && isBillDueSoon(targetDue, validNow, 3);
+  const isPartiallyPaid = !isPaid && paidAmount > 0;
+
+  let status: BillDisplayStatus;
+  let statusLabel: string;
+  let sortRank: number;
+
+  if (isPaid) {
+    status = "paid";
+    statusLabel = overpaidAmount > 0 ? "Overpaid" : "Paid";
+    sortRank = 3;
+  } else if (isOverdue) {
+    status = "overdue";
+    statusLabel = "Overdue";
+    sortRank = 0;
+  } else if (isPartiallyPaid) {
+    status = "partially_paid";
+    statusLabel = "Partially paid";
+    sortRank = isDueSoon ? 1 : 2;
+  } else if (isDueSoon) {
+    status = "due_soon";
+    statusLabel = "Due soon";
+    sortRank = 1;
+  } else {
+    status = "upcoming";
+    statusLabel = "Upcoming";
+    sortRank = 2;
+  }
+
+  let protectionStatus: BillProtectionStatus = "unprotected";
+  let protectionLabel = "Not reserved";
+
+  if (isPaid) {
+    protectionStatus = "unprotected";
+    protectionLabel = "Paid";
+  } else {
+    const breakdown = precomputedBreakdown || reserveBillsBreakdown(s, validNow);
+    const match = breakdown.details.find(
+      (d) => d.bill.id === b.id && d.dueDate === targetDue,
+    );
+    if (match) {
+      if (match.cycle === "current") {
+        protectionStatus = "current_cycle";
+        protectionLabel = "Reserved through payday";
+      } else if (match.cycle === "following_protected") {
+        protectionStatus = "following_protected";
+        protectionLabel = "Protected next cycle";
+      }
+    }
+  }
+
+  return {
+    bill: b,
+    dueDate: targetDue,
+    expectedAmount,
+    paidAmount,
+    remainingAmount,
+    overpaidAmount,
+    status,
+    statusLabel,
+    isOverdue,
+    isDueSoon,
+    isPartiallyPaid,
+    isPaid,
+    isSettled,
+    protectionStatus,
+    protectionLabel,
+    sortRank,
+  };
+}
+
+/**
+ * Organizes bills by actionable priority:
+ * 1. Overdue bills (rank 0)
+ * 2. Due soon bills (rank 1, within 3 days or partially paid due soon)
+ * 3. Other upcoming bills (rank 2)
+ * 4. Fully paid bills (rank 3, visually quieter)
+ * Secondary sort by due date ascending, tiebreaker by bill name ascending.
+ */
+export function getOrganizedBills(
+  s: State,
+  now = today(),
+): BillItemPresentation[] {
+  const validNow = isValidDateString(now) ? now : today();
+  const breakdown = reserveBillsBreakdown(s, validNow);
+  const items = s.bills.map((b) =>
+    getBillItemPresentation(s, b, validNow, breakdown),
+  );
+
+  return items.sort((a, b) => {
+    if (a.sortRank !== b.sortRank) {
+      return a.sortRank - b.sortRank;
+    }
+    if (a.dueDate !== b.dueDate) {
+      return a.dueDate.localeCompare(b.dueDate);
+    }
+    return a.bill.name.localeCompare(b.bill.name);
+  });
+}
+
 export function getUncoveredScheduledExpenses(s: State, now = today()): number {
   const validNow = isValidDateString(now) ? now : today();
   const currentMonth = validNow.slice(0, 7);
