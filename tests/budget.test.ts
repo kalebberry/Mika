@@ -72,6 +72,7 @@ import {
 } from "../src/model.ts";
 import { useBudget } from "../src/composables/useBudget.ts";
 import { useModal } from "../src/composables/useModal.ts";
+import { money } from "../src/utils/format.ts";
 
 test("Test A — Future paycheck: income remains scheduled until confirmed/posted", () => {
   const simulatedToday = "2026-10-13";
@@ -9484,5 +9485,26 @@ test("Test 3C.30 — Scheduled expenses separation: scheduled purchases do not c
 
   const t = totals(state, "2026-10-10");
   assert.equal(t.scheduledExpenses, 20000, "Scheduled expenses tracked in separate totals metric");
+});
+
+test("Test 3C.31 — Zero expenses formatting: eliminates IEEE-754 negative zero (-0) and never renders -$0.00", () => {
+  const state: State = blank();
+  const currentMonth = "2026-10";
+
+  // When no expenses exist, getMonthlyExpenses must return 0, not -0
+  const zeroExpenses = getMonthlyExpenses(state, currentMonth);
+  assert.equal(zeroExpenses, 0);
+  assert.equal(Object.is(zeroExpenses, 0), true, "Expenses must return positive zero 0");
+  assert.equal(Object.is(zeroExpenses, -0), false, "Expenses must not return IEEE-754 negative zero -0");
+
+  // money() formatter must render $0.00 even if passed -0 or rounding boundary values
+  assert.equal(money(0), "$0.00");
+  assert.equal(money(-0), "$0.00", "money(-0) must render as $0.00, not -$0.00");
+  assert.equal(money(-0.001), "$0.00", "money(-0.001) must render as $0.00, not -$0.00");
+  assert.equal(money(zeroExpenses), "$0.00", "Formatting zero expenses displays $0.00");
+
+  // Non-zero values must retain their correct signs
+  assert.equal(money(12500), "$125.00");
+  assert.equal(money(-12500), "-$125.00");
 });
 

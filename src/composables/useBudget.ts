@@ -144,7 +144,7 @@ const scheduledIncome = computed(() =>
 );
 
 const scheduledExpenses = computed(() =>
-  -state.value.transactions
+  state.value.transactions
     .filter(
       (t) =>
         t.status === "scheduled" &&
@@ -152,7 +152,7 @@ const scheduledExpenses = computed(() =>
         t.amount < 0 &&
         t.date.startsWith(month.value),
     )
-    .reduce((n, t) => n + t.amount, 0),
+    .reduce((n, t) => n + Math.abs(t.amount), 0),
 );
 
 const categories = computed(() =>

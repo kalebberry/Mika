@@ -11,10 +11,14 @@ import {
   isValidDateString,
 } from "../model.ts";
 
-export const money = (v: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
-    v / 100,
+export const money = (v: number) => {
+  if (!Number.isFinite(v)) return "$0.00";
+  const cents = Math.round(v);
+  const normalized = cents === 0 ? 0 : cents;
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
+    normalized / 100,
   );
+};
 
 export const date = (v: string) => {
   if (!v || !isValidDateString(v)) return "";

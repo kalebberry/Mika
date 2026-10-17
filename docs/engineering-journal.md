@@ -982,9 +982,16 @@ Production build check (`npm run build`):
   - `getMonthlyExpenses` explicitly allows legacy transactions where `!t.status`, alongside ledger statuses `isLedgerStatus(t.status)`, while strictly excluding `t.status === "scheduled"`.
   - Excludes `isLegacyDebt` transactions.
   - Excludes transfers (`kind === "transfer"`) and credit card debt repayments (`kind === "payment"`).
-  - Includes eligible posted, cleared, and pending purchases on cash and credit accounts.
-  - Includes bill payments once (recorded as standard expense transactions).
-  - Preserves separation between actual spending and scheduled expenses.
+#### Correction 4 — Negative Zero (-$0.00) Display on Expenses
+- **Finding**: User observed expenses displaying as `-$0.00`.
+- **Root Cause & Fix**:
+  - In JavaScript, IEEE-754 negative zero (`-0`) exists: `Object.is(-0, 0)` is `false`. When passed to `Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })`, `-0` formats explicitly as `"-$0.00"`.
+  - In `src/model.ts`, `getMonthlyExpenses()` previously used unary negation: `-s.transactions.filter(...).reduce((sum, t) => sum + t.amount, 0)`. When zero transactions matched (e.g. no expenses in the month), `reduce` yielded `0`, and `-0` produced `-0`.
+  - In `src/composables/useBudget.ts`, `scheduledExpenses` similarly used unary negation `-state.value.transactions.filter(...).reduce(...)`.
+  - In `src/utils/format.ts`, `money(v)` had no defense against `-0` or values rounding to 0 cents.
+  - **Resolution**:
+    1. Changed `getMonthlyExpenses()` and `scheduledExpenses` to sum `Math.abs(t.amount)`, guaranteeing $\ge 0$ positive integer cents and completely removing unary negation.
+    2. Hardened `money(v)` in `src/utils/format.ts` to normalize `cents === 0 ? 0 : cents`, guarding against `-0`, non-finite inputs, and rounding boundary artifacts so that `-$0.00` can never render anywhere in the application.
 
 ---
 
@@ -1003,8 +1010,8 @@ Production build check (`npm run build`):
 
 ### 3. Verification & Test Metrics
 
-- **Automated Tests**: 154 passing tests (`node --test tests/budget.test.ts`), 0 failures, 0 skipped.
-  - Added 10 new regression tests `Test 3C.21` through `Test 3C.30`:
+- **Automated Tests**: 155 passing tests (`node --test tests/budget.test.ts`), 0 failures, 0 skipped.
+  - Added 11 new regression tests `Test 3C.21` through `Test 3C.31`:
     - `Test 3C.21`: Changing minimum payment amount on overdue card retains overdue obligation without silent discard.
     - `Test 3C.22`: Changing card balance does not retroactively invent past statement satisfaction.
     - `Test 3C.23`: Due date boundary payment absorption: late payment satisfies overdue obligation first without double-counting in next cycle.
@@ -1015,5 +1022,7 @@ Production build check (`npm run build`):
     - `Test 3C.28`: Deterministic regression for dashboard Expenses $0.00 issue: legacy transactions lacking status field are accurately included in monthly expenses.
     - `Test 3C.29`: Monthly expenses inclusion and exclusion: includes credit purchases and bill payments, excludes transfers and card repayments.
     - `Test 3C.30`: Scheduled expenses separation: scheduled purchases do not contaminate actual spending totals or monthly expenses.
+    - `Test 3C.31`: Zero expenses formatting: eliminates IEEE-754 negative zero (`-0`) and verifies `money()` never renders `-$0.00`.
 - **Production Build**: `npm run build` (`vue-tsc -b && vite build`) passed cleanly with 0 TypeScript or bundling errors.
+
 

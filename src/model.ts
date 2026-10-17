@@ -1536,7 +1536,7 @@ export function unconfirmCreditCardMinimum(
 
 export function getMonthlyExpenses(s: State, month: string): number {
   if (!s || !Array.isArray(s.transactions)) return 0;
-  return -s.transactions
+  return s.transactions
     .filter(
       (t) =>
         t.status !== "scheduled" &&
@@ -1546,7 +1546,7 @@ export function getMonthlyExpenses(s: State, month: string): number {
         t.amount < 0 &&
         t.date.startsWith(month),
     )
-    .reduce((sum, t) => sum + t.amount, 0);
+    .reduce((sum, t) => sum + Math.abs(t.amount), 0);
 }
 
 export function getMonthlyIncome(s: State, month: string): number {
