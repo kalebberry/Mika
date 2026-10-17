@@ -1877,22 +1877,22 @@ export function getBillOccurrenceStatus(
   const qualifyingTransactions: Transaction[] = [...explicitMatches];
 
   // 2. Candidate legacy/unlinked transactions in the occurrence month (must be expense payments)
-  // Only evaluate unlinked candidates if there are no explicit matches for this occurrence
-  if (qualifyingTransactions.length === 0) {
-    const occurrenceMonth = occurrenceDate.slice(0, 7);
-    const unlinkedCandidates = s.transactions.filter(
-      (t) =>
-        isLedgerStatus(t.status) &&
-        t.billId === b.id &&
-        t.amount < 0 &&
-        !t.billDueDate &&
-        t.date.slice(0, 7) === occurrenceMonth,
-    );
+  // A legacy unlinked transaction matching this bill and month should attribute to this occurrence
+  // even if an explicit payment is also present, provided it is unambiguous (single unlinked transaction in this month,
+  // and no earlier unpaid occurrences).
+  const occurrenceMonth = occurrenceDate.slice(0, 7);
+  const unlinkedCandidates = s.transactions.filter(
+    (t) =>
+      isLedgerStatus(t.status) &&
+      t.billId === b.id &&
+      t.amount < 0 &&
+      !t.billDueDate &&
+      t.date.slice(0, 7) === occurrenceMonth,
+  );
 
-    if (unlinkedCandidates.length === 1) {
-      if (!hasEarlierUnpaidOccurrence(s, b, occurrenceDate)) {
-        qualifyingTransactions.push(unlinkedCandidates[0]!);
-      }
+  if (unlinkedCandidates.length === 1) {
+    if (!hasEarlierUnpaidOccurrence(s, b, occurrenceDate)) {
+      qualifyingTransactions.push(unlinkedCandidates[0]!);
     }
   }
 
@@ -1957,10 +1957,26 @@ export function recordBillPayment(
   const bill = s.bills.find((b) => b.id === billId);
   if (!bill) return null;
 
-  const payDate = isValidDateString(options?.date) ? options!.date! : today();
+  // Validate date if explicitly provided
+  if (options?.date !== undefined) {
+    if (typeof options.date !== "string" || !isValidDateString(options.date)) {
+      return null;
+    }
+  }
+  const payDate = options?.date || today();
+
+  // Validate dueDate if explicitly provided
+  if (options?.dueDate !== undefined) {
+    if (
+      typeof options.dueDate !== "string" ||
+      !isValidDateString(options.dueDate)
+    ) {
+      return null;
+    }
+  }
   let explicitDueDate = options?.dueDate;
 
-  if (!explicitDueDate || !isValidDateString(explicitDueDate)) {
+  if (!explicitDueDate) {
     explicitDueDate = nextUnpaidDueDate(s, bill, payDate);
   }
 
@@ -1969,18 +1985,63 @@ export function recordBillPayment(
     explicitDueDate = getBillDueDate(bill, pY || 2026, pM || 1);
   }
 
-  const txStatus: TransactionStatus = options?.status || "posted";
-  const defaultChecking =
-    s.accounts?.find((a) => a.type === "checking" && !a.archived)?.id ||
-    "acc-default-checking";
+  if (!isValidDateString(explicitDueDate)) {
+    return null;
+  }
 
+  // Validate supported status if provided
+  const supportedStatuses: TransactionStatus[] = [
+    "scheduled",
+    "pending",
+    "cleared",
+    "posted",
+  ];
+  if (
+    options?.status !== undefined &&
+    !supportedStatuses.includes(options.status)
+  ) {
+    return null;
+  }
+  const txStatus: TransactionStatus = options?.status || "posted";
+
+  // Validate amount
   let paymentAmount: number;
   if (options?.amount !== undefined) {
-    paymentAmount = Math.abs(options.amount);
+    if (
+      typeof options.amount !== "number" ||
+      !Number.isFinite(options.amount) ||
+      Number.isNaN(options.amount) ||
+      options.amount <= 0 ||
+      !Number.isInteger(options.amount)
+    ) {
+      return null;
+    }
+    paymentAmount = options.amount;
   } else {
     const occStatus = getBillOccurrenceStatus(s, bill, explicitDueDate);
     paymentAmount =
       occStatus.remainingAmount > 0 ? occStatus.remainingAmount : bill.amount;
+    if (
+      typeof paymentAmount !== "number" ||
+      !Number.isFinite(paymentAmount) ||
+      Number.isNaN(paymentAmount) ||
+      paymentAmount <= 0 ||
+      !Number.isInteger(paymentAmount)
+    ) {
+      return null;
+    }
+  }
+
+  const defaultChecking =
+    s.accounts?.find((a) => a.type === "checking" && !a.archived)?.id ||
+    "acc-default-checking";
+
+  const targetAccountId = options?.accountId || defaultChecking;
+  if (options?.accountId && s.accounts && s.accounts.length > 0) {
+    const acct = s.accounts.find((a) => a.id === options.accountId);
+    if (!acct) {
+      return null;
+    }
   }
 
   const tx: Transaction = {
@@ -1993,7 +2054,7 @@ export function recordBillPayment(
     billDueDate: explicitDueDate,
     status: txStatus,
     postedDate: txStatus !== "scheduled" ? payDate : undefined,
-    accountId: options?.accountId || defaultChecking,
+    accountId: targetAccountId,
     kind: "standard",
     createdAt: new Date().toISOString(),
   };
@@ -2220,16 +2281,22 @@ export function reserveBillsBreakdown(
       diagnostics.push(
         `Bill '${b.name}' calculated non-positive totalMonths (${totalMonths}); safely reserving current cycle amount.`,
       );
-      const occStatus = getBillOccurrenceStatus(s, b, validNow);
-      const reserveAmt =
-        occStatus.remainingAmount > 0 ? occStatus.remainingAmount : b.amount;
-      currentCycleBills += reserveAmt;
-      details.push({
-        bill: b,
-        dueDate: validNow,
-        amount: reserveAmt,
-        cycle: "current",
-      });
+      const fallbackDue = getBillDueDate(
+        b,
+        Number(validNow.slice(0, 4)) || 2026,
+        Number(validNow.slice(5, 7)) || 1,
+      );
+      const occStatus = getBillOccurrenceStatus(s, b, fallbackDue);
+      const reserveAmt = occStatus.remainingAmount;
+      if (reserveAmt > 0) {
+        currentCycleBills += reserveAmt;
+        details.push({
+          bill: b,
+          dueDate: fallbackDue,
+          amount: reserveAmt,
+          cycle: "current",
+        });
+      }
       continue;
     }
 
@@ -2290,16 +2357,22 @@ export function reserveBillsBreakdown(
       diagnostics.push(
         `Bill '${b.name}' yielded 0 evaluated occurrences within window; safely reserving current cycle amount.`,
       );
-      const occStatus = getBillOccurrenceStatus(s, b, validNow);
-      const reserveAmt =
-        occStatus.remainingAmount > 0 ? occStatus.remainingAmount : b.amount;
-      currentCycleBills += reserveAmt;
-      details.push({
-        bill: b,
-        dueDate: validNow,
-        amount: reserveAmt,
-        cycle: "current",
-      });
+      const fallbackDue = getBillDueDate(
+        b,
+        Number(validNow.slice(0, 4)) || 2026,
+        Number(validNow.slice(5, 7)) || 1,
+      );
+      const occStatus = getBillOccurrenceStatus(s, b, fallbackDue);
+      const reserveAmt = occStatus.remainingAmount;
+      if (reserveAmt > 0) {
+        currentCycleBills += reserveAmt;
+        details.push({
+          bill: b,
+          dueDate: fallbackDue,
+          amount: reserveAmt,
+          cycle: "current",
+        });
+      }
     }
   }
 

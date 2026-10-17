@@ -7565,6 +7565,369 @@ test("Test 3B.13 — Composable and Modal workflow integration", () => {
   assert.equal(isBillPaid(budget.state.value, phoneBill, "2026-10-15"), true);
 });
 
+test("Test 3B.14 — Legacy payment attribution stability before and after new explicit partial payments, and conservative ambiguous handling", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+  state.opening = 200000;
+
+  const electricBill: Bill = {
+    id: "b-electric",
+    name: "Electric Co",
+    amount: 20000, // $200.00
+    day: 15,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(electricBill);
+
+  // 1. One safely attributable legacy unlinked payment in October: $50.00
+  state.transactions.push({
+    id: "tx-legacy-50",
+    name: "Electric Co",
+    amount: -5000,
+    category: "Bills",
+    date: "2026-10-10",
+    status: "posted",
+    billId: electricBill.id,
+    // billDueDate undefined (legacy unlinked)
+  });
+
+  // Verify status before new payment: paid $50, remaining $150
+  const occBefore = getBillOccurrenceStatus(state, electricBill, "2026-10-15");
+  assert.equal(occBefore.paidAmount, 5000);
+  assert.equal(occBefore.remainingAmount, 15000);
+  assert.equal(occBefore.status, "partially_paid");
+  assert.equal(occBefore.transactions.length, 1);
+  assert.equal(occBefore.transactions[0]!.id, "tx-legacy-50");
+
+  // 2. Record new explicitly linked partial payment: $75.00
+  const p75 = recordBillPayment(state, electricBill.id, {
+    dueDate: "2026-10-15",
+    amount: 7500,
+    date: simulatedToday,
+  });
+  assert.ok(p75);
+  assert.equal(p75.amount, -7500);
+  assert.equal(p75.billDueDate, "2026-10-15");
+
+  // Verify status after new payment:
+  // Legacy $50 must NOT silently disappear! Outstanding balance must be $75!
+  const occAfter = getBillOccurrenceStatus(state, electricBill, "2026-10-15");
+  assert.equal(
+    occAfter.paidAmount,
+    12500,
+    "Paid amount combines legacy $50 and explicit $75",
+  );
+  assert.equal(
+    occAfter.remainingAmount,
+    7500,
+    "Remaining balance is exactly $75 ($200 - $125)",
+  );
+  assert.equal(occAfter.status, "partially_paid");
+  assert.equal(occAfter.transactions.length, 2);
+  assert.ok(
+    occAfter.transactions.some((t) => t.id === "tx-legacy-50"),
+    "Legacy tx retained",
+  );
+  assert.ok(
+    occAfter.transactions.some((t) => t.id === p75.id),
+    "Explicit tx included",
+  );
+
+  // 3. Ambiguous legacy transactions: Multiple unlinked transactions in the same month
+  const waterBill: Bill = {
+    id: "b-water",
+    name: "Water Utility",
+    amount: 10000, // $100.00
+    day: 20,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(waterBill);
+
+  state.transactions.push(
+    {
+      id: "tx-unlinked-water-1",
+      name: "Water Utility",
+      amount: -3000,
+      category: "Bills",
+      date: "2026-10-05",
+      status: "posted",
+      billId: waterBill.id,
+    },
+    {
+      id: "tx-unlinked-water-2",
+      name: "Water Utility",
+      amount: -3000,
+      category: "Bills",
+      date: "2026-10-12",
+      status: "posted",
+      billId: waterBill.id,
+    },
+  );
+
+  // Because there are multiple unlinked candidates in October, it is ambiguous which occurrence or portion they represent.
+  // Conservative rule: Neither is automatically assigned without explicit linkage.
+  const waterBefore = getBillOccurrenceStatus(state, waterBill, "2026-10-20");
+  assert.equal(
+    waterBefore.paidAmount,
+    0,
+    "Ambiguous multiple unlinked records not attributed",
+  );
+  assert.equal(waterBefore.remainingAmount, 10000);
+  assert.equal(waterBefore.status, "unpaid");
+
+  // Even if an explicit payment is recorded, ambiguous unlinked records remain unattributed
+  recordBillPayment(state, waterBill.id, {
+    dueDate: "2026-10-20",
+    amount: 4000,
+    date: simulatedToday,
+  });
+  const waterAfter = getBillOccurrenceStatus(state, waterBill, "2026-10-20");
+  assert.equal(
+    waterAfter.paidAmount,
+    4000,
+    "Only explicit payment attributed when unlinked candidates are ambiguous",
+  );
+  assert.equal(waterAfter.remainingAmount, 6000);
+  assert.equal(waterAfter.status, "partially_paid");
+});
+
+test("Test 3B.15 — Model-level recordBillPayment validation: invalid amount, date, status, account rejection with untouched state", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+  state.opening = 100000;
+  state.accounts = [
+    {
+      id: "acc-chk-main",
+      name: "Checking",
+      type: "checking",
+      opening: 100000,
+      balance: 100000,
+      includeInSafeToSpend: true,
+    },
+  ];
+
+  const gasBill: Bill = {
+    id: "b-gas-val",
+    name: "Gas Bill",
+    amount: 8000, // $80.00
+    day: 18,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(gasBill);
+
+  const initialTxCount = state.transactions.length;
+  const initialTotals = totals(state, simulatedToday);
+
+  // 1. Amount: Zero
+  const rZero = recordBillPayment(state, gasBill.id, { amount: 0 });
+  assert.equal(rZero, null);
+  assert.equal(state.transactions.length, initialTxCount);
+
+  // 2. Amount: Negative
+  const rNeg = recordBillPayment(state, gasBill.id, { amount: -2000 });
+  assert.equal(rNeg, null);
+  assert.equal(state.transactions.length, initialTxCount);
+
+  // 3. Amount: NaN
+  const rNaN = recordBillPayment(state, gasBill.id, { amount: NaN });
+  assert.equal(rNaN, null);
+  assert.equal(state.transactions.length, initialTxCount);
+
+  // 4. Amount: Infinity / -Infinity
+  const rInf = recordBillPayment(state, gasBill.id, { amount: Infinity });
+  assert.equal(rInf, null);
+  const rNegInf = recordBillPayment(state, gasBill.id, { amount: -Infinity });
+  assert.equal(rNegInf, null);
+  assert.equal(state.transactions.length, initialTxCount);
+
+  // 5. Amount: Non-integer cents
+  const rFraction = recordBillPayment(state, gasBill.id, { amount: 45.5 });
+  assert.equal(rFraction, null);
+  assert.equal(state.transactions.length, initialTxCount);
+
+  // 6. Invalid dates
+  const rBadDate = recordBillPayment(state, gasBill.id, {
+    date: "not-a-date",
+  });
+  assert.equal(rBadDate, null);
+  const rBadDueDate = recordBillPayment(state, gasBill.id, {
+    dueDate: "2026-02-31",
+  });
+  assert.equal(rBadDueDate, null);
+  assert.equal(state.transactions.length, initialTxCount);
+
+  // 7. Unsupported status
+  const rBadStatus = recordBillPayment(state, gasBill.id, {
+    status: "nonexistent-status" as any,
+  });
+  assert.equal(rBadStatus, null);
+  assert.equal(state.transactions.length, initialTxCount);
+
+  // 8. Non-existent account
+  const rBadAcc = recordBillPayment(state, gasBill.id, {
+    accountId: "acc-ghost",
+  });
+  assert.equal(rBadAcc, null);
+  assert.equal(state.transactions.length, initialTxCount);
+
+  // Verify financial totals and state completely untouched after all rejected calls
+  const untouchedTotals = totals(state, simulatedToday);
+  assert.equal(untouchedTotals.balance, initialTotals.balance);
+  assert.equal(untouchedTotals.bills, initialTotals.bills);
+  assert.equal(untouchedTotals.safe, initialTotals.safe);
+
+  // 9. Valid partial payment succeeds
+  const rValidPartial = recordBillPayment(state, gasBill.id, {
+    amount: 3000,
+    accountId: "acc-chk-main",
+    date: simulatedToday,
+  });
+  assert.ok(rValidPartial);
+  assert.equal(rValidPartial.amount, -3000);
+  assert.equal(state.transactions.length, initialTxCount + 1);
+
+  // 10. Valid overpayment succeeds and attaches excess to occurrence
+  const rValidOver = recordBillPayment(state, gasBill.id, {
+    dueDate: "2026-10-18",
+    amount: 7000, // $70 on remaining $50 -> overpaid by $20
+    accountId: "acc-chk-main",
+    date: simulatedToday,
+  });
+  assert.ok(rValidOver);
+  assert.equal(rValidOver.amount, -7000);
+
+  const occOver = getBillOccurrenceStatus(state, gasBill, "2026-10-18");
+  assert.equal(occOver.paidAmount, 10000);
+  assert.equal(occOver.expectedAmount, 8000);
+  assert.equal(occOver.remainingAmount, 0);
+  assert.equal(occOver.overpaidAmount, 2000);
+  assert.equal(occOver.status, "overpaid");
+});
+
+test("Test 3B.16 — Reservation fallback safety: never reintroduces full bill amount for paid or partially paid occurrences", () => {
+  const simulatedToday = "2026-10-11";
+  const state: State = blank();
+  state.payday = "2026-10-12";
+  state.followingPayday = "2026-10-12";
+  state.opening = 200000; // $2,000 cash
+
+  // Bill configured where trackingStartDate is 2026-10-10, payday is 2026-10-12,
+  // but due day is 5.
+  // In October, due date is 2026-10-05 (before trackingStartDate 2026-10-10).
+  // In November, due date is 2026-11-05 (after maxEnd 2026-10-12).
+  // Therefore, 0 occurrences fall within [trackingStartDate, maxEnd], triggering the defensive fallback!
+  const fallbackBill: Bill = {
+    id: "b-fallback",
+    name: "Fallback Test Bill",
+    amount: 10000, // $100.00
+    day: 5,
+    protected: false,
+    trackingStartDate: "2026-10-10",
+  };
+  state.bills.push(fallbackBill);
+
+  // Sub-case 1: Bill is unpaid in current cycle (2026-10-05)
+  // Safely reserves full amount $100 via fallback
+  const bd1 = reserveBillsBreakdown(state, simulatedToday);
+  assert.ok(
+    bd1.diagnostics.some((d) =>
+      d.includes("yielded 0 evaluated occurrences within window"),
+    ),
+    "Defensive fallback diagnostic must be triggered",
+  );
+  assert.equal(bd1.currentCycleBills, 10000);
+  const t1 = totals(state, simulatedToday);
+  assert.equal(t1.bills, 10000);
+  assert.equal(t1.safe, 190000);
+
+  // Sub-case 2: Bill has a partial payment of $40 ($40 paid, $60 remaining)
+  recordBillPayment(state, fallbackBill.id, {
+    dueDate: "2026-10-05",
+    amount: 4000,
+    date: "2026-10-10",
+  });
+  const occPart = getBillOccurrenceStatus(state, fallbackBill, "2026-10-05");
+  assert.equal(occPart.paidAmount, 4000);
+  assert.equal(occPart.remainingAmount, 6000);
+  assert.equal(occPart.status, "partially_paid");
+
+  // Fallback MUST reserve only $60 (remaining balance), NEVER reintroduce $100!
+  const bd2 = reserveBillsBreakdown(state, simulatedToday);
+  assert.ok(
+    bd2.diagnostics.some((d) =>
+      d.includes("yielded 0 evaluated occurrences within window"),
+    ),
+    "Defensive fallback diagnostic must be triggered",
+  );
+  assert.equal(
+    bd2.currentCycleBills,
+    6000,
+    "Fallback reserves only remaining $60, not full $100",
+  );
+  const t2 = totals(state, simulatedToday);
+  // Cash was 200000 - 4000 = 196000; bills is 6000; safe = 196000 - 6000 = 190000
+  assert.equal(t2.balance, 196000);
+  assert.equal(t2.bills, 6000);
+  assert.equal(
+    t2.safe,
+    190000,
+    "Safe to Spend invariant preserved identically",
+  );
+
+  // Sub-case 3: Bill is fully paid (remaining $60 is paid)
+  recordBillPayment(state, fallbackBill.id, {
+    dueDate: "2026-10-05",
+    amount: 6000,
+    date: "2026-10-10",
+  });
+  const occFull = getBillOccurrenceStatus(state, fallbackBill, "2026-10-05");
+  assert.equal(occFull.paidAmount, 10000);
+  assert.equal(occFull.remainingAmount, 0);
+  assert.equal(occFull.status, "paid");
+
+  // Fallback MUST NOT reintroduce the bill! Reservation must be $0!
+  const bd3 = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(
+    bd3.currentCycleBills,
+    0,
+    "Fallback must reserve $0 for fully paid occurrence",
+  );
+  const t3 = totals(state, simulatedToday);
+  // Cash was 196000 - 6000 = 190000; bills is 0; safe = 190000 - 0 = 190000
+  assert.equal(t3.balance, 190000);
+  assert.equal(t3.bills, 0);
+  assert.equal(t3.safe, 190000, "Safe to spend remains $1,900");
+
+  // Sub-case 4: Settled occurrence
+  const settledBill: Bill = {
+    id: "b-fallback-settled",
+    name: "Fallback Settled Bill",
+    amount: 5000,
+    day: 5,
+    protected: false,
+    trackingStartDate: "2026-10-10",
+  };
+  state.bills.push(settledBill);
+  settleBillOccurrence(state, settledBill.id, "2026-10-05");
+  const occSettled = getBillOccurrenceStatus(state, settledBill, "2026-10-05");
+  assert.equal(occSettled.isSettled, true);
+  assert.equal(occSettled.remainingAmount, 0);
+
+  const bd4 = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(
+    bd4.currentCycleBills,
+    0,
+    "Fallback reserves $0 for settled occurrence",
+  );
+});
+
 
 
 

@@ -757,6 +757,39 @@ Production build check (`npm run build`):
 3. **Why are scheduled transactions excluded from completed payments in `getBillOccurrenceStatus`?**
    - *Answer*: Scheduled transactions represent future intended intent, not confirmed cash movements. They do not alter current bank ledger balances. If a scheduled transaction were counted as a completed payment, the bill reservation would be released immediately, inflating current Safe to Spend before the cash has actually left the account. Keeping scheduled transactions separate ensures that the bill reservation remains in place until the money is confirmed posted or cleared.
 
+---
+
+### 7. Phase 3B Independent Review Corrections & Hardening
+
+Following independent code review, three critical hardening fixes were implemented and verified:
+
+1. **Legacy Payment Attribution Stability (`getBillOccurrenceStatus`)**:
+   - **Issue**: A previously attributed legacy payment silently disappeared when a new explicitly linked partial payment was recorded. For example, on a $200 bill with a $50 legacy payment and a newly entered $75 explicit payment, the balance incorrectly showed $125 remaining instead of $75 remaining because an explicit match guard (`if (qualifyingTransactions.length === 0)`) skipped unlinked candidates entirely.
+   - **Resolution**: Removed the exclusivity guard so that an unambiguous legacy candidate in the occurrence month is evaluated alongside explicit transactions.
+   - **Non-Ambiguity & Non-Duplication Invariants**: Unlinked legacy candidates are only attributed if `unlinkedCandidates.length === 1` and `!hasEarlierUnpaidOccurrence(s, b, occurrenceDate)`. Because bill occurrences are monthly and explicit transactions require `billDueDate === occurrenceDate` whereas legacy transactions have `!billDueDate`, transactions belong to disjoint sets and can never be double-counted or assigned to multiple occurrences. If multiple unlinked records exist or earlier occurrences remain unpaid, the conservative rule retains the full obligation.
+
+2. **Model-Level Payment Validation (`recordBillPayment`)**:
+   - **Issue**: `recordBillPayment()` accepted unvalidated input and used `Math.abs(options.amount)`, permitting non-integer amounts, negative values, zero, `NaN`, or infinite values to create invalid transactions if called directly.
+   - **Resolution**: Hardened the model boundary to reject:
+     - Non-finite, non-integer, negative, zero, or `NaN` amounts.
+     - Malformed or invalid ISO date strings for `date` and `dueDate`.
+     - Unsupported transaction statuses (must be one of `"scheduled" | "pending" | "cleared" | "posted"`).
+     - Non-existent account IDs.
+   - **Behavior**: Any invalid request immediately returns `null` leaving state completely untouched (no transactions added, account balances and Safe to Spend unchanged). Valid payments and overpayments continue to execute correctly.
+
+3. **Defensive Reservation Fallback Safety (`reserveBillsBreakdown`)**:
+   - **Issue**: In the defensive fallback branches (`totalMonths <= 0` or `evaluatedCount === 0 && trackingStart <= maxEnd`), the code used `const reserveAmt = occStatus.remainingAmount > 0 ? occStatus.remainingAmount : b.amount;`. When an occurrence was fully paid or settled (`remainingAmount === 0`), `occStatus.remainingAmount > 0` was `false`, causing the system to resurrect the full `b.amount` as an active reservation.
+   - **Resolution**: Derived the current cycle due date via `getBillDueDate(b, y, m)` and set `const reserveAmt = occStatus.remainingAmount;`. The reservation is added if and only if `reserveAmt > 0`. If `reserveAmt === 0` (the bill is fully paid or settled), $0 is reserved and no reservation detail is added. For partial payments, only the exact remaining balance is reserved.
+   - **Financial Invariant**: Signed Safe to Spend and shortfall behavior are preserved identically across all fallback paths.
+
+4. **Regression Verification**:
+   - **Test 3B.14**: Verifies legacy payment attribution stability before ($50 paid / $150 remaining) and after ($125 paid / $75 remaining) a new explicit partial payment, and confirms that ambiguous multiple unlinked records remain unattributed.
+   - **Test 3B.15**: Verifies model-level validation rejects zero, negative, NaN, infinite, fractional cent amounts, invalid dates, unsupported statuses, and invalid accounts with zero state mutation, while preserving partial payments and overpayments.
+   - **Test 3B.16**: Verifies that the defensive fallback branch in `reserveBillsBreakdown()` reserves the full amount for unpaid bills, reserves only the outstanding balance for partially paid bills ($60 on $100 bill), and reserves $0 for fully paid or settled bills without resurrecting the bill amount.
+   - **Test Suite**: All 124 tests passing (`npm test`).
+   - **Build**: Clean production build (`npm run build`).
+
+
 
 
 
