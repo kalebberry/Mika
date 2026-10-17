@@ -574,6 +574,65 @@ export function getFollowingPaydayDate(
   return paydays[1] || addDays(getNextPayday(schedule, asOf), 14);
 }
 
+export function getConfirmedUpcomingPaydays(
+  schedule: PaydaySchedule | undefined,
+  asOf: string = today(),
+): string[] {
+  if (!schedule) return [];
+  const effectiveAsOf = isValidDateString(asOf) ? asOf : today();
+
+  if (schedule.frequency !== "manual") {
+    return getUpcomingPaydays(schedule, effectiveAsOf, 3);
+  }
+
+  const confirmed = new Set<string>();
+
+  // 1. Check anchorDate if valid
+  if (isValidDateString(schedule.anchorDate)) {
+    const effectiveAnchor = getEffectiveOccurrenceDate(
+      schedule,
+      schedule.anchorDate,
+      schedule.overrides,
+    );
+    if (isValidDateString(effectiveAnchor) && effectiveAnchor >= effectiveAsOf) {
+      confirmed.add(effectiveAnchor);
+    }
+  }
+
+  // 2. Check manualFollowingPayday if explicitly configured
+  if (isValidDateString(schedule.manualFollowingPayday)) {
+    const effectiveFollowing = getEffectiveOccurrenceDate(
+      schedule,
+      schedule.manualFollowingPayday,
+      schedule.overrides,
+    );
+    if (
+      isValidDateString(effectiveFollowing) &&
+      effectiveFollowing >= effectiveAsOf
+    ) {
+      confirmed.add(effectiveFollowing);
+    }
+  }
+
+  // 3. Check any valid, explicitly configured one-time overrides
+  for (const o of schedule.overrides || []) {
+    if (
+      o &&
+      isValidDateString(o.scheduledDate) &&
+      isValidDateString(o.overrideDate)
+    ) {
+      // Must be a valid nominal occurrence on this manual schedule
+      if (resolveNominalOccurrenceDate(schedule, o.scheduledDate) !== null) {
+        if (o.overrideDate >= effectiveAsOf) {
+          confirmed.add(o.overrideDate);
+        }
+      }
+    }
+  }
+
+  return Array.from(confirmed).sort((a, b) => a.localeCompare(b));
+}
+
 export function validatePaydayOverride(
   schedule: PaydaySchedule,
   scheduledDate: string,

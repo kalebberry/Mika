@@ -7,7 +7,7 @@ import {
   getFollowingPayday,
   reserveBillsBreakdown,
   getUpcomingPaydays,
-  getEffectiveOccurrenceDate,
+  getConfirmedUpcomingPaydays,
 } from "../../model.ts";
 import { money, date, frequencyLabel } from "../../utils/format.ts";
 import { useBudget } from "../../composables/useBudget.ts";
@@ -21,56 +21,23 @@ const activeFrequencyName = computed(() =>
   frequencyLabel(activeFrequency.value),
 );
 
-// Explicitly confirmed upcoming paydays for manual schedule
-const confirmedManualPaydays = computed(() => {
-  const sched = state.value.paydaySchedule;
-  if (!sched || sched.frequency !== "manual") return [];
-  const now = today();
-  const confirmed: string[] = [];
-
-  // Check anchorDate
-  if (isValidDateString(sched.anchorDate)) {
-    const effectiveAnchor = getEffectiveOccurrenceDate(
-      sched,
-      sched.anchorDate,
-      sched.overrides,
-    );
-    if (isValidDateString(effectiveAnchor) && effectiveAnchor >= now) {
-      confirmed.push(effectiveAnchor);
-    }
-  }
-
-  // Check manualFollowingPayday
-  if (isValidDateString(sched.manualFollowingPayday)) {
-    const effectiveFollowing = getEffectiveOccurrenceDate(
-      sched,
-      sched.manualFollowingPayday,
-      sched.overrides,
-    );
-    if (
-      isValidDateString(effectiveFollowing) &&
-      effectiveFollowing >= now &&
-      !confirmed.includes(effectiveFollowing)
-    ) {
-      confirmed.push(effectiveFollowing);
-    }
-  }
-
-  return confirmed.sort((a, b) => a.localeCompare(b));
-});
+// Confirmed upcoming paydays using production pure function
+const confirmedPaydays = computed(() =>
+  getConfirmedUpcomingPaydays(state.value.paydaySchedule, today()),
+);
 
 // Is manual schedule incomplete / missing an upcoming payday?
 const isManualIncomplete = computed(() => {
   if (activeFrequency.value !== "manual") return false;
   // In manual mode, we require an explicitly confirmed upcoming payday.
   // Synthetic projected intervals from a past anchor are NOT confirmed deposits.
-  return confirmedManualPaydays.value.length === 0;
+  return confirmedPaydays.value.length === 0;
 });
 
 // Next payday date
 const nextPaydayDate = computed(() => {
   if (activeFrequency.value === "manual") {
-    return confirmedManualPaydays.value[0] || "";
+    return confirmedPaydays.value[0] || "";
   }
   const current = getCurrentPayday(state.value);
   return isValidDateString(current) ? current : "";
@@ -80,7 +47,7 @@ const nextPaydayDate = computed(() => {
 const followingPaydayDate = computed(() => {
   if (activeFrequency.value === "manual") {
     // Only display following payday in manual mode if explicitly configured and upcoming
-    return confirmedManualPaydays.value[1] || "";
+    return confirmedPaydays.value[1] || "";
   }
   const fol = getFollowingPayday(state.value);
   return isValidDateString(fol) ? fol : "";

@@ -56,6 +56,7 @@ import {
   recordBillPayment,
   resolveNominalOccurrenceDate,
   getEffectiveOccurrenceDate,
+  getConfirmedUpcomingPaydays,
 } from "../src/model.ts";
 import { useBudget } from "../src/composables/useBudget.ts";
 import { useModal } from "../src/composables/useModal.ts";
@@ -6645,26 +6646,7 @@ test("Test 3A.3.10 — Settings draft synchronization, semimonthly day normaliza
 test("Test 3A.3.11 — Manual payday empty state vs confirmed deposits and safety projection preservation", () => {
   const simulatedToday = "2026-10-16";
 
-  // Helper matching PaydaySummaryCard's confirmed manual payday determination
-  function getConfirmedManualPaydays(sched: PaydaySchedule, asOf: string): string[] {
-    if (!sched || sched.frequency !== "manual") return [];
-    const confirmed: string[] = [];
-    if (isValidDateString(sched.anchorDate)) {
-      const effectiveAnchor = getEffectiveOccurrenceDate(sched, sched.anchorDate, sched.overrides);
-      if (isValidDateString(effectiveAnchor) && effectiveAnchor >= asOf) {
-        confirmed.push(effectiveAnchor);
-      }
-    }
-    if (isValidDateString(sched.manualFollowingPayday)) {
-      const effectiveFollowing = getEffectiveOccurrenceDate(sched, sched.manualFollowingPayday, sched.overrides);
-      if (isValidDateString(effectiveFollowing) && effectiveFollowing >= asOf && !confirmed.includes(effectiveFollowing)) {
-        confirmed.push(effectiveFollowing);
-      }
-    }
-    return confirmed.sort((a, b) => a.localeCompare(b));
-  }
-
-  // 1. Stale manual schedule: anchor in the past (2026-08-01) and no manualFollowingPayday
+  // 1. Stale manual schedule: anchor in the past (2026-08-01) and no manualFollowingPayday, no overrides
   const state: State = blank();
   state.opening = 300000; // $3,000 cash
   state.paydaySchedule = {
@@ -6675,7 +6657,7 @@ test("Test 3A.3.11 — Manual payday empty state vs confirmed deposits and safet
     overrides: [],
   };
 
-  const confirmedStale = getConfirmedManualPaydays(state.paydaySchedule, simulatedToday);
+  const confirmedStale = getConfirmedUpcomingPaydays(state.paydaySchedule, simulatedToday);
   assert.deepEqual(confirmedStale, [], "Stale past anchor date yields 0 confirmed upcoming paydays");
   const isManualIncomplete = confirmedStale.length === 0;
   assert.equal(isManualIncomplete, true, "Empty state is triggered for stale manual schedule");
@@ -6704,7 +6686,7 @@ test("Test 3A.3.11 — Manual payday empty state vs confirmed deposits and safet
     weekendRule: "exact",
     overrides: [],
   };
-  const confirmedWithFollowing = getConfirmedManualPaydays(state.paydaySchedule, simulatedToday);
+  const confirmedWithFollowing = getConfirmedUpcomingPaydays(state.paydaySchedule, simulatedToday);
   assert.deepEqual(confirmedWithFollowing, ["2026-10-25"], "Explicit upcoming following payday is promoted to next confirmed payday");
   assert.equal(confirmedWithFollowing[0], "2026-10-25");
   assert.equal(confirmedWithFollowing[1], undefined, "No unconfirmed following payday is presented");
@@ -6717,9 +6699,58 @@ test("Test 3A.3.11 — Manual payday empty state vs confirmed deposits and safet
     weekendRule: "exact",
     overrides: [],
   };
-  const confirmedNextOnly = getConfirmedManualPaydays(state.paydaySchedule, simulatedToday);
+  const confirmedNextOnly = getConfirmedUpcomingPaydays(state.paydaySchedule, simulatedToday);
   assert.deepEqual(confirmedNextOnly, ["2026-10-25"]);
   assert.equal(confirmedNextOnly[1], undefined, "Unconfirmed +14 day following payday is not presented");
+
+  // 4. Past manual anchor with an explicitly overridden upcoming occurrence
+  // anchorDate 2026-08-01 and manualFollowingPayday 2026-08-15 are both in the past.
+  // User created an explicit one-time override on a future nominal occurrence (2026-10-24 -> 2026-10-23).
+  state.paydaySchedule = {
+    frequency: "manual",
+    anchorDate: "2026-08-01", // in past
+    manualFollowingPayday: "2026-08-15", // in past
+    weekendRule: "exact",
+    overrides: [
+      {
+        id: "ov-future-manual",
+        scheduledDate: "2026-10-24", // nominal occurrence 70 days (14 * 5) after 2026-08-15
+        overrideDate: "2026-10-23", // explicitly confirmed upcoming payday
+        note: "Early paycheck",
+      },
+    ],
+  };
+
+  const confirmedWithOverride = getConfirmedUpcomingPaydays(state.paydaySchedule, simulatedToday);
+  assert.deepEqual(
+    confirmedWithOverride,
+    ["2026-10-23"],
+    "Explicitly overridden future occurrence is confirmed even when anchor & following are in the past",
+  );
+  assert.equal(confirmedWithOverride[0], "2026-10-23");
+  assert.equal(confirmedWithOverride[1], undefined, "Synthetic recurring projections without overrides are not confirmed");
+
+  // 5. Past manual anchor with override on the anchorDate itself shifted to future
+  state.paydaySchedule = {
+    frequency: "manual",
+    anchorDate: "2026-10-01", // nominal in past
+    manualFollowingPayday: undefined,
+    weekendRule: "exact",
+    overrides: [
+      {
+        id: "ov-anchor-shift",
+        scheduledDate: "2026-10-01",
+        overrideDate: "2026-10-20", // shifted to future
+        note: "Delayed deposit",
+      },
+    ],
+  };
+  const confirmedAnchorOverride = getConfirmedUpcomingPaydays(state.paydaySchedule, simulatedToday);
+  assert.deepEqual(
+    confirmedAnchorOverride,
+    ["2026-10-20"],
+    "Override shifting past anchorDate to future is confirmed",
+  );
 });
 
 test("Test 3A.3.12 — Schedule changes with one-time overrides: incompatibility validation, non-silent handling, and filtering", () => {
