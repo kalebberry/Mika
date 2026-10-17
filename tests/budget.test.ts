@@ -65,6 +65,8 @@ import {
   getCreditCardDueDate,
   confirmCreditCardMinimum,
   unconfirmCreditCardMinimum,
+  setCreditCardMinimumObligation,
+  getCreditCardMinimumObligation,
   getMonthlyExpenses,
   getMonthlyIncome,
   type CreditCardMinimumProtection,
@@ -9506,5 +9508,178 @@ test("Test 3C.31 — Zero expenses formatting: eliminates IEEE-754 negative zero
   // Non-zero values must retain their correct signs
   assert.equal(money(12500), "$125.00");
   assert.equal(money(-12500), "-$125.00");
+});
+
+test("Test 3C.32 — Historical minimum-payment stability: editing card's minimum or balance does not rewrite previously established obligation", () => {
+  const state: State = blank();
+  state.payday = "2026-11-20";
+  state.followingPayday = "2026-12-04";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000, // $1,000 cash
+    includeInSafeToSpend: true,
+  };
+  let card: Account = {
+    id: "acc-crd",
+    name: "Card",
+    type: "credit",
+    opening: 50000, // $500 balance
+    creditLimit: 200000,
+    minPayment: 10000, // $100 min
+    dueDay: 15, // due 15th
+    includeInSafeToSpend: false,
+  };
+  // Establish explicit obligation for October 15 ($100.00)
+  card = setCreditCardMinimumObligation(card, "2026-10-15", 10000);
+  state.accounts = [checking, card];
+
+  // User paid $30.00 on Oct 12 towards October minimum
+  state.transactions.push({
+    id: "tx-pay-oct",
+    name: "October Card Payment",
+    amount: -3000, // $30.00
+    category: "Payment",
+    date: "2026-10-12",
+    status: "cleared",
+    accountId: checking.id,
+    kind: "payment",
+    targetAccountId: card.id,
+  });
+
+  // In November (2026-11-10), user changes configured minimum to $25 (2500 cents)
+  card.minPayment = 2500;
+
+  // Evaluate on 2026-11-10 (November cycle):
+  // October required $100. $30 was paid. $30 < $100!
+  // Requirement: The $30 payment MUST NOT retroactively satisfy the original $100 October obligation!
+  let prot = getCreditCardMinimumProtection(card, state, "2026-11-10");
+  assert.equal(prot.dueDate, "2026-10-15", "Target due date remains October 15 overdue");
+  assert.equal(prot.isOverdue, true, "Card remains overdue");
+  assert.equal(prot.status, "overdue");
+  assert.equal(prot.dueCycle, "current");
+  assert.equal(prot.configuredMinimum, 10000, "Configured obligation for overdue cycle remains $100, not $25");
+  assert.equal(prot.paidTowardCycle, 3000, "$30 paid toward cycle");
+  assert.equal(prot.remainingMinimumRequirement, 7000, "$70 remaining obligation");
+  assert.equal(prot.additionalProtection, 7000, "Protects remaining $70 in Safe to Spend");
+
+  let t = totals(state, "2026-11-10");
+  assert.equal(t.creditCardMinimums, 7000, "Safeguards $70 overdue minimum");
+  assert.equal(t.safe, 90000, "($1,000 opening - $30 payment) - $70 min = $900 safe to spend");
+
+  // Balance drops to $50 net debt (opening $80 minus $30 payment): totalOwed = 5000
+  card.opening = 8000;
+  prot = getCreditCardMinimumProtection(card, state, "2026-11-10");
+  assert.equal(prot.dueDate, "2026-10-15");
+  assert.equal(prot.totalOwed, 5000);
+  assert.equal(prot.isOverdue, true, "Does not retroactively satisfy October obligation because balance changed");
+  assert.equal(prot.status, "overdue");
+  assert.equal(prot.configuredMinimum, 10000, "Historical obligation remains $100");
+  assert.equal(prot.effectiveMinimum, 5000, "Effective minimum clamped to $50 debt limit");
+  assert.equal(prot.remainingMinimumRequirement, 5000, "Remaining requirement clamped to debt limit");
+
+  // Restore balance and pay remaining $70 on November 11
+  card.opening = 50000;
+  state.transactions.push({
+    id: "tx-pay-nov-late",
+    name: "Late Card Payment",
+    amount: -7000, // $70.00
+    category: "Payment",
+    date: "2026-11-11",
+    status: "cleared",
+    accountId: checking.id,
+    kind: "payment",
+    targetAccountId: card.id,
+  });
+
+  // Now October is legitimately satisfied with $30 + $70 = $100!
+  // Target advances to November 15!
+  prot = getCreditCardMinimumProtection(card, state, "2026-11-11");
+  assert.equal(prot.dueDate, "2026-11-15", "Target advances to November 15");
+  assert.equal(prot.isOverdue, false, "No longer overdue");
+  assert.equal(prot.configuredMinimum, 2500, "November configured minimum ($25) is now active");
+  assert.equal(prot.remainingMinimumRequirement, 2500);
+});
+
+test("Test 3C.33 — Due date validation before recording manual statement confirmation", () => {
+  const card: Account = {
+    id: "acc-crd",
+    name: "Card",
+    type: "credit",
+    opening: 50000,
+    creditLimit: 200000,
+    minPayment: 3500,
+    dueDay: 15,
+    includeInSafeToSpend: false,
+  };
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000,
+    includeInSafeToSpend: true,
+  };
+
+  // Reject on non-credit account
+  const resChk = confirmCreditCardMinimum(checking, "2026-10-15");
+  assert.deepEqual(resChk, checking, "Rejects confirmation on non-credit account");
+
+  // Reject on invalid date string
+  const resInv = confirmCreditCardMinimum(card, "invalid-date");
+  assert.deepEqual(resInv, card, "Rejects confirmation on malformed date string");
+
+  // Reject on calendar date that is NOT the card's due date (dueDay is 15, passed 20)
+  const resWrongDay = confirmCreditCardMinimum(card, "2026-10-20");
+  assert.deepEqual(resWrongDay, card, "Rejects date that does not match card's due day");
+
+  // Reject unconfirm on invalid date
+  const resUnconfInv = unconfirmCreditCardMinimum(card, "bad-date");
+  assert.deepEqual(resUnconfInv, card, "Rejects unconfirm on bad date");
+
+  // Month-end clamping validation: card dueDay 31 confirms clamped 2026-02-28
+  const card31: Account = { ...card, dueDay: 31 };
+  const resClamped = confirmCreditCardMinimum(card31, "2026-02-28");
+  assert.deepEqual(resClamped.confirmedMinimumDueDates, ["2026-02-28"], "Accepts clamped month-end due date");
+
+  // Valid confirmation
+  const resValid = confirmCreditCardMinimum(card, "2026-10-15");
+  assert.deepEqual(resValid.confirmedMinimumDueDates, ["2026-10-15"], "Accepts valid statement due date");
+
+  // Unconfirm
+  const resUnconf = unconfirmCreditCardMinimum(resValid, "2026-10-15");
+  assert.deepEqual(resUnconf.confirmedMinimumDueDates, [], "Unconfirms successfully");
+});
+
+test("Test 3C.34 — Avoid fabricating historical minimums for legacy accounts where no snapshot exists", () => {
+  const state: State = blank();
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000,
+    includeInSafeToSpend: true,
+  };
+  // Legacy card created without any historical snapshot
+  const legacyCard: Account = {
+    id: "acc-legacy-crd",
+    name: "Legacy Card",
+    type: "credit",
+    opening: 30000,
+    creditLimit: 100000,
+    minPayment: 5000, // $50
+    dueDay: 15,
+    includeInSafeToSpend: false,
+  };
+  state.accounts = [checking, legacyCard];
+
+  // Evaluated on 2026-11-10 (November cycle):
+  // Since no snapshot exists for 2026-10-15, do NOT fabricate an overdue obligation for past months
+  const prot = getCreditCardMinimumProtection(legacyCard, state, "2026-11-10");
+  assert.equal(prot.dueDate, "2026-11-15", "Target is upcoming November due date");
+  assert.equal(prot.isOverdue, false, "Does not fabricate historical overdue obligation");
+  assert.equal(prot.configuredMinimum, 5000);
+  assert.equal(prot.effectiveMinimum, 5000);
 });
 

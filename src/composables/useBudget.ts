@@ -46,6 +46,9 @@ import {
   getCreditCardMinimumBreakdown,
   confirmCreditCardMinimum,
   unconfirmCreditCardMinimum,
+  setCreditCardMinimumObligation,
+  getCreditCardMinimumObligation,
+  getCreditCardDueDate,
   getMonthlyExpenses,
   getMonthlyIncome,
   assignCardPaymentReserve as modelAssignCardPaymentReserve,
@@ -555,7 +558,26 @@ export function useBudget() {
         acc.dueDay = metadata.dueDay ? Math.min(31, Math.max(1, metadata.dueDay)) : undefined;
       }
       if (metadata.minPayment !== undefined) {
-        acc.minPayment = metadata.minPayment ? Math.max(0, metadata.minPayment) : undefined;
+        const newMin = metadata.minPayment ? Math.max(0, metadata.minPayment) : undefined;
+        if (
+          acc.minPayment !== undefined &&
+          acc.minPayment !== newMin &&
+          acc.minPayment > 0 &&
+          acc.dueDay
+        ) {
+          const nowStr = today();
+          const [y, m] = nowStr.split("-").map(Number);
+          if (y && m) {
+            const currentDue = getCreditCardDueDate(acc, y, m);
+            if (currentDue && !acc.minimumObligations?.[currentDue]) {
+              acc.minimumObligations = {
+                ...(acc.minimumObligations || {}),
+                [currentDue]: acc.minPayment,
+              };
+            }
+          }
+        }
+        acc.minPayment = newMin;
       }
       acc.includeInSafeToSpend = false;
     } else {
@@ -755,6 +777,20 @@ export function useBudget() {
     );
   }
 
+  function setCardMinimumObligation(
+    accountId: string,
+    dueDate: string,
+    amount: number,
+  ) {
+    const accIndex = state.value.accounts.findIndex((a) => a.id === accountId);
+    if (accIndex === -1) return;
+    state.value.accounts[accIndex] = setCreditCardMinimumObligation(
+      state.value.accounts[accIndex]!,
+      dueDate,
+      amount,
+    );
+  }
+
   function registerModelContext() {
     const context = (document as any).modelContext;
     if (context?.registerTool) {
@@ -901,6 +937,7 @@ export function useBudget() {
       getCreditCardMinimumBreakdown(state.value, now || today()),
     confirmCardMinimum,
     unconfirmCardMinimum,
+    setCardMinimumObligation,
     getMonthlyExpenses: (m = month.value) => getMonthlyExpenses(state.value, m),
     getMonthlyIncome: (m = month.value) => getMonthlyIncome(state.value, m),
     registerModelContext,

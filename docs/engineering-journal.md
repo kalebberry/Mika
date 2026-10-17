@@ -993,6 +993,16 @@ Production build check (`npm run build`):
     1. Changed `getMonthlyExpenses()` and `scheduledExpenses` to sum `Math.abs(t.amount)`, guaranteeing $\ge 0$ positive integer cents and completely removing unary negation.
     2. Hardened `money(v)` in `src/utils/format.ts` to normalize `cents === 0 ? 0 : cents`, guarding against `-0`, non-finite inputs, and rounding boundary artifacts so that `-$0.00` can never render anywhere in the application.
 
+#### Correction 5 — Historical Minimum-Payment Stability & Due Date Validation
+- **Finding**: Review identified that `getCreditCardMinimumProtection()` evaluated previous months' obligations using today's `minPayment` and today's `totalOwed`. Changing configured minimums (e.g. from $100 to $25) or card balances could retroactively rewrite historical satisfaction, making a $30 partial payment appear to satisfy a past $100 statement minimum.
+- **Root Cause & Fix**:
+  - **Preserved Obligations by Occurrence**: Added optional `minimumObligations?: Record<string, number>` on `Account` mapping `YYYY-MM-DD` due dates to established required integer cents.
+  - **Obligation Management Functions**: Added pure model functions `setCreditCardMinimumObligation(account, dueDate, amount)` and `getCreditCardMinimumObligation(account, dueDate)`. In `updateAccount`, changing `minPayment` automatically snapshots the previous obligation for the active cycle before updating.
+  - **Satisfaction Stability**: Historical satisfaction is evaluated against the established snapshot obligation (`currentSnapshot || configuredMin`), strictly independent of current `totalOwed` or future `minPayment` configuration edits. Current debt limit clamps only the cash reservation required today, never retroactively rewriting whether the past statement was satisfied.
+  - **Non-Fabrication Policy for Legacy Accounts**: If an account has no snapshot in `minimumObligations` for a past cycle, historical minimums are not fabricated, avoiding spurious overdue flags on legacy cards.
+  - **Due Date Validation on Manual Confirmations**: Hardened `confirmCreditCardMinimum(account, dueDate)` to validate that `dueDate` is a valid date string and strictly matches `getCreditCardDueDate(account, year, month)` (accounting for leap years and month-end clamping), rejecting mismatched dates or non-credit accounts.
+  - **Absorption Without Double Counting**: Payments absorbed by past unfulfilled obligations are deducted from current-cycle payments, preventing the same payment from satisfying both a past overdue cycle and the upcoming cycle.
+
 ---
 
 ### 2. Following-Cycle Credit Minimum Policy & Parity with Recurring Bills
@@ -1010,8 +1020,8 @@ Production build check (`npm run build`):
 
 ### 3. Verification & Test Metrics
 
-- **Automated Tests**: 155 passing tests (`node --test tests/budget.test.ts`), 0 failures, 0 skipped.
-  - Added 11 new regression tests `Test 3C.21` through `Test 3C.31`:
+- **Automated Tests**: 158 passing tests (`node --test tests/budget.test.ts`), 0 failures, 0 skipped.
+  - Added 14 new regression tests `Test 3C.21` through `Test 3C.34`:
     - `Test 3C.21`: Changing minimum payment amount on overdue card retains overdue obligation without silent discard.
     - `Test 3C.22`: Changing card balance does not retroactively invent past statement satisfaction.
     - `Test 3C.23`: Due date boundary payment absorption: late payment satisfies overdue obligation first without double-counting in next cycle.
@@ -1023,6 +1033,10 @@ Production build check (`npm run build`):
     - `Test 3C.29`: Monthly expenses inclusion and exclusion: includes credit purchases and bill payments, excludes transfers and card repayments.
     - `Test 3C.30`: Scheduled expenses separation: scheduled purchases do not contaminate actual spending totals or monthly expenses.
     - `Test 3C.31`: Zero expenses formatting: eliminates IEEE-754 negative zero (`-0`) and verifies `money()` never renders `-$0.00`.
+    - `Test 3C.32`: Historical minimum-payment stability: editing card's minimum or balance does not rewrite previously established obligation.
+    - `Test 3C.33`: Due date validation before recording manual statement confirmation.
+    - `Test 3C.34`: Avoid fabricating historical minimums for legacy accounts where no snapshot exists.
 - **Production Build**: `npm run build` (`vue-tsc -b && vite build`) passed cleanly with 0 TypeScript or bundling errors.
+
 
 
