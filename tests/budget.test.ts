@@ -60,6 +60,11 @@ import {
   resolveNominalOccurrenceDate,
   getEffectiveOccurrenceDate,
   getConfirmedUpcomingPaydays,
+  getCreditCardMinimumProtection,
+  getCreditCardMinimumBreakdown,
+  getCreditCardDueDate,
+  type CreditCardMinimumProtection,
+  type CreditCardMinimumStatus,
 } from "../src/model.ts";
 import { useBudget } from "../src/composables/useBudget.ts";
 import { useModal } from "../src/composables/useModal.ts";
@@ -7928,17 +7933,1016 @@ test("Test 3B.16 — Reservation fallback safety: never reintroduces full bill a
   );
 });
 
+test("Test 3C.1 — Zero-balance cards: no minimum protection created", () => {
+  const simulatedToday = "2026-10-14";
+  const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
 
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000, // $1,000.00
+    includeInSafeToSpend: true,
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Zero Balance Card",
+    type: "credit",
+    opening: 0,
+    creditLimit: 200000,
+    minPayment: 3500, // $35.00 configured minimum
+    dueDay: 15,
+    includeInSafeToSpend: false,
+  };
+  state.accounts = [checking, card];
 
+  const minProt = getCreditCardMinimumProtection(card, state, simulatedToday);
+  assert.equal(minProt.totalOwed, 0, "Total owed is zero");
+  assert.equal(minProt.effectiveMinimum, 0, "Effective minimum clamped to $0 owed");
+  assert.equal(minProt.additionalProtectionRequired, 0, "No additional protection required");
+  assert.equal(minProt.status, "not_applicable", "Status is not_applicable for zero debt");
 
+  const bd = getCreditCardMinimumBreakdown(state, simulatedToday);
+  assert.equal(bd.totalAdditionalProtection, 0);
 
+  const t = totals(state, simulatedToday);
+  assert.equal(t.creditCardMinimums, 0);
+  assert.equal(t.safe, 100000, "Safe to Spend is unaffected by zero-balance card");
+});
 
+test("Test 3C.2 — Partially covered minimums: protects only the remaining difference (Interaction A)", () => {
+  const simulatedToday = "2026-10-10";
+  const state: State = blank();
+  state.payday = "2026-10-20";
+  state.followingPayday = "2026-11-03";
 
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000, // $1,000.00
+    includeInSafeToSpend: true,
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Partially Covered Card",
+    type: "credit",
+    opening: 50000, // $500.00 debt owed
+    creditLimit: 300000,
+    minPayment: 3500, // $35.00 configured minimum
+    dueDay: 15, // due Oct 15 (inside current window Oct 10 - Oct 20)
+    includeInSafeToSpend: false,
+    assignedPaymentReserve: 2000, // $20.00 already Ready to Pay
+    paymentReservations: [],
+    coveredCreditBaselineAt: simulatedToday,
+  };
+  state.accounts = [checking, card];
 
+  const cov = getCreditCardCoverage(card, state, simulatedToday);
+  assert.equal(cov.readyToPay, 2000, "Ready to pay is $20.00");
 
+  const minProt = getCreditCardMinimumProtection(card, state, simulatedToday);
+  assert.equal(minProt.totalOwed, 50000);
+  assert.equal(minProt.configuredMinimum, 3500);
+  assert.equal(minProt.effectiveMinimum, 3500);
+  assert.equal(minProt.readyToPay, 2000);
+  assert.equal(minProt.additionalProtectionRequired, 1500, "Additional protection required is exactly $15.00");
+  assert.equal(minProt.status, "partially_covered");
 
+  const t = totals(state, simulatedToday);
+  assert.equal(t.totalReadyToPay, 2000, "Ready to Pay is $20");
+  assert.equal(t.creditCardMinimums, 1500, "Credit card minimum additional protection is $15");
+  // Safe to Spend = $1,000 cash - $20 Ready to Pay - $15 Minimum = $965 ($35 total protected toward minimum, not $55)
+  assert.equal(t.safe, 96500, "Total protected towards minimum is $35 ($20 + $15)");
+});
 
+test("Test 3C.3 — Fully covered minimums: requires zero additional protection (Interaction B)", () => {
+  const simulatedToday = "2026-10-10";
+  const state: State = blank();
+  state.payday = "2026-10-20";
+  state.followingPayday = "2026-11-03";
 
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000,
+    includeInSafeToSpend: true,
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Fully Covered Card",
+    type: "credit",
+    opening: 50000, // $500.00 owed
+    creditLimit: 300000,
+    minPayment: 3500, // $35.00 minimum
+    dueDay: 15,
+    includeInSafeToSpend: false,
+    assignedPaymentReserve: 5000, // $50.00 Ready to Pay (exceeds $35 minimum)
+    paymentReservations: [],
+    coveredCreditBaselineAt: simulatedToday,
+  };
+  state.accounts = [checking, card];
 
+  const minProt = getCreditCardMinimumProtection(card, state, simulatedToday);
+  assert.equal(minProt.additionalProtectionRequired, 0, "Zero additional protection needed when Ready to Pay >= min");
+  assert.equal(minProt.status, "covered");
 
+  const t = totals(state, simulatedToday);
+  assert.equal(t.totalReadyToPay, 5000);
+  assert.equal(t.creditCardMinimums, 0, "creditCardMinimums is $0");
+  assert.equal(t.safe, 95000, "Safe to spend only reserves the $50 Ready to Pay");
+});
 
+test("Test 3C.4 — Minimum exceeds outstanding debt: capped at debt owed (Interaction C)", () => {
+  const simulatedToday = "2026-10-10";
+  const state: State = blank();
+  state.payday = "2026-10-20";
+  state.followingPayday = "2026-11-03";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000,
+    includeInSafeToSpend: true,
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Small Debt Card",
+    type: "credit",
+    opening: 2000, // owes only $20.00
+    creditLimit: 300000,
+    minPayment: 3500, // $35.00 configured minimum
+    dueDay: 15,
+    includeInSafeToSpend: false,
+  };
+  state.accounts = [checking, card];
+
+  const minProt = getCreditCardMinimumProtection(card, state, simulatedToday);
+  assert.equal(minProt.totalOwed, 2000);
+  assert.equal(minProt.configuredMinimum, 3500);
+  assert.equal(minProt.effectiveMinimum, 2000, "Effective minimum capped at $20 debt");
+  assert.equal(minProt.additionalProtectionRequired, 2000, "Protects no more than the $20 actual debt");
+  assert.equal(minProt.status, "uncovered");
+
+  const t = totals(state, simulatedToday);
+  assert.equal(t.creditCardMinimums, 2000);
+  assert.equal(t.safe, 98000, "Safe to Spend protects $20, not $35");
+});
+
+test("Test 3C.5 — Multiple credit cards: isolation and aggregation in breakdown", () => {
+  const simulatedToday = "2026-10-10";
+  const state: State = blank();
+  state.payday = "2026-10-20";
+  state.followingPayday = "2026-11-03";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 200000, // $2,000.00
+    includeInSafeToSpend: true,
+  };
+  // Card A: owes $300, min $50, readyToPay $20 -> additional protection $30
+  const cardA: Account = {
+    id: "acc-crd-a",
+    name: "Card A",
+    type: "credit",
+    opening: 30000,
+    creditLimit: 100000,
+    minPayment: 5000,
+    dueDay: 14,
+    includeInSafeToSpend: false,
+    assignedPaymentReserve: 2000,
+    paymentReservations: [],
+    coveredCreditBaselineAt: simulatedToday,
+  };
+  // Card B: owes $100, min $25, readyToPay $25 -> additional protection $0
+  const cardB: Account = {
+    id: "acc-crd-b",
+    name: "Card B",
+    type: "credit",
+    opening: 10000,
+    creditLimit: 100000,
+    minPayment: 2500,
+    dueDay: 16,
+    includeInSafeToSpend: false,
+    assignedPaymentReserve: 2500,
+    paymentReservations: [],
+    coveredCreditBaselineAt: simulatedToday,
+  };
+  // Card C: owes $0, min $40 -> additional protection $0
+  const cardC: Account = {
+    id: "acc-crd-c",
+    name: "Card C",
+    type: "credit",
+    opening: 0,
+    creditLimit: 100000,
+    minPayment: 4000,
+    dueDay: 18,
+    includeInSafeToSpend: false,
+  };
+  state.accounts = [checking, cardA, cardB, cardC];
+
+  const bd = getCreditCardMinimumBreakdown(state, simulatedToday);
+  assert.equal(bd.totalConfiguredMinimums, 11500);
+  assert.equal(bd.totalEffectiveMinimums, 7500); // Card A ($50) + Card B ($25) + Card C ($0)
+  assert.equal(bd.totalAdditionalProtection, 3000, "Only Card A needs $30 additional protection");
+  assert.equal(bd.cards.length, 3);
+
+  const t = totals(state, simulatedToday);
+  assert.equal(t.totalReadyToPay, 4500); // Card A ($20) + Card B ($25)
+  assert.equal(t.creditCardMinimums, 3000); // Card A ($30)
+  assert.equal(t.safe, 200000 - 4500 - 3000, "Safe to spend reserves exactly $45 + $30 = $75");
+});
+
+test("Test 3C.6 — Archived credit cards: zero minimum-payment reservation", () => {
+  const simulatedToday = "2026-10-10";
+  const state: State = blank();
+  state.payday = "2026-10-20";
+
+  const cardArchived: Account = {
+    id: "acc-crd-archived",
+    name: "Old Archived Card",
+    type: "credit",
+    opening: 50000, // $500 debt
+    creditLimit: 100000,
+    minPayment: 5000, // $50 minimum
+    dueDay: 15,
+    archived: true,
+    includeInSafeToSpend: false,
+  };
+  state.accounts = [cardArchived];
+
+  const minProt = getCreditCardMinimumProtection(cardArchived, state, simulatedToday);
+  assert.equal(minProt.status, "not_applicable");
+  assert.equal(minProt.additionalProtectionRequired, 0);
+
+  const bd = getCreditCardMinimumBreakdown(state, simulatedToday);
+  assert.equal(bd.totalAdditionalProtection, 0);
+  assert.equal(bd.cards.length, 0, "Archived cards excluded from active breakdown");
+});
+
+test("Test 3C.7 — Missing minimum or due day: no fabricated payments", () => {
+  const simulatedToday = "2026-10-10";
+  const state: State = blank();
+  state.payday = "2026-10-20";
+
+  const cardNoMin: Account = {
+    id: "acc-crd-nomin",
+    name: "Card No Min",
+    type: "credit",
+    opening: 50000,
+    creditLimit: 100000,
+    dueDay: 15,
+    includeInSafeToSpend: false,
+  };
+  const cardNoDay: Account = {
+    id: "acc-crd-noday",
+    name: "Card No Due Day",
+    type: "credit",
+    opening: 50000,
+    creditLimit: 100000,
+    minPayment: 3500,
+    includeInSafeToSpend: false,
+  };
+  state.accounts = [cardNoMin, cardNoDay];
+
+  const p1 = getCreditCardMinimumProtection(cardNoMin, state, simulatedToday);
+  assert.equal(p1.status, "not_applicable");
+  assert.equal(p1.additionalProtectionRequired, 0);
+
+  const p2 = getCreditCardMinimumProtection(cardNoDay, state, simulatedToday);
+  assert.equal(p2.status, "not_applicable");
+  assert.equal(p2.dueDate, null);
+  assert.equal(p2.additionalProtectionRequired, 0);
+
+  const bd = getCreditCardMinimumBreakdown(state, simulatedToday);
+  assert.equal(bd.totalAdditionalProtection, 0);
+});
+
+test("Test 3C.8 — Due days 29–31 and leap years: month-end clamping", () => {
+  const card: Account = {
+    id: "acc-test",
+    name: "Test Card",
+    type: "credit",
+    opening: 10000,
+    creditLimit: 50000,
+    dueDay: 31,
+  };
+
+  // April (30 days) -> clamps to 30
+  assert.equal(getCreditCardDueDate(card, 2026, 4), "2026-04-30");
+
+  // October (31 days) -> 31
+  assert.equal(getCreditCardDueDate(card, 2026, 10), "2026-10-31");
+
+  // February 2026 (non-leap year, 28 days) -> clamps to 28
+  assert.equal(getCreditCardDueDate(card, 2026, 2), "2026-02-28");
+
+  // February 2024 (leap year, 29 days) -> clamps to 29
+  assert.equal(getCreditCardDueDate(card, 2024, 2), "2024-02-29");
+
+  // Card with dueDay = 29 in Feb 2026 -> clamps to 28
+  const card29: Account = { ...card, dueDay: 29 };
+  assert.equal(getCreditCardDueDate(card29, 2026, 2), "2026-02-28");
+  assert.equal(getCreditCardDueDate(card29, 2024, 2), "2024-02-29");
+});
+
+test("Test 3C.9 — Payday-window boundaries: outside vs inside window", () => {
+  const state: State = blank();
+  state.payday = "2026-10-20";
+  state.followingPayday = "2026-11-03";
+
+  const card: Account = {
+    id: "acc-crd",
+    name: "Window Test Card",
+    type: "credit",
+    opening: 30000, // $300 owed
+    creditLimit: 100000,
+    minPayment: 4000, // $40 min
+    dueDay: 25, // due Oct 25
+    includeInSafeToSpend: false,
+  };
+  state.accounts = [card];
+
+  // Case A: simulatedToday is Oct 10, payday is Oct 20.
+  // Oct 25 is AFTER current payday (Oct 20), so it belongs to the NEXT paycheck cycle.
+  const protBefore = getCreditCardMinimumProtection(card, state, "2026-10-10");
+  assert.equal(protBefore.dueDate, "2026-10-25");
+  assert.equal(protBefore.isDueInCurrentWindow, false, "Due date is after current payday");
+  assert.equal(protBefore.additionalProtectionRequired, 0, "No protection required in current cycle");
+
+  // Case B: advanced to cycle where simulatedToday is Oct 20, next payday is Nov 03.
+  // Oct 25 is within [Oct 20, Nov 03].
+  state.payday = "2026-11-03";
+  state.followingPayday = "2026-11-17";
+  const protInside = getCreditCardMinimumProtection(card, state, "2026-10-20");
+  assert.equal(protInside.dueDate, "2026-10-25");
+  assert.equal(protInside.isDueInCurrentWindow, true, "Due date is within current cycle");
+  assert.equal(protInside.additionalProtectionRequired, 4000, "Full $40 protected in current cycle");
+
+  // Case C: due date exactly on currentPaydayEnd (e.g. due on Oct 20 with payday Oct 20)
+  const cardDue20: Account = { ...card, dueDay: 20 };
+  const protBoundary = getCreditCardMinimumProtection(cardDue20, state, "2026-10-10");
+  assert.equal(protBoundary.isDueInCurrentWindow, true, "Due date on payday boundary is included");
+  assert.equal(protBoundary.additionalProtectionRequired, 4000);
+});
+
+test("Test 3C.10 — Overlapping planning windows: cycle selection and payment isolation across months", () => {
+  const state: State = blank();
+  state.payday = "2026-10-20";
+  state.followingPayday = "2026-11-05";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000,
+    includeInSafeToSpend: true,
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Card",
+    type: "credit",
+    opening: 40000, // $400 owed
+    creditLimit: 100000,
+    minPayment: 3500, // $35 min
+    dueDay: 15,
+    includeInSafeToSpend: false,
+  };
+  state.accounts = [checking, card];
+
+  // In October cycle (now: 2026-10-10, payday: 2026-10-20):
+  // Due date is 2026-10-15.
+  let prot = getCreditCardMinimumProtection(card, state, "2026-10-10");
+  assert.equal(prot.dueDate, "2026-10-15");
+  assert.equal(prot.additionalProtectionRequired, 3500);
+
+  // User pays $35 towards card on 2026-10-12
+  state.transactions.push({
+    id: "tx-pay-oct",
+    name: "Card Payment",
+    amount: -3500,
+    category: "Payment",
+    date: "2026-10-12",
+    status: "cleared",
+    accountId: checking.id,
+    kind: "payment",
+    targetAccountId: card.id,
+  });
+
+  prot = getCreditCardMinimumProtection(card, state, "2026-10-12");
+  assert.equal(prot.paidTowardCycle, 3500);
+  assert.equal(prot.remainingMinimumRequirement, 0);
+  assert.equal(prot.additionalProtectionRequired, 0);
+  assert.equal(prot.status, "covered");
+
+  // Advance to next cycle (now: 2026-10-21, payday: 2026-11-05, next payday: 2026-11-20):
+  // The upcoming due date is 2026-11-15.
+  // The October payment must NOT count towards November's minimum!
+  state.payday = "2026-11-20";
+  const protNov = getCreditCardMinimumProtection(card, state, "2026-10-21");
+  assert.equal(protNov.dueDate, "2026-11-15");
+  assert.equal(protNov.paidTowardCycle, 0, "October payment does not satisfy November minimum");
+  assert.equal(protNov.remainingMinimumRequirement, 3500);
+  assert.equal(protNov.additionalProtectionRequired, 3500);
+  assert.equal(protNov.status, "uncovered");
+});
+
+test("Test 3C.11 — Card payments and minimum protection reconciliation: zero duplicate reservation (Interaction H)", () => {
+  const simulatedToday = "2026-10-10";
+  const state: State = blank();
+  state.payday = "2026-10-20";
+  state.followingPayday = "2026-11-03";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000, // $1,000.00
+    includeInSafeToSpend: true,
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Card",
+    type: "credit",
+    opening: 30000, // $300.00 debt
+    creditLimit: 100000,
+    minPayment: 5000, // $50.00 minimum
+    dueDay: 15,
+    includeInSafeToSpend: false,
+    assignedPaymentReserve: 0,
+    paymentReservations: [],
+    coveredCreditBaselineAt: simulatedToday,
+  };
+  state.accounts = [checking, card];
+
+  // Before payment:
+  // Checking = $1,000. Ready to Pay = $0. Minimum protection = $50.
+  // Safe to Spend = $1,000 - $50 = $950.
+  const tBefore = totals(state, simulatedToday);
+  assert.equal(tBefore.balance, 100000);
+  assert.equal(tBefore.creditCardMinimums, 5000);
+  assert.equal(tBefore.safe, 95000);
+
+  // User records a $50 payment to the card
+  state.transactions.push({
+    id: "tx-pay-50",
+    name: "Pay Card Min",
+    amount: -5000,
+    category: "Payment",
+    date: simulatedToday,
+    status: "cleared",
+    accountId: checking.id,
+    kind: "payment",
+    targetAccountId: card.id,
+  });
+
+  // After payment:
+  // Checking cash drops to $950 ($1,000 - $50).
+  // Card debt drops to $250 ($300 - $50).
+  // Minimum protection drops from $50 to $0 (payment fulfilled cycle requirement).
+  // Safe to Spend = $950 cash - $0 Ready to Pay - $0 Minimum = $950.
+  // Safe to Spend is 100% stable: no double deduction!
+  const minProtAfter = getCreditCardMinimumProtection(card, state, simulatedToday);
+  assert.equal(minProtAfter.paidTowardCycle, 5000);
+  assert.equal(minProtAfter.remainingMinimumRequirement, 0);
+  assert.equal(minProtAfter.additionalProtectionRequired, 0);
+  assert.equal(minProtAfter.status, "covered");
+
+  const tAfter = totals(state, simulatedToday);
+  assert.equal(tAfter.balance, 95000);
+  assert.equal(tAfter.creditCardMinimums, 0);
+  assert.equal(tAfter.safe, 95000, "Safe to Spend is invariant across credit card payment reconciliation");
+});
+
+test("Test 3C.12 — Scheduled expense within a category budget: no redundant reservation (Interaction D)", () => {
+  const simulatedToday = "2026-10-10";
+  const state: State = blank();
+  state.payday = "2026-10-24";
+  state.followingPayday = "2026-11-07";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000, // $1,000.00
+    includeInSafeToSpend: true,
+  };
+  state.accounts = [checking];
+
+  // Budget: Groceries $150.00 limit, $0 spent so far. Remaining budget = $150.00
+  state.budgets.push({
+    id: "b-groc",
+    category: "Groceries",
+    limit: 15000,
+    color: "#277c78",
+  });
+
+  // Scheduled grocery expense of $80 on checking inside payday window (Oct 18)
+  state.transactions.push({
+    id: "tx-sched-groc",
+    name: "Trader Joe's Scheduled",
+    amount: -8000,
+    category: "Groceries",
+    date: "2026-10-18",
+    status: "scheduled",
+    accountId: checking.id,
+    kind: "standard",
+  });
+
+  // The $80 scheduled grocery expense is already fully covered by the $150 Groceries budget.
+  // Therefore, uncoveredScheduledExpenses must be $0.
+  const uncovered = getUncoveredScheduledExpenses(state, simulatedToday);
+  assert.equal(uncovered, 0, "Scheduled grocery expense within budget requires no extra reservation");
+
+  const t = totals(state, simulatedToday);
+  assert.equal(t.balance, 100000);
+  assert.equal(t.budgets, 15000, "Budgets reserves $150");
+  assert.equal(t.uncoveredScheduledExpenses, 0);
+  assert.equal(t.safe, 85000, "Safe to spend reserves only the $150 category budget ($1,000 - $150 = $850)");
+});
+
+test("Test 3C.13 — Scheduled expense exceeds budget: reserves only the uncovered excess (Interaction E)", () => {
+  const simulatedToday = "2026-10-10";
+  const state: State = blank();
+  state.payday = "2026-10-24";
+  state.followingPayday = "2026-11-07";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000, // $1,000.00
+    includeInSafeToSpend: true,
+  };
+  state.accounts = [checking];
+
+  // Budget: Groceries $100.00 limit, $0 spent so far. Remaining budget = $100.00
+  state.budgets.push({
+    id: "b-groc",
+    category: "Groceries",
+    limit: 10000,
+    color: "#277c78",
+  });
+
+  // Scheduled grocery expense: $160.00 on checking (exceeds $100 budget by $60)
+  state.transactions.push({
+    id: "tx-sched-over",
+    name: "Costco Bulk Run",
+    amount: -16000,
+    category: "Groceries",
+    date: "2026-10-18",
+    status: "scheduled",
+    accountId: checking.id,
+    kind: "standard",
+  });
+
+  const uncovered = getUncoveredScheduledExpenses(state, simulatedToday);
+  assert.equal(uncovered, 6000, "Excess $60 beyond budget is protected as uncovered scheduled expense");
+
+  const t = totals(state, simulatedToday);
+  assert.equal(t.budgets, 10000, "Budgets reserves $100");
+  assert.equal(t.uncoveredScheduledExpenses, 6000, "Uncovered scheduled reserves $60");
+  assert.equal(t.safe, 84000, "Safe to spend = $1,000 - $100 - $60 = $840");
+});
+
+test("Test 3C.14 — Scheduled recurring bill deduplication: zero duplicate reservation (Interaction F)", () => {
+  const simulatedToday = "2026-10-10";
+  const state: State = blank();
+  state.payday = "2026-10-24";
+  state.followingPayday = "2026-11-07";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000,
+    includeInSafeToSpend: true,
+  };
+  state.accounts = [checking];
+
+  // Recurring bill: Electric $200.00 due on 20th
+  const bill: Bill = {
+    id: "b-electric",
+    name: "Electric Utility",
+    amount: 20000,
+    day: 20,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(bill);
+
+  // Scheduled transaction of $200 linked to this bill occurrence
+  state.transactions.push({
+    id: "tx-sched-bill",
+    name: "Electric Autopay",
+    amount: -20000,
+    category: "Bills",
+    date: "2026-10-20",
+    status: "scheduled",
+    accountId: checking.id,
+    kind: "standard",
+    billId: bill.id,
+    billDueDate: "2026-10-20",
+  });
+
+  const billsBreakdown = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(billsBreakdown.currentCycleBills, 20000, "Bill occurrence reserves $200");
+
+  const uncovered = getUncoveredScheduledExpenses(state, simulatedToday);
+  assert.equal(uncovered, 0, "Linked scheduled transaction does not duplicate bill reservation");
+
+  const t = totals(state, simulatedToday);
+  assert.equal(t.bills, 20000, "Totals bills = $200");
+  assert.equal(t.uncoveredScheduledExpenses, 0, "Uncovered scheduled = $0");
+  assert.equal(t.safe, 80000, "Safe to Spend protects exactly $200, NOT $400");
+});
+
+test("Test 3C.15 — Scheduled credit card purchases: does not prematurely drain checking cash or debt", () => {
+  const simulatedToday = "2026-10-10";
+  const state: State = blank();
+  state.payday = "2026-10-24";
+  state.followingPayday = "2026-11-07";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000, // $1,000 cash
+    includeInSafeToSpend: true,
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Credit Card",
+    type: "credit",
+    opening: 0, // $0 debt
+    creditLimit: 200000,
+    includeInSafeToSpend: false,
+  };
+  state.accounts = [checking, card];
+
+  // Scheduled credit card purchase of $75
+  state.transactions.push({
+    id: "tx-sched-crd",
+    name: "Online Order",
+    amount: -7500,
+    category: "Shopping",
+    date: "2026-10-15",
+    status: "scheduled",
+    accountId: card.id,
+    kind: "standard",
+  });
+
+  // Checking cash must not be reduced before confirmation
+  assert.equal(getAccountBalance(checking, state), 100000, "Checking balance unchanged");
+
+  // Card debt must not be prematurely increased before confirmation
+  assert.equal(getAccountBalance(card, state), 0, "Card debt unchanged");
+
+  // Scheduled credit card transaction must not drain checking Safe to Spend
+  const uncovered = getUncoveredScheduledExpenses(state, simulatedToday);
+  assert.equal(uncovered, 0, "Scheduled credit card purchases do not count as uncovered cash expenses");
+
+  const t = totals(state, simulatedToday);
+  assert.equal(t.safe, 100000, "Safe to spend remains fully intact");
+});
+
+test("Test 3C.16 — Scheduled income and transfers: cash protection safeguards", () => {
+  const simulatedToday = "2026-10-10";
+  const state: State = blank();
+  state.payday = "2026-10-24";
+  state.followingPayday = "2026-11-07";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000, // $1,000 cash
+    includeInSafeToSpend: true,
+  };
+  const savings: Account = {
+    id: "acc-sav",
+    name: "Savings",
+    type: "savings",
+    opening: 50000,
+    includeInSafeToSpend: false,
+  };
+  state.accounts = [checking, savings];
+
+  // 1. Scheduled income: +$500
+  state.transactions.push({
+    id: "tx-sched-inc",
+    name: "Bonus Pay",
+    amount: 50000,
+    category: "Income",
+    date: "2026-10-15",
+    status: "scheduled",
+    accountId: checking.id,
+    kind: "standard",
+  });
+
+  // 2. Scheduled transfer: -$200 from checking to savings
+  state.transactions.push({
+    id: "tx-sched-xfer",
+    name: "Transfer to Savings",
+    amount: -20000,
+    category: "Transfer",
+    date: "2026-10-18",
+    status: "scheduled",
+    accountId: checking.id,
+    kind: "transfer",
+    targetAccountId: savings.id,
+  });
+
+  // Balances must remain strictly at opening values
+  assert.equal(getAccountBalance(checking, state), 100000, "Checking balance not altered by scheduled items");
+  assert.equal(getAccountBalance(savings, state), 50000, "Savings balance not altered by scheduled items");
+
+  // Scheduled income does NOT increase Safe to Spend
+  // Scheduled transfer is excluded from category expense deduction
+  const uncovered = getUncoveredScheduledExpenses(state, simulatedToday);
+  assert.equal(uncovered, 0);
+
+  const t = totals(state, simulatedToday);
+  assert.equal(t.safe, 100000, "Safe to spend is backed strictly by actual cash ($1,000)");
+});
+
+test("Test 3C.17 — Scheduled-to-posted transitions: seamless financial reconciliation (Interaction G)", () => {
+  const simulatedToday = "2026-10-10";
+  const state: State = blank();
+  state.payday = "2026-10-24";
+  state.followingPayday = "2026-11-07";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000, // $1,000.00
+    includeInSafeToSpend: true,
+  };
+  state.accounts = [checking];
+
+  // Step 1: Scheduled unbudgeted expense: $100
+  const tx: Transaction = {
+    id: "tx-trans-test",
+    name: "Hardware Store",
+    amount: -10000,
+    category: "Home Improvement",
+    date: "2026-10-15",
+    status: "scheduled",
+    accountId: checking.id,
+    kind: "standard",
+  };
+  state.transactions.push(tx);
+
+  // Before confirmation:
+  // Checking balance: $1,000
+  // Uncovered scheduled: $100
+  // Safe to Spend: $900
+  assert.equal(getAccountBalance(checking, state), 100000);
+  assert.equal(getUncoveredScheduledExpenses(state, simulatedToday), 10000);
+  const tBefore = totals(state, simulatedToday);
+  assert.equal(tBefore.safe, 90000);
+
+  // Step 2: Confirm transaction (status transitions from "scheduled" to "cleared")
+  tx.status = "cleared";
+
+  // After confirmation:
+  // Checking balance: $900 (drops by $100)
+  // Uncovered scheduled: $0 (released)
+  // Safe to Spend: $900 - $0 = $900
+  // Perfectly reconciled: Safe to Spend does NOT change unexpectedly!
+  assert.equal(getAccountBalance(checking, state), 90000);
+  assert.equal(getUncoveredScheduledExpenses(state, simulatedToday), 0);
+  const tAfter = totals(state, simulatedToday);
+  assert.equal(tAfter.safe, 90000, "Safe to Spend invariant preserved across scheduled-to-posted transition");
+});
+
+test("Test 3C.18 — Partial bill payments alongside scheduled payments", () => {
+  const simulatedToday = "2026-10-10";
+  const state: State = blank();
+  state.payday = "2026-10-24";
+  state.followingPayday = "2026-11-07";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 200000, // $2,000.00
+    includeInSafeToSpend: true,
+  };
+  state.accounts = [checking];
+
+  // Bill: Rent $1,000 due Oct 20
+  const rentBill: Bill = {
+    id: "b-rent",
+    name: "Apartment Rent",
+    amount: 100000,
+    day: 20,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(rentBill);
+
+  // Step 1: User makes a partial payment of $400 on Oct 10
+  recordBillPayment(state, rentBill.id, {
+    dueDate: "2026-10-20",
+    amount: 40000,
+    date: simulatedToday,
+  });
+
+  const occ = getBillOccurrenceStatus(state, rentBill, "2026-10-20");
+  assert.equal(occ.paidAmount, 40000);
+  assert.equal(occ.remainingAmount, 60000);
+
+  // Step 2: User schedules a payment for the remaining $600
+  state.transactions.push({
+    id: "tx-sched-rent-rem",
+    name: "Rent Remainder",
+    amount: -60000,
+    category: "Bills",
+    date: "2026-10-20",
+    status: "scheduled",
+    accountId: checking.id,
+    kind: "standard",
+    billId: rentBill.id,
+    billDueDate: "2026-10-20",
+  });
+
+  // Bill breakdown reserves the remaining $600
+  const bd = reserveBillsBreakdown(state, simulatedToday);
+  assert.equal(bd.currentCycleBills, 60000);
+
+  // Scheduled transaction of $600 matches remaining bill reservation -> 0 extra uncovered expense
+  const uncovered = getUncoveredScheduledExpenses(state, simulatedToday);
+  assert.equal(uncovered, 0);
+
+  // Safe to Spend check:
+  // Checking was $2,000 - $400 paid = $1,600.
+  // Bills reservation = $600.
+  // Safe to Spend = $1,600 - $600 = $1,000.
+  const t = totals(state, simulatedToday);
+  assert.equal(t.balance, 160000);
+  assert.equal(t.bills, 60000);
+  assert.equal(t.safe, 100000);
+});
+
+test("Test 3C.19 — Signed Safe to Spend and shortfall preservation", () => {
+  const simulatedToday = "2026-10-10";
+  const state: State = blank();
+  state.payday = "2026-10-20";
+  state.followingPayday = "2026-11-03";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 10000, // $100.00 cash
+    includeInSafeToSpend: true,
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Credit Card",
+    type: "credit",
+    opening: 20000, // $200 debt
+    creditLimit: 100000,
+    minPayment: 8000, // $80 min
+    dueDay: 15,
+    includeInSafeToSpend: false,
+  };
+  state.accounts = [checking, card];
+
+  // Bill: $50 due Oct 15
+  state.bills.push({
+    id: "b-sub",
+    name: "Gym",
+    amount: 5000,
+    day: 15,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  });
+
+  // Total obligations:
+  // Bills = $50
+  // Credit card minimum = $80
+  // Total obligations = $130
+  // Cash balance = $100
+  // rawSafe = $100 - $50 - $80 = -$30 (-3000)
+  // safe = $0
+  // shortfall = $30 (3000)
+  const t = totals(state, simulatedToday);
+  assert.equal(t.balance, 10000);
+  assert.equal(t.bills, 5000);
+  assert.equal(t.creditCardMinimums, 8000);
+  assert.equal(t.rawSafe, -3000, "Signed rawSafe reflects exact -$30.00 deficit");
+  assert.equal(t.safe, 0, "Safe to spend clamped to 0");
+  assert.equal(t.shortfall, 3000, "Shortfall is exactly $30.00");
+});
+
+test("Test 3C.20 — Covered Credit (Phase 2B) and Flexible Bill Payments (Phase 3B) regressions", () => {
+  const simulatedToday = "2026-10-10";
+  const state: State = blank();
+  state.payday = "2026-10-24";
+  state.followingPayday = "2026-11-07";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Primary Checking",
+    type: "checking",
+    opening: 300000, // $3,000 cash
+    includeInSafeToSpend: true,
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Rewards Card",
+    type: "credit",
+    opening: 50000, // $500 pre-baseline debt
+    creditLimit: 500000,
+    minPayment: 6000, // $60 min
+    dueDay: 18,
+    includeInSafeToSpend: false,
+    assignedPaymentReserve: 0,
+    paymentReservations: [],
+    coveredCreditBaselineAt: simulatedToday,
+  };
+  state.accounts = [checking, card];
+
+  // Budget for Dining Out: $200
+  state.budgets.push({
+    id: "b-dine",
+    category: "Dining Out",
+    limit: 20000,
+    color: "#277c78",
+  });
+
+  // Purchase on credit card in Dining Out: $50
+  state.transactions.push({
+    id: "tx-dine-crd",
+    name: "Bistro Dinner",
+    amount: -5000,
+    category: "Dining Out",
+    date: simulatedToday,
+    createdAt: `${simulatedToday}T12:00:00.000Z`,
+    status: "cleared",
+    accountId: card.id,
+    kind: "standard",
+  });
+
+  // Covered credit check:
+  // Total owed: $550 ($500 opening + $50 dinner)
+  // Ready to Pay: $50 (auto-covered from Dining Out budget)
+  // Uncovered debt: $500
+  const cov = getCreditCardCoverage(card, state, simulatedToday);
+  assert.equal(cov.totalOwed, 55000);
+  assert.equal(cov.readyToPay, 5000);
+  assert.equal(cov.uncoveredDebt, 50000);
+
+  // Minimum protection check:
+  // Configured min: $60.
+  // Ready to Pay: $50.
+  // Additional protection needed: $60 - $50 = $10.
+  const minProt = getCreditCardMinimumProtection(card, state, simulatedToday);
+  assert.equal(minProt.effectiveMinimum, 6000);
+  assert.equal(minProt.readyToPay, 5000);
+  assert.equal(minProt.additionalProtectionRequired, 1000);
+  assert.equal(minProt.status, "partially_covered");
+
+  // Bill occurrence check:
+  const phoneBill: Bill = {
+    id: "b-phone",
+    name: "Phone",
+    amount: 10000, // $100
+    day: 15,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills.push(phoneBill);
+
+  // Partial bill payment of $30
+  recordBillPayment(state, phoneBill.id, {
+    dueDate: "2026-10-15",
+    amount: 3000,
+    date: simulatedToday,
+  });
+
+  // Totals check:
+  // Checking: $3,000 - $30 = $2,970.
+  // Dining Out remaining budget: $200 limit - $50 card spent = $150.
+  // Ready to Pay: $50.
+  // Minimum protection: $10.
+  // Remaining bill: $100 - $30 = $70.
+  // Safe to Spend = $2,970 - $150 (budget) - $50 (readyToPay) - $10 (credit min) - $70 (bill)
+  //              = $2,690.
+  const t = totals(state, simulatedToday);
+  assert.equal(t.balance, 297000);
+  assert.equal(t.budgets, 15000);
+  assert.equal(t.totalReadyToPay, 5000);
+  assert.equal(t.creditCardMinimums, 1000);
+  assert.equal(t.bills, 7000);
+  assert.equal(t.safe, 269000, "All subsystems integrate cleanly with mathematical precision");
+});

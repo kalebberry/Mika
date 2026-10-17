@@ -789,9 +789,156 @@ Following independent code review, three critical hardening fixes were implement
    - **Test Suite**: All 124 tests passing (`npm test`).
    - **Build**: Clean production build (`npm run build`).
 
+---
 
+## Phase 3C: Credit Card Minimums & Scheduled Expense Safeguards (October 17, 2026)
 
+### 1. Phase 3C Architecture & Overview
 
+Phase 3C enhances Mika Budget by providing deterministic protection for upcoming credit card minimum payments and scheduled obligations without compromising Covered Credit (Phase 2B), dynamic payday planning (Phase 3A), or flexible bill-occurrence accounting (Phase 3B).
 
+The implementation adheres to the core philosophy: **pure, deterministic financial calculation with zero duplicated money and zero phantom obligations**.
 
+#### Key Architectural Components
+1. **Credit Card Minimum Protection Engine (`src/model.ts`)**:
+   - `getCreditCardDueDate(account, year, month)`: Deterministic month-end clamping (28/29 days for Feb, 30 days for Apr/Jun/Sep/Nov, 31 days) supporting leap years.
+   - `getCreditCardMinimumProtection(account, s, now)`: Evaluates current outstanding card debt, configured minimum payment (`account.minPayment`), applicable statement due date, payments made within the current billing cycle, cash already held in Ready to Pay (`getCreditCardCoverage().readyToPay`), and payday window boundaries (`getCurrentPayday`).
+   - `getCreditCardMinimumBreakdown(s, now)`: Aggregates additional minimum protection needed across all active credit cards for consumption by Safe to Spend and UI components.
+2. **Scheduled Expense Safeguard Engine (`src/model.ts`)**:
+   - Audited and enhanced `getUncoveredScheduledExpenses(s, now)`:
+     - Account filtering: Scheduled transactions on credit cards or non-included savings accounts do not deduct from spendable checking cash before confirmation.
+     - Amount-aware bill linkage deduplication: Scheduled transactions linked to tracked recurring bill occurrences (`billId` + `billDueDate`) are matched against active bill reservations (`reserveBillsBreakdown.details`). Scheduled payments up to the reserved bill amount do not create duplicate deductions; any excess scheduled commitment beyond the reserved bill amount is protected as a scheduled category expense.
+     - Standalone transactions categorized as `"Bills"` without a linked recurring bill are protected as ordinary category expenses.
+     - Scheduled income and transfers never prematurely inflate spendable cash.
+3. **Safe to Spend Integration (`totals()` in `src/model.ts`)**:
+   - `rawSafe = balance - pots - budgets - bills - uncoveredScheduledExpenses - totalReadyToPay - creditCardMinimums`
+   - Signed financial model preserved: `safe = Math.max(0, rawSafe)`, `shortfall = Math.max(0, -rawSafe)`.
+   - Exposes `creditCardMinimums` and `creditCardMinimumBreakdown` for transparent breakdown in the UI.
+4. **UI Improvements**:
+   - `AccountsView.vue`: Added `.cc-min-safeguard-card` displaying configured minimum payment, due date, coverage status badge, additional cash protected in Safe to Spend, and a clear planning estimate disclaimer ("Planning estimate based on configured minimum. Mika does not retrieve official bank statements.").
+   - `SafeToSpendCard.vue`: Added transparent row for `creditCardMinimums > 0` ("Credit card minimums protected").
 
+---
+
+### 2. Minimum-Payment Calculation Policy
+
+The credit card minimum protection calculation is a deterministic, pure function:
+
+1. **Outstanding Debt Ceiling**:
+   - Never protect more than actual outstanding card debt owed:
+     $$\text{effectiveMin} = \min(\text{configuredMin}, \text{totalOwed})$$
+   - A zero-balance card (`totalOwed === 0`) requires $0 minimum protection (`status: "not_applicable"`).
+2. **Billing Cycle & Payment Attribution**:
+   - Evaluates whether the card's upcoming due date falls within the current paycheck window (`targetDueDate <= currentPaydayEnd`).
+   - Sums all ledger payments made to the card within the current cycle (`paidTowardCycle`).
+   - Computes remaining minimum requirement:
+     $$\text{remainingMinRequirement} = \max(0, \text{effectiveMin} - \text{paidTowardCycle})$$
+3. **Covered Credit Non-Duplication**:
+   - Ready to Pay (`coverage.readyToPay`) already holds cash in checking reserved for credit card debt.
+   - Additional protection required is strictly the shortfall between the remaining minimum requirement and Ready to Pay:
+     $$\text{additionalProtection} = \max(0, \text{remainingMinRequirement} - \text{readyToPay})$$
+   - Example (Interaction A): Card owes $500, configured minimum $35, Ready to Pay $20. Additional protection = $15. Total protected towards the card is $35 ($20 Ready to Pay + $15 Minimum Safeguard), never $55.
+   - Example (Interaction B): Minimum $35, Ready to Pay $50. Additional protection = $0.
+   - Example (Interaction C): Card debt $20, configured minimum $35. Effective minimum is $20. Additional protection = $20.
+4. **Archived and Unconfigured Cards**:
+   - Archived cards (`account.archived`) require $0 minimum protection and are excluded from active totals.
+   - Cards with missing, non-positive, or non-integer minimum payments or missing due days never fabricate payment requirements (`status: "not_applicable"`).
+5. **Planning Horizon & Overlapping Windows**:
+   - Due dates falling after the current payday belong to the subsequent paycheck cycle and require $0 protection in the current cycle (`isDueInCurrentWindow: false`).
+   - When advancing to the next cycle, previous cycle payments do not satisfy future cycle minimums.
+
+---
+
+### 3. Scheduled Expense Reconciliation Rules
+
+1. **Account Isolation**:
+   - Scheduled expenses on credit card accounts (`accountId` of credit type) do not reduce checking account balances or premature posted debt.
+   - Scheduled transactions on savings accounts excluded from Safe to Spend do not reduce checking cash.
+2. **Recurring Bill Deduplication**:
+   - If a scheduled transaction is explicitly linked to a bill occurrence (`billId` and `billDueDate`):
+     - Let $\text{reservedAmt}$ be the amount reserved in `reserveBillsBreakdown` for that bill and due date.
+     - If $\text{totalScheduled} \le \text{reservedAmt}$: 0 extra reservation (fully covered by the bill reservation).
+     - If $\text{totalScheduled} > \text{reservedAmt}$: excess $(\text{totalScheduled} - \text{reservedAmt})$ is protected as an uncovered scheduled expense.
+3. **Category Budget Deduplication**:
+   - Scheduled transactions in budgeted categories (e.g. Groceries) consume remaining category budget first:
+     - If $\text{scheduled} \le \text{remainingBudget}$: 0 extra reservation (already covered by category budget).
+     - If $\text{scheduled} > \text{remainingBudget}$: only the excess $(\text{scheduled} - \text{remainingBudget})$ is protected as an uncovered scheduled expense.
+4. **Scheduled-to-Posted Reconciliation**:
+   - When a scheduled transaction transitions from `"scheduled"` to `"cleared"` or `"posted"`, the checking cash balance decreases by the transaction amount and the uncovered scheduled expense reservation is simultaneously released.
+   - Net Safe to Spend remains completely invariant across the transition ($\Delta \text{Safe to Spend} = \$0$).
+5. **Income and Transfers**:
+   - Scheduled income does not prematurely increase spendable cash.
+   - Scheduled transfers do not reduce category budgets or count as ordinary expenses.
+
+---
+
+### 4. Financial Invariants
+
+1. **Non-Duplication Invariant**:
+   - Total money set aside for credit cards in Safe to Spend equals:
+     $$\text{Total Card Reserves} = \text{totalReadyToPay} + \text{creditCardMinimums}$$
+   - Because `creditCardMinimums` only reserves $\max(0, \text{remainingMin} - \text{readyToPay})$, not a single cent is ever double-counted between Ready to Pay and Minimum Payment Safeguards.
+2. **Credit Card Payment Reconciliation Invariant (Interaction H)**:
+   - When a user records a payment from checking to a credit card:
+     - Checking cash decreases by the payment amount.
+     - Card liability decreases by the payment amount.
+     - If the card had minimum payment protection, the payment fulfills the cycle requirement (`paidTowardCycle` increases), reducing `creditCardMinimums` to $0.
+     - Net Safe to Spend is preserved without duplicate deduction.
+3. **Signed Safe to Spend & Shortfall Invariant**:
+   - The signed financial contract is preserved:
+     $$\text{rawSafe} = \text{balance} - \text{pots} - \text{budgets} - \text{bills} - \text{uncoveredScheduled} - \text{totalReadyToPay} - \text{creditCardMinimums}$$
+     $$\text{safe} = \max(0, \text{rawSafe})$$
+     $$\text{shortfall} = \max(0, -\text{rawSafe})$$
+4. **Conservation of Ledger Balances**:
+   - Scheduled transactions and minimum payment planning estimates never alter authoritative posted ledger balances (`getAccountBalance`).
+
+---
+
+### 5. Compatibility & Migration Considerations
+
+- **Schema v5 Compatibility**: No schema migration required; `minPayment` and `dueDay` were already optional properties on `Account`.
+- **Backward Compatibility**: Accounts without `minPayment` or `dueDay` cleanly evaluate to `status: "not_applicable"` with 0 additional protection.
+- **Pure Functions**: All calculations are pure, deterministic functions taking `(account, s, now)` or `(s, now)`, fully decoupleable from UI reactivity.
+
+---
+
+### 6. Verification & Test Suite
+
+All 144 tests passing (`npm test`), with 0 failures and 0 skips:
+
+- **Test 3C.1**: Zero-balance cards: $0 debt owed produces $0 minimum protection and `status: "not_applicable"`.
+- **Test 3C.2 (Interaction A)**: Partially covered minimums: $500 debt, $35 min, $20 Ready to Pay -> protects exactly $15 additional; Safe to Spend protects $35 total, not $55.
+- **Test 3C.3 (Interaction B)**: Fully covered minimums: $35 min, $50 Ready to Pay -> requires $0 additional protection; `status: "covered"`.
+- **Test 3C.4 (Interaction C)**: Minimum exceeds debt: $20 debt, $35 min -> capped at $20 debt owed; protects $20, not $35.
+- **Test 3C.5**: Multiple credit cards: isolation and aggregation across Card A ($30 protected), Card B ($0 protected), and Card C ($0 protected).
+- **Test 3C.6**: Archived credit cards: zero minimum-payment reservation.
+- **Test 3C.7**: Missing minimum or due day: no fabricated payments.
+- **Test 3C.8**: Due days 29–31 and leap years: month-end clamping in April (30), October (31), Feb non-leap (28), Feb leap (29).
+- **Test 3C.9**: Payday-window boundaries: outside current cycle ($0 protected) vs inside current cycle (protected).
+- **Test 3C.10**: Overlapping planning windows: payment in October cycle satisfies October minimum without bleeding into November cycle.
+- **Test 3C.11 (Interaction H)**: Card payments and minimum protection reconciliation: paying $50 satisfies minimum and reduces checking cash by $50; Safe to Spend is invariant ($950 before and after).
+- **Test 3C.12 (Interaction D)**: Scheduled expense within category budget: $80 scheduled within $150 Groceries budget requires $0 extra reservation.
+- **Test 3C.13 (Interaction E)**: Scheduled expense exceeds budget: $160 scheduled on $100 budget reserves only the $60 excess.
+- **Test 3C.14 (Interaction F)**: Scheduled recurring bill deduplication: $200 scheduled linked to $200 bill does not double-count; total bills protected is $200, not $400.
+- **Test 3C.15**: Scheduled credit card purchases: scheduled card purchases do not reduce checking cash or increase posted card debt.
+- **Test 3C.16**: Scheduled income and transfers: scheduled income does not inflate spendable cash; scheduled transfers do not count as category expenses.
+- **Test 3C.17 (Interaction G)**: Scheduled-to-posted transitions: $100 scheduled unbudgeted expense confirmed cleared reduces checking cash by $100 and releases $100 scheduled protection; Safe to Spend remains $900 before and after.
+- **Test 3C.18**: Partial bill payments alongside scheduled payments: $400 paid + $600 scheduled on $1,000 bill reserves remaining $600 with zero duplicate reservation.
+- **Test 3C.19**: Signed Safe to Spend and shortfall preservation: $100 cash - $50 bills - $80 credit minimum = rawSafe -$30, safe $0, shortfall $30.
+- **Test 3C.20**: Full Covered Credit (Phase 2B) and Flexible Bill Payments (Phase 3B) regression: all subsystems integrate deterministically with exact mathematical precision.
+
+Production build check (`npm run build`):
+- `vue-tsc -b && vite build` passed cleanly in 779ms with 0 errors.
+
+---
+
+### 7. Three Engineering Learning Questions
+
+1. **Why must additional credit card minimum protection be calculated after subtracting `coverage.readyToPay` rather than subtracting the total cash balance?**
+   - *Answer*: `coverage.readyToPay` represents cash in checking that has already been earmarked and removed from Safe to Spend specifically for credit card debt (via budgeted credit card spending or explicit manual reserve assignments). If the minimum protection formula subtracted total checking cash, it would assume all checking money is available to pay the card, disregarding other obligations like pots, category budgets, and bills. Conversely, if it ignored `readyToPay`, it would reserve money for the minimum twice: once in Ready to Pay and once in Minimum Protection. Calculating $\max(0, \text{remainingMin} - \text{readyToPay})$ guarantees that only the unbacked gap in the minimum is reserved.
+
+2. **How does amount-aware scheduled bill deduplication prevent both double-counting and premature release of obligation?**
+   - *Answer*: When a user schedules a bill payment (e.g. scheduling autopay for $200 on an electric bill), the recurring bill occurrence itself already has a reservation in `reserveBillsBreakdown` for that month. Treating the scheduled transaction as an independent expense would deduct $200 in bills plus $200 in scheduled expenses ($400 total). Conversely, blindly ignoring all scheduled transactions with `category: "Bills"` would leave unlinked one-off bill expenses completely unprotected. By matching on `billId` and `billDueDate` and comparing `totalScheduled` against `reservedAmt`, Mika ensures that scheduled payments up to the reserved bill balance do not add extra deductions, while any scheduled excess beyond the bill balance is protected as a category expense.
+
+3. **Why does Mika treat credit card minimums as planning estimates rather than banking statement facts?**
+   - *Answer*: Mika is a local-first, privacy-respecting budgeting companion that does not directly query bank APIs for statement closing documents or dynamic interest-adjusted minimum payment calculations. In banking reality, credit card minimum payments fluctuate based on finance charges, statement balances, fees, and past-due amounts. Treating the user's configured minimum as an authoritative bank statement would risk misleading the user into believing an official obligation was satisfied. Clearly labeling it as a planning estimate ensures transparency, avoids liability, and reinforces user agency while still safeguarding cash needed for upcoming payments.

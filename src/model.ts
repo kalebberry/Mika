@@ -1500,6 +1500,259 @@ export function releaseCardPaymentReserve(
   return true;
 }
 
+export type CreditCardMinimumStatus =
+  | "covered"
+  | "partially_covered"
+  | "uncovered"
+  | "not_applicable"
+  | "zero_balance"
+  | "no_minimum";
+
+export interface CreditCardMinimumProtection {
+  account: Account;
+  totalOwed: number; // Current liability (integer cents)
+  configuredMin: number; // Configured minimum payment (integer cents)
+  configuredMinimum: number; // Alias
+  effectiveMin: number; // Math.min(configuredMin, totalOwed)
+  effectiveMinimum: number; // Alias
+  dueDate: string | null; // Applicable due date (YYYY-MM-DD)
+  dueCycle: "current" | "following" | "none";
+  isDueInCurrentWindow: boolean;
+  paidTowardCycle: number; // Payments already made toward this cycle
+  remainingMinimumRequirement: number;
+  readyToPay: number; // Cash already held in Ready to Pay
+  additionalProtection: number; // Additional cash to reserve in Safe to Spend
+  additionalProtectionRequired: number; // Alias
+  status: CreditCardMinimumStatus;
+}
+
+export interface CreditCardMinimumBreakdown {
+  totalAdditionalProtection: number; // Sum of additional protection needed in current planning window
+  totalConfiguredMinimums: number;
+  totalEffectiveMinimums: number;
+  details: CreditCardMinimumProtection[];
+  cards: CreditCardMinimumProtection[]; // Alias for details
+}
+
+export function getCreditCardDueDate(
+  account: Account,
+  year: number,
+  month: number,
+): string | null {
+  if (
+    typeof account.dueDay !== "number" ||
+    !Number.isInteger(account.dueDay) ||
+    account.dueDay < 1 ||
+    account.dueDay > 31 ||
+    year < 1900 ||
+    year > 2200 ||
+    month < 1 ||
+    month > 12
+  ) {
+    return null;
+  }
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const clampedDay = Math.min(account.dueDay, daysInMonth);
+  return `${year}-${String(month).padStart(2, "0")}-${String(clampedDay).padStart(2, "0")}`;
+}
+
+export function getCreditCardMinimumProtection(
+  account: Account,
+  s: State,
+  now = today(),
+): CreditCardMinimumProtection {
+  const baseResult: CreditCardMinimumProtection = {
+    account,
+    totalOwed: 0,
+    configuredMin: 0,
+    configuredMinimum: 0,
+    effectiveMin: 0,
+    effectiveMinimum: 0,
+    dueDate: null,
+    dueCycle: "none",
+    isDueInCurrentWindow: false,
+    paidTowardCycle: 0,
+    remainingMinimumRequirement: 0,
+    readyToPay: 0,
+    additionalProtection: 0,
+    additionalProtectionRequired: 0,
+    status: "not_applicable",
+  };
+
+  if (account.type !== "credit" || account.archived) {
+    return baseResult;
+  }
+
+  const validNow = isValidDateString(now) ? now : today();
+  const coverage = getCreditCardCoverage(account, s, validNow);
+  const totalOwed = coverage.totalOwed;
+  baseResult.totalOwed = totalOwed;
+  baseResult.readyToPay = coverage.readyToPay;
+
+  const rawMin = account.minPayment;
+  const configuredMin =
+    typeof rawMin === "number" && Number.isFinite(rawMin) && rawMin > 0
+      ? Math.round(rawMin)
+      : 0;
+  baseResult.configuredMin = configuredMin;
+  baseResult.configuredMinimum = configuredMin;
+
+  if (totalOwed <= 0) {
+    baseResult.status = "not_applicable";
+    return baseResult;
+  }
+
+  if (configuredMin <= 0) {
+    baseResult.status = "not_applicable";
+    return baseResult;
+  }
+
+  if (
+    typeof account.dueDay !== "number" ||
+    !Number.isInteger(account.dueDay) ||
+    account.dueDay < 1 ||
+    account.dueDay > 31
+  ) {
+    baseResult.status = "not_applicable";
+    return baseResult;
+  }
+
+  const effectiveMin = Math.min(configuredMin, totalOwed);
+  baseResult.effectiveMin = effectiveMin;
+  baseResult.effectiveMinimum = effectiveMin;
+
+  const [nowY, nowM] = validNow.split("-").map(Number);
+  const currentMonthDue = getCreditCardDueDate(account, nowY!, nowM!);
+  if (!currentMonthDue) {
+    baseResult.status = "not_applicable";
+    return baseResult;
+  }
+
+  const [prevY, prevM] = nowM === 1 ? [nowY! - 1, 12] : [nowY!, nowM! - 1];
+  const prevMonthDue =
+    getCreditCardDueDate(account, prevY, prevM) ||
+    `${prevY}-${String(prevM).padStart(2, "0")}-01`;
+
+  const [nextY, nextM] = nowM === 12 ? [nowY! + 1, 1] : [nowY!, nowM! + 1];
+  const nextMonthDue =
+    getCreditCardDueDate(account, nextY, nextM) ||
+    `${nextY}-${String(nextM).padStart(2, "0")}-01`;
+
+  // Find all qualifying ledger payments to this card
+  const payments = (s.transactions || []).filter(
+    (t) =>
+      isLedgerStatus(t.status) &&
+      t.kind === "payment" &&
+      t.targetAccountId === account.id &&
+      t.amount < 0,
+  );
+
+  let targetDueDate: string;
+  let paidTowardCycle = 0;
+
+  if (validNow <= currentMonthDue) {
+    targetDueDate = currentMonthDue;
+    paidTowardCycle = payments
+      .filter((t) => t.date > prevMonthDue && t.date <= currentMonthDue)
+      .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+  } else {
+    // Current month due date has passed. Check if it was satisfied.
+    const paidInCurrentMonth = payments
+      .filter((t) => t.date > prevMonthDue && t.date <= validNow)
+      .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+
+    if (paidInCurrentMonth >= effectiveMin) {
+      // Current month minimum was already satisfied! Target next month.
+      targetDueDate = nextMonthDue;
+      paidTowardCycle = payments
+        .filter((t) => t.date > currentMonthDue && t.date <= validNow)
+        .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+    } else {
+      // Current month minimum is OVERDUE!
+      targetDueDate = currentMonthDue;
+      paidTowardCycle = paidInCurrentMonth;
+    }
+  }
+
+  baseResult.dueDate = targetDueDate;
+  baseResult.paidTowardCycle = paidTowardCycle;
+
+  // Payday window check
+  const currentPayday = getCurrentPayday(s, validNow);
+  const currentPaydayEnd =
+    isValidDateString(currentPayday) && currentPayday >= validNow
+      ? currentPayday
+      : validNow;
+
+  const remainingMinRequirement = Math.max(0, effectiveMin - paidTowardCycle);
+  baseResult.remainingMinimumRequirement = remainingMinRequirement;
+
+  if (targetDueDate <= currentPaydayEnd) {
+    baseResult.dueCycle = "current";
+    baseResult.isDueInCurrentWindow = true;
+    // Ready to Pay already covers credit debt; never reserve a second copy
+    const additionalProtection = Math.max(
+      0,
+      remainingMinRequirement - coverage.readyToPay,
+    );
+    baseResult.additionalProtection = additionalProtection;
+    baseResult.additionalProtectionRequired = additionalProtection;
+
+    if (additionalProtection === 0) {
+      baseResult.status = "covered";
+    } else if (paidTowardCycle + coverage.readyToPay > 0) {
+      baseResult.status = "partially_covered";
+    } else {
+      baseResult.status = "uncovered";
+    }
+  } else {
+    baseResult.dueCycle = "following";
+    baseResult.isDueInCurrentWindow = false;
+    baseResult.additionalProtection = 0;
+    baseResult.additionalProtectionRequired = 0;
+    if (remainingMinRequirement <= coverage.readyToPay) {
+      baseResult.status = "covered";
+    } else if (paidTowardCycle + coverage.readyToPay > 0) {
+      baseResult.status = "partially_covered";
+    } else {
+      baseResult.status = "uncovered";
+    }
+  }
+
+  return baseResult;
+}
+
+export function getCreditCardMinimumBreakdown(
+  s: State,
+  now = today(),
+): CreditCardMinimumBreakdown {
+  const activeCards = (s.accounts || []).filter(
+    (a) => a.type === "credit" && !a.archived,
+  );
+  const details = activeCards.map((a) =>
+    getCreditCardMinimumProtection(a, s, now),
+  );
+  const totalAdditionalProtection = details.reduce(
+    (sum, d) => sum + d.additionalProtection,
+    0,
+  );
+  const totalConfiguredMinimums = details.reduce(
+    (sum, d) => sum + d.configuredMinimum,
+    0,
+  );
+  const totalEffectiveMinimums = details.reduce(
+    (sum, d) => sum + d.effectiveMinimum,
+    0,
+  );
+  return {
+    totalAdditionalProtection,
+    totalConfiguredMinimums,
+    totalEffectiveMinimums,
+    details,
+    cards: details,
+  };
+}
+
 export function blank(): State {
   const payday = nextPayday();
   const d = today();
@@ -2390,10 +2643,19 @@ export function reserveBills(s: State, now = today()): number {
 }
 
 export function getUncoveredScheduledExpenses(s: State, now = today()): number {
-  const currentMonth = now.slice(0, 7);
-  const currentPayday = getCurrentPayday(s, now);
-  const currentPaydayEnd = currentPayday >= now ? currentPayday : now;
+  const validNow = isValidDateString(now) ? now : today();
+  const currentMonth = validNow.slice(0, 7);
+  const currentPayday = getCurrentPayday(s, validNow);
+  const currentPaydayEnd =
+    isValidDateString(currentPayday) && currentPayday >= validNow
+      ? currentPayday
+      : validNow;
+
+  const billBreakdown = reserveBillsBreakdown(s, validNow);
   const scheduledExpensesByCategory = new Map<string, number>();
+
+  // Track scheduled totals per bill occurrence: key = `${billId}::${dueDate}`
+  const scheduledByBillOccurrence = new Map<string, number>();
 
   for (const t of s.transactions) {
     if (
@@ -2402,13 +2664,66 @@ export function getUncoveredScheduledExpenses(s: State, now = today()): number {
       (t.kind === "standard" || !t.kind)
     ) {
       if (t.date > currentPaydayEnd) continue;
-      // Deduplicate only scheduled transactions linked to an active tracked recurring bill
-      if (t.billId && s.bills.some((b) => b.id === t.billId)) continue;
+
+      // Scheduled transactions on non-Safe-to-Spend accounts (such as credit cards or non-included savings)
+      // do not reduce spendable cash checking upon confirmation.
+      if (t.accountId && s.accounts && s.accounts.length > 0) {
+        const acc = s.accounts.find((a) => a.id === t.accountId);
+        if (acc && !acc.includeInSafeToSpend) {
+          continue;
+        }
+      }
+
+      if (t.billId) {
+        const bill = s.bills.find((b) => b.id === t.billId);
+        if (bill) {
+          const targetDue =
+            t.billDueDate && isValidDateString(t.billDueDate)
+              ? t.billDueDate
+              : nextUnpaidDueDate(s, bill, t.date);
+          const key = `${bill.id}::${targetDue}`;
+          scheduledByBillOccurrence.set(
+            key,
+            (scheduledByBillOccurrence.get(key) || 0) + Math.abs(t.amount),
+          );
+          continue;
+        }
+      }
 
       const cat = t.category;
       scheduledExpensesByCategory.set(
         cat,
         (scheduledExpensesByCategory.get(cat) || 0) + Math.abs(t.amount),
+      );
+    }
+  }
+
+  // Evaluate scheduled bill payments against bill reservations
+  for (const [key, totalSched] of scheduledByBillOccurrence.entries()) {
+    const [billId, dueDate] = key.split("::");
+    const bill = s.bills.find((b) => b.id === billId);
+    if (!bill) {
+      const cat = "Bills";
+      scheduledExpensesByCategory.set(
+        cat,
+        (scheduledExpensesByCategory.get(cat) || 0) + totalSched,
+      );
+      continue;
+    }
+
+    // Check how much is already reserved in the planning window for this bill occurrence
+    const detail = billBreakdown.details.find(
+      (d) => d.bill.id === billId && d.dueDate === dueDate,
+    );
+    const reservedAmt = detail ? detail.amount : 0;
+
+    if (totalSched > reservedAmt) {
+      // Excess scheduled commitment beyond the bill's reserved amount must be protected
+      const excess = totalSched - reservedAmt;
+      const cat = "Bills";
+      scheduledExpensesByCategory.set(
+        cat,
+        (scheduledExpensesByCategory.get(cat) || 0) + excess,
       );
     }
   }
@@ -2497,8 +2812,17 @@ export function totals(s: State, now = today()) {
     0,
   );
 
+  const creditMinBreakdown = getCreditCardMinimumBreakdown(s, now);
+  const creditCardMinimums = creditMinBreakdown.totalAdditionalProtection;
+
   const rawSafe =
-    balance - pots - budgets - bills - uncoveredScheduledExpenses - totalReadyToPay;
+    balance -
+    pots -
+    budgets -
+    bills -
+    uncoveredScheduledExpenses -
+    totalReadyToPay -
+    creditCardMinimums;
   const safe = Math.max(0, rawSafe);
   const shortfall = rawSafe < 0 ? Math.abs(rawSafe) : 0;
 
@@ -2510,12 +2834,14 @@ export function totals(s: State, now = today()) {
     currentCycleBills: billBreakdown.currentCycleBills,
     protectedCycleBills: billBreakdown.protectedCycleBills,
     uncoveredScheduledExpenses,
+    creditCardMinimums,
     scheduledIncome,
     scheduledExpenses,
     totalReadyToPay,
     totalCreditOwed,
     totalUncoveredDebt,
     totalStatementCredits,
+    creditCardMinimumBreakdown: creditMinBreakdown,
     rawSafe,
     safe,
     shortfall,

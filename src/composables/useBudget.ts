@@ -39,6 +39,11 @@ import {
   type CreditCoverageStatus,
   getCreditCardCoverage,
   getCreditCardCoverageStatus,
+  type CreditCardMinimumProtection,
+  type CreditCardMinimumBreakdown,
+  type CreditCardMinimumStatus,
+  getCreditCardMinimumProtection,
+  getCreditCardMinimumBreakdown,
   assignCardPaymentReserve as modelAssignCardPaymentReserve,
   releaseCardPaymentReserve as modelReleaseCardPaymentReserve,
   uid,
@@ -857,6 +862,32 @@ export function useBudget() {
       if (!acc) return "zero_balance" as const;
       return getCreditCardCoverage(acc, state.value, now || today()).status;
     },
+    getCreditCardMinimumProtection: (
+      accOrId: Account | string,
+      now?: string,
+    ) => {
+      const acc =
+        typeof accOrId === "string"
+          ? (state.value.accounts || []).find((a) => a.id === accOrId)
+          : accOrId;
+      if (!acc) {
+        return {
+          account: acc as any,
+          totalOwed: 0,
+          configuredMin: 0,
+          effectiveMin: 0,
+          dueDate: null,
+          dueCycle: "none" as const,
+          paidTowardCycle: 0,
+          readyToPay: 0,
+          additionalProtection: 0,
+          status: "zero_balance" as const,
+        };
+      }
+      return getCreditCardMinimumProtection(acc, state.value, now || today());
+    },
+    getCreditCardMinimumBreakdown: (now?: string) =>
+      getCreditCardMinimumBreakdown(state.value, now || today()),
     registerModelContext,
   };
 }

@@ -11,10 +11,13 @@ const {
   accountSummary,
   creditCardSummary,
   getCreditCardCoverage,
+  getCreditCardMinimumProtection,
   getAccountBalance,
   toggleArchiveAccount,
 } = useBudget();
 const { open } = useModal();
+
+const getMinProtection = (acc: Account) => getCreditCardMinimumProtection(acc);
 
 const activeTab = ref<"active" | "archived">("active");
 const expandedAccountId = ref<string | null>(null);
@@ -621,10 +624,44 @@ function getCoverageBadge(status: string) {
                   💡 <strong>{{ money(getCoverage(acc).manualReleasable) }}</strong> manually reserved cash can be released to Safe to Spend. Automatically covered budget funds remain permanently protected.
                 </div>
 
-                <!-- Due day / Min payment meta -->
-                <div v-if="acc.dueDay || acc.minPayment" class="cc-meta-row">
-                  <span v-if="acc.dueDay">Payment due: {{ acc.dueDay }}th of month</span>
-                  <span v-if="acc.minPayment">Minimum payment: {{ money(acc.minPayment) }}</span>
+                <!-- Minimum payment & due date safeguard (Phase 3C) -->
+                <div v-if="acc.minPayment && acc.minPayment > 0" class="cc-min-safeguard-card">
+                  <div class="cc-min-header">
+                    <span class="cc-min-title">🛡️ Minimum Payment Safeguard</span>
+                    <span
+                      class="badge"
+                      :class="{
+                        'cleared': getMinProtection(acc).status === 'covered' || getMinProtection(acc).status === 'zero_balance',
+                        'partially-paid': getMinProtection(acc).status === 'partially_covered',
+                        'danger': getMinProtection(acc).status === 'uncovered'
+                      }"
+                    >
+                      <template v-if="getMinProtection(acc).status === 'zero_balance'">Zero balance</template>
+                      <template v-else-if="getMinProtection(acc).status === 'covered'">Minimum covered ✓</template>
+                      <template v-else-if="getMinProtection(acc).status === 'partially_covered'">Partially covered</template>
+                      <template v-else>Minimum uncovered</template>
+                    </span>
+                  </div>
+                  <div class="cc-min-details-row">
+                    <div>
+                      <span class="cc-min-label">Configured Minimum:</span>
+                      <strong>{{ money(acc.minPayment) }}</strong>
+                    </div>
+                    <div v-if="getMinProtection(acc).dueDate">
+                      <span class="cc-min-label">Due Date:</span>
+                      <strong>{{ getMinProtection(acc).dueDate }}</strong>
+                    </div>
+                    <div v-if="getMinProtection(acc).additionalProtection > 0">
+                      <span class="cc-min-label">Protected in Safe to Spend:</span>
+                      <strong class="warn-val">+ {{ money(getMinProtection(acc).additionalProtection) }}</strong>
+                    </div>
+                  </div>
+                  <small class="cc-min-disclaimer">
+                    Planning estimate based on configured minimum. Mika does not retrieve official bank statements.
+                  </small>
+                </div>
+                <div v-else-if="acc.dueDay" class="cc-meta-row">
+                  <span>Payment due: {{ acc.dueDay }}th of month</span>
                 </div>
 
                 <!-- Action Buttons: Record Payment / Reserve Cash / Release (Requirement 7 & 12) -->
@@ -1053,6 +1090,50 @@ function getCoverageBadge(status: string) {
   gap: 1.5rem;
   color: var(--color-muted);
   font-size: 0.8125rem;
+}
+
+.cc-min-safeguard-card {
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border, #e8e8ee);
+  border-radius: var(--radius-sm, 6px);
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.cc-min-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.cc-min-title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text, #201f24);
+}
+
+.cc-min-details-row {
+  display: flex;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  font-size: 0.8125rem;
+}
+
+.cc-min-label {
+  color: var(--color-muted);
+  margin-right: 0.25rem;
+}
+
+.warn-val {
+  color: var(--color-warning, #d97706);
+}
+
+.cc-min-disclaimer {
+  font-size: 0.6875rem;
+  color: var(--color-muted);
+  line-height: 1.3;
 }
 
 .expanded-actions {
