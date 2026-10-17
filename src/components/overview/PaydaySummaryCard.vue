@@ -7,11 +7,12 @@ import {
   getFollowingPayday,
   reserveBillsBreakdown,
   getUpcomingPaydays,
+  getEffectiveOccurrenceDate,
 } from "../../model.ts";
 import { money, date, frequencyLabel } from "../../utils/format.ts";
 import { useBudget } from "../../composables/useBudget.ts";
 
-const { state, sum, days, page } = useBudget();
+const { state, sum, page } = useBudget();
 
 const activeFrequency = computed(
   () => state.value.paydaySchedule?.frequency || "manual",
@@ -20,24 +21,69 @@ const activeFrequencyName = computed(() =>
   frequencyLabel(activeFrequency.value),
 );
 
-// Next payday from engine
-const nextPaydayDate = computed(() => {
-  const current = getCurrentPayday(state.value);
-  return isValidDateString(current) ? current : "";
-});
+// Explicitly confirmed upcoming paydays for manual schedule
+const confirmedManualPaydays = computed(() => {
+  const sched = state.value.paydaySchedule;
+  if (!sched || sched.frequency !== "manual") return [];
+  const now = today();
+  const confirmed: string[] = [];
 
-// Following payday from engine
-const followingPaydayDate = computed(() => {
-  const fol = getFollowingPayday(state.value);
-  return isValidDateString(fol) ? fol : "";
+  // Check anchorDate
+  if (isValidDateString(sched.anchorDate)) {
+    const effectiveAnchor = getEffectiveOccurrenceDate(
+      sched,
+      sched.anchorDate,
+      sched.overrides,
+    );
+    if (isValidDateString(effectiveAnchor) && effectiveAnchor >= now) {
+      confirmed.push(effectiveAnchor);
+    }
+  }
+
+  // Check manualFollowingPayday
+  if (isValidDateString(sched.manualFollowingPayday)) {
+    const effectiveFollowing = getEffectiveOccurrenceDate(
+      sched,
+      sched.manualFollowingPayday,
+      sched.overrides,
+    );
+    if (
+      isValidDateString(effectiveFollowing) &&
+      effectiveFollowing >= now &&
+      !confirmed.includes(effectiveFollowing)
+    ) {
+      confirmed.push(effectiveFollowing);
+    }
+  }
+
+  return confirmed.sort((a, b) => a.localeCompare(b));
 });
 
 // Is manual schedule incomplete / missing an upcoming payday?
 const isManualIncomplete = computed(() => {
   if (activeFrequency.value !== "manual") return false;
-  // If no upcoming occurrences exist in the engine
-  const upcoming = getUpcomingPaydays(state.value.paydaySchedule, today(), 1);
-  return upcoming.length === 0;
+  // In manual mode, we require an explicitly confirmed upcoming payday.
+  // Synthetic projected intervals from a past anchor are NOT confirmed deposits.
+  return confirmedManualPaydays.value.length === 0;
+});
+
+// Next payday date
+const nextPaydayDate = computed(() => {
+  if (activeFrequency.value === "manual") {
+    return confirmedManualPaydays.value[0] || "";
+  }
+  const current = getCurrentPayday(state.value);
+  return isValidDateString(current) ? current : "";
+});
+
+// Following payday date
+const followingPaydayDate = computed(() => {
+  if (activeFrequency.value === "manual") {
+    // Only display following payday in manual mode if explicitly configured and upcoming
+    return confirmedManualPaydays.value[1] || "";
+  }
+  const fol = getFollowingPayday(state.value);
+  return isValidDateString(fol) ? fol : "";
 });
 
 // Days countdown label
@@ -46,7 +92,15 @@ const daysLabel = computed(() => {
   const now = today();
   if (nextPaydayDate.value === now) return "Today";
   if (nextPaydayDate.value < now) return "Past due";
-  return days.value === 1 ? "in 1 day" : `in ${days.value} days`;
+  const diffDays = Math.max(
+    1,
+    Math.ceil(
+      (new Date(nextPaydayDate.value + "T12:00:00").getTime() -
+        new Date(now + "T12:00:00").getTime()) /
+        86400000,
+    ),
+  );
+  return diffDays === 1 ? "in 1 day" : `in ${diffDays} days`;
 });
 
 // Bill breakdown and overdue obligations from engine
@@ -85,6 +139,9 @@ const totalReserved = computed(
       <div class="empty-icon">🗓</div>
       <h3>No upcoming payday set</h3>
       <p class="muted">
+        <span v-if="state.paydaySchedule?.anchorDate && state.paydaySchedule.anchorDate < today()">
+          Your previous manual payday was on {{ date(state.paydaySchedule.anchorDate) }}.
+        </span>
         Your manual schedule doesn't have an upcoming payday configured.
         Set your next payday date in Settings so Mika can protect your bills and show your daily spending allowance.
       </p>

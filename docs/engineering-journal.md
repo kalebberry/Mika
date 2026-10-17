@@ -568,6 +568,65 @@ Phase 3A.3 connects the Phase 3A.1 scheduling engine and Phase 3A.2 financial in
 3. **Why should `days` in `useBudget` use `getCurrentPayday(state)` rather than the static `state.payday` string?**
    - *Answer*: For automatic schedules (weekly, biweekly, monthly, semimonthly), paydays advance dynamically based on the current calendar date without requiring the user to open Settings and manually edit the date each cycle. If the daily allowance calculation relied on a static string, passing a payday without updating Settings would cause `days` to calculate negative or 1-day spans against an obsolete past date. Using `getCurrentPayday(state)` ensures the daily allowance always reflects the true upcoming income boundary.
 
+---
+
+## Phase 3A.3 Independent Review Corrections & Hardening
+
+### 1. Findings & Issues Addressed
+
+1. **Settings Draft Synchronization & `isDirty` Normalization**:
+   - *Issue*: In `SettingsView.vue`, `handleSaveSchedule()` did not re-synchronize `draftSchedule.value` with `initDraft()`. When saving a semimonthly schedule entered with inverted days (e.g., `30` and `15`), `updatePaydaySchedule()` persisted the canonical sorted pair (`15` and `30`). Because `draftSchedule` retained the raw inputs, the form continued displaying `30` and `15`, `isDirty` incorrectly remained `true`, and the form appeared unsaved.
+   - *Fix*: `handleSaveSchedule()` now explicitly assigns `draftSchedule.value = initDraft()` upon successful persistence. Additionally, `isDirty` computes normalized day values (`Math.min` / `Math.max`) for semimonthly schedules and performs a deterministic diff of one-time overrides. When the user cancels, `handleCancelSchedule()` restores the exact persisted schedule. External state updates remain strictly guarded by `!isDirty.value`, ensuring unsaved user edits are never overwritten.
+
+2. **Manual Payday Empty State vs. Confirmed Deposits**:
+   - *Issue*: The manual scheduling engine in `getUpcomingPaydays()` projects forward 14-day intervals from `anchorDate` so that financial obligations (bill reservations and Safe to Spend) do not crash when a user forgets to update manual paydays. However, `PaydaySummaryCard.vue` relied directly on `getUpcomingPaydays()`, causing a stale manual payday (e.g. from August) to be presented on the Overview as a "confirmed" upcoming deposit (e.g. October 24 in 7 days).
+   - *Fix*: Distinguished explicitly configured upcoming paydays from generated/stale dates. For manual schedules, confirmed paydays are strictly those configured by the user (`anchorDate`, `manualFollowingPayday`, or explicit overrides) that are $\ge today()$. If all configured dates are in the past, the Overview triggers the empty state (`isManualIncomplete = true`) and displays no upcoming date chip, prompting the user to set their next payday in Settings. In addition, an unconfigured following payday is omitted rather than displaying a synthetic +14 day projection. All legacy manual financial calculations and bill protections remain 100% intact.
+
+3. **Schedule Changes and Incompatible One-Time Overrides**:
+   - *Issue*: When switching between schedules (e.g. from biweekly to monthly), active one-time overrides created under the old schedule could silently inject phantom occurrences into the new schedule via `getUpcomingPaydays()`.
+   - *Fix*:
+     - In `getUpcomingPaydays()`, overrides are only included in candidate nominals if `resolveNominalOccurrenceDate(schedule, o.scheduledDate) !== null`.
+     - In `validatePaydaySchedule()`, candidate schedules with incompatible overrides are rejected with a descriptive validation error (`Override for ${date} is not a valid occurrence for a ${frequency} schedule`).
+     - In `SettingsView.vue`, user-created overrides are never deleted silently. When changing schedule parameters, `incompatibleOverrides` detects any conflicts and displays a clear warning banner listing the affected dates with an explicit "Remove incompatible overrides" confirmation action. Users can either remove the incompatible overrides to proceed with saving, or click Cancel to restore their previous schedule and all overrides intact. Switching to a compatible schedule (e.g. biweekly to weekly on Fridays where the occurrence date coincides) cleanly preserves the override.
+
+---
+
+### 2. Verification & Regression Test Results
+
+- **Automated Tests**: 108 passing tests (`node --test tests/budget.test.ts`), 0 failures, 0 skipped.
+  - Added `Test 3A.3.10 — Settings draft synchronization, semimonthly day normalization, and dirty state management`:
+    - Verifies normalized persistence of semimonthly days (30 & 15 $\to$ 15 & 30).
+    - Verifies draft re-synchronization with `initDraft()`.
+    - Verifies `isDirty` returns `false` after saving reordered days.
+    - Verifies Cancel restores persisted configuration.
+    - Verifies external state updates do not overwrite dirty form.
+  - Added `Test 3A.3.11 — Manual payday empty state vs confirmed deposits and safety projection preservation`:
+    - Verifies stale manual anchor triggers empty state and emits no confirmed deposit.
+    - Verifies promotion of upcoming `manualFollowingPayday` when anchor is past.
+    - Verifies omission of unconfigured following payday in manual mode.
+    - Verifies financial calculations (`totals`, `reserveBillsBreakdown`) remain fully intact and protect bills across lookbacks.
+  - Added `Test 3A.3.12 — Schedule changes with one-time overrides: incompatibility validation, non-silent handling, and filtering`:
+    - Verifies incompatible overrides do not inject phantom paydays on new schedules.
+    - Verifies `validatePaydaySchedule` rejects candidate schedules with incompatible overrides.
+    - Verifies non-silent handling (overrides are not deleted without user action).
+    - Verifies explicit removal flow allows saving.
+    - Verifies compatible schedule switches preserve overrides seamlessly.
+- **Production Build**: `npm run build` (`vue-tsc -b && vite build`) passed with 0 errors.
+
+---
+
+### 3. Review Learning Questions
+
+1. **Why must form drafts re-synchronize with normalized state on save rather than relying solely on user input values?**
+   - *Answer*: When user input undergoes normalization during persistence (such as sorting semimonthly days or trimming strings), retaining the user's pre-normalized draft causes form comparison logic (`isDirty`) to see a persistent mismatch between the draft and stored state. Re-synchronizing the reactive draft to `initDraft()` immediately after save guarantees that the UI displays the canonical saved data, clears the dirty indicator, and aligns the draft perfectly with underlying application state.
+
+2. **How does Mika distinguish an explicitly confirmed manual payday from a projected engine date without requiring schema redesign?**
+   - *Answer*: By inspecting the semantics of the existing schema: in manual mode, the user directly enters `anchorDate` and optionally `manualFollowingPayday`. These two fields (plus explicit overrides) represent the only dates intentionally confirmed by the human user. Any subsequent interval dates generated by the engine (`addDays(second, k * interval)`) exist solely as defensive math for financial obligations, not user-confirmed income dates. Checking whether any user-configured date is $\ge today()$ cleanly identifies whether an upcoming manual payday is confirmed without altering data structures or breaking legacy calculations.
+
+3. **Why should incompatible overrides be rejected by validation and presented via an explicit confirmation flow rather than automatically cleared on frequency switch?**
+   - *Answer*: Silently deleting user data breaks user trust and violates ADHD-friendly predictability. An override often represents a carefully noted real-world exception (e.g. an early holiday direct deposit). If a user temporarily toggles the frequency dropdown to inspect another schedule option, silently destroying their overrides would cause irrecoverable data loss if they cancel or change back. Requiring validation and offering an explicit "Remove incompatible overrides" action ensures intentionality while keeping financial invariants airtight.
+
+
 
 
 

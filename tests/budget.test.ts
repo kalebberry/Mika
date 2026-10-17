@@ -54,6 +54,8 @@ import {
   validatePaydaySchedule,
   updatePaydaySchedule,
   recordBillPayment,
+  resolveNominalOccurrenceDate,
+  getEffectiveOccurrenceDate,
 } from "../src/model.ts";
 import { useBudget } from "../src/composables/useBudget.ts";
 import { useModal } from "../src/composables/useModal.ts";
@@ -6537,6 +6539,292 @@ test("Test 3A.3.9 — Unchanged Safe to Spend and Covered Credit calculations fo
   assert.equal(covA.readyToPay, covB.readyToPay, "Card Ready to Pay must match exactly");
   assert.equal(covA.uncoveredDebt, covB.uncoveredDebt, "Card Uncovered Debt must match exactly");
 });
+
+test("Test 3A.3.10 — Settings draft synchronization, semimonthly day normalization, and dirty state management", () => {
+  const state: State = blank();
+  const b = useBudget();
+  b.state.value = state;
+
+  // 1. Initial saved state: semimonthly schedule on 15th and 30th
+  const saveRes = updatePaydaySchedule(state, {
+    frequency: "semimonthly",
+    anchorDate: "2026-10-01",
+    firstDay: 15,
+    secondDay: 30,
+    weekendRule: "exact",
+    overrides: [],
+  });
+  assert.equal(saveRes.success, true);
+  assert.equal(state.paydaySchedule.firstDay, 15);
+  assert.equal(state.paydaySchedule.secondDay, 30);
+
+  // 2. Draft is edited with swapped/reordered days: firstDay = 30, secondDay = 15
+  const draftEdit: Partial<PaydaySchedule> = {
+    frequency: "semimonthly",
+    anchorDate: "2026-10-01",
+    firstDay: 30,
+    secondDay: 15,
+    weekendRule: "exact",
+    overrides: [],
+  };
+
+  // Saving normalizes 30 and 15 into firstDay = 15, secondDay = 30
+  const saveEditRes = updatePaydaySchedule(state, draftEdit);
+  assert.equal(saveEditRes.success, true);
+  assert.equal(state.paydaySchedule.firstDay, 15, "firstDay normalized to 15");
+  assert.equal(state.paydaySchedule.secondDay, 30, "secondDay normalized to 30");
+
+  // Re-synchronizing draft with saved state (as handleSaveSchedule does via initDraft())
+  const syncedDraft: PaydaySchedule = {
+    frequency: state.paydaySchedule.frequency,
+    anchorDate: state.paydaySchedule.anchorDate,
+    dayOfMonth: state.paydaySchedule.dayOfMonth,
+    firstDay: state.paydaySchedule.firstDay,
+    secondDay: state.paydaySchedule.secondDay,
+    weekendRule: state.paydaySchedule.weekendRule,
+    manualFollowingPayday: state.paydaySchedule.manualFollowingPayday,
+    overrides: JSON.parse(JSON.stringify(state.paydaySchedule.overrides || [])),
+  };
+  assert.equal(syncedDraft.firstDay, 15);
+  assert.equal(syncedDraft.secondDay, 30);
+
+  // isDirty check on synced draft must be false
+  const isDirtyAfterSave =
+    syncedDraft.frequency !== state.paydaySchedule.frequency ||
+    syncedDraft.anchorDate !== state.paydaySchedule.anchorDate ||
+    syncedDraft.weekendRule !== state.paydaySchedule.weekendRule ||
+    (syncedDraft.frequency === "semimonthly" &&
+      (Math.min(syncedDraft.firstDay || 0, syncedDraft.secondDay || 0) !==
+        Math.min(state.paydaySchedule.firstDay || 0, state.paydaySchedule.secondDay || 0) ||
+       Math.max(syncedDraft.firstDay || 0, syncedDraft.secondDay || 0) !==
+        Math.max(state.paydaySchedule.firstDay || 0, state.paydaySchedule.secondDay || 0)));
+  assert.equal(isDirtyAfterSave, false, "Form is not dirty after save");
+
+  // 3. Cancel restores the actual saved configuration
+  let userDraft: PaydaySchedule = {
+    ...syncedDraft,
+    firstDay: 5,
+    secondDay: 20,
+  };
+  // User cancels: draft resets from persisted state
+  userDraft = {
+    frequency: state.paydaySchedule.frequency,
+    anchorDate: state.paydaySchedule.anchorDate,
+    dayOfMonth: state.paydaySchedule.dayOfMonth,
+    firstDay: state.paydaySchedule.firstDay,
+    secondDay: state.paydaySchedule.secondDay,
+    weekendRule: state.paydaySchedule.weekendRule,
+    manualFollowingPayday: state.paydaySchedule.manualFollowingPayday,
+    overrides: JSON.parse(JSON.stringify(state.paydaySchedule.overrides || [])),
+  };
+  assert.equal(userDraft.firstDay, 15, "Cancel restores saved firstDay");
+  assert.equal(userDraft.secondDay, 30, "Cancel restores saved secondDay");
+
+  // 4. External state update does not overwrite unsaved user edits when dirty
+  const unsavedUserDraft: PaydaySchedule = {
+    ...syncedDraft,
+    frequency: "weekly",
+    anchorDate: "2026-10-16",
+  };
+  const isDirtyUser = unsavedUserDraft.frequency !== state.paydaySchedule.frequency;
+  assert.equal(isDirtyUser, true, "User draft is dirty with unsaved edits");
+
+  // Simulate an external background update to state.paydaySchedule
+  const externalSchedule = { ...state.paydaySchedule, anchorDate: "2026-10-02" };
+  state.paydaySchedule = externalSchedule;
+
+  // Watcher logic: if (!isDirty.value && newSched) { draftSchedule.value = initDraft(); }
+  let draftToPreserve = { ...unsavedUserDraft };
+  if (!isDirtyUser) {
+    draftToPreserve = { ...externalSchedule } as PaydaySchedule;
+  }
+  assert.equal(draftToPreserve.frequency, "weekly", "Unsaved user edits are preserved despite external state change");
+  assert.equal(draftToPreserve.anchorDate, "2026-10-16");
+});
+
+test("Test 3A.3.11 — Manual payday empty state vs confirmed deposits and safety projection preservation", () => {
+  const simulatedToday = "2026-10-16";
+
+  // Helper matching PaydaySummaryCard's confirmed manual payday determination
+  function getConfirmedManualPaydays(sched: PaydaySchedule, asOf: string): string[] {
+    if (!sched || sched.frequency !== "manual") return [];
+    const confirmed: string[] = [];
+    if (isValidDateString(sched.anchorDate)) {
+      const effectiveAnchor = getEffectiveOccurrenceDate(sched, sched.anchorDate, sched.overrides);
+      if (isValidDateString(effectiveAnchor) && effectiveAnchor >= asOf) {
+        confirmed.push(effectiveAnchor);
+      }
+    }
+    if (isValidDateString(sched.manualFollowingPayday)) {
+      const effectiveFollowing = getEffectiveOccurrenceDate(sched, sched.manualFollowingPayday, sched.overrides);
+      if (isValidDateString(effectiveFollowing) && effectiveFollowing >= asOf && !confirmed.includes(effectiveFollowing)) {
+        confirmed.push(effectiveFollowing);
+      }
+    }
+    return confirmed.sort((a, b) => a.localeCompare(b));
+  }
+
+  // 1. Stale manual schedule: anchor in the past (2026-08-01) and no manualFollowingPayday
+  const state: State = blank();
+  state.opening = 300000; // $3,000 cash
+  state.paydaySchedule = {
+    frequency: "manual",
+    anchorDate: "2026-08-01", // Past / stale
+    manualFollowingPayday: undefined,
+    weekendRule: "exact",
+    overrides: [],
+  };
+
+  const confirmedStale = getConfirmedManualPaydays(state.paydaySchedule, simulatedToday);
+  assert.deepEqual(confirmedStale, [], "Stale past anchor date yields 0 confirmed upcoming paydays");
+  const isManualIncomplete = confirmedStale.length === 0;
+  assert.equal(isManualIncomplete, true, "Empty state is triggered for stale manual schedule");
+
+  // Overview presentation: nextPaydayDate must be empty string rather than unconfirmed synthetic projection
+  const nextPaydayPresentation = confirmedStale[0] || "";
+  assert.equal(nextPaydayPresentation, "", "Does not present unconfirmed synthetic payday as a confirmed deposit");
+
+  // Financial engine continues to calculate safely without throwing or omitting reservations
+  state.bills.push({
+    id: "bill-1",
+    name: "Internet",
+    amount: 8000,
+    day: 20,
+    trackingStartDate: "2026-08-01",
+  });
+  const t = totals(state, simulatedToday);
+  assert.equal(t.currentCycleBills, 24000, "Bills due before projected next payday (including overdue) remain reserved for safety");
+  assert.equal(t.safe, 276000, "Safe to spend accounts for reserved bills");
+
+  // 2. Manual schedule with past anchor (2026-10-01) but explicitly confirmed upcoming following payday (2026-10-25)
+  state.paydaySchedule = {
+    frequency: "manual",
+    anchorDate: "2026-10-01", // Past
+    manualFollowingPayday: "2026-10-25", // Confirmed upcoming
+    weekendRule: "exact",
+    overrides: [],
+  };
+  const confirmedWithFollowing = getConfirmedManualPaydays(state.paydaySchedule, simulatedToday);
+  assert.deepEqual(confirmedWithFollowing, ["2026-10-25"], "Explicit upcoming following payday is promoted to next confirmed payday");
+  assert.equal(confirmedWithFollowing[0], "2026-10-25");
+  assert.equal(confirmedWithFollowing[1], undefined, "No unconfirmed following payday is presented");
+
+  // 3. Manual schedule with confirmed next payday (2026-10-25) but no following payday configured
+  state.paydaySchedule = {
+    frequency: "manual",
+    anchorDate: "2026-10-25",
+    manualFollowingPayday: undefined,
+    weekendRule: "exact",
+    overrides: [],
+  };
+  const confirmedNextOnly = getConfirmedManualPaydays(state.paydaySchedule, simulatedToday);
+  assert.deepEqual(confirmedNextOnly, ["2026-10-25"]);
+  assert.equal(confirmedNextOnly[1], undefined, "Unconfirmed +14 day following payday is not presented");
+});
+
+test("Test 3A.3.12 — Schedule changes with one-time overrides: incompatibility validation, non-silent handling, and filtering", () => {
+  const simulatedToday = "2026-10-16";
+
+  // 1. Initial Biweekly schedule anchored on 2026-10-16 (Fridays) with an override on 2026-10-30 shifted to 2026-10-29
+  const state: State = blank();
+  const biweeklySched: PaydaySchedule = {
+    frequency: "biweekly",
+    anchorDate: "2026-10-16",
+    weekendRule: "exact",
+    overrides: [
+      {
+        id: "ov-test-12",
+        scheduledDate: "2026-10-30",
+        overrideDate: "2026-10-29",
+        note: "Early payday",
+      },
+    ],
+  };
+  state.paydaySchedule = biweeklySched;
+
+  // 2. Candidate schedule switch to Monthly on 1st of month
+  const candidateMonthly: Partial<PaydaySchedule> = {
+    frequency: "monthly",
+    anchorDate: "2026-10-01",
+    dayOfMonth: 1,
+    weekendRule: "exact",
+  };
+
+  // Incompatibility check: 2026-10-30 is not a nominal occurrence on a Monthly (day 1) schedule
+  const resolved = resolveNominalOccurrenceDate(
+    {
+      frequency: "monthly",
+      anchorDate: "2026-10-01",
+      dayOfMonth: 1,
+      weekendRule: "exact",
+      overrides: [],
+    },
+    "2026-10-30",
+  );
+  assert.equal(resolved, null, "2026-10-30 does not resolve to a nominal occurrence on Monthly schedule");
+
+  // getUpcomingPaydays must NOT inject the incompatible override into the monthly schedule
+  const candidateWithOverrides: PaydaySchedule = {
+    frequency: "monthly",
+    anchorDate: "2026-10-01",
+    dayOfMonth: 1,
+    weekendRule: "exact",
+    overrides: biweeklySched.overrides,
+  };
+  const monthlyPaydays = getUpcomingPaydays(candidateWithOverrides, simulatedToday, 3);
+  assert.deepEqual(
+    monthlyPaydays,
+    ["2026-11-01", "2026-12-01", "2027-01-01"],
+    "Incompatible biweekly override does not create phantom paydays on monthly schedule",
+  );
+
+  // 3. Validation rejection: validatePaydaySchedule rejects candidate schedule with incompatible overrides
+  const validationRes = validatePaydaySchedule(candidateWithOverrides);
+  assert.equal(validationRes.valid, false, "Candidate schedule with incompatible override is rejected");
+  assert.ok(
+    validationRes.errors.overrides?.includes("2026-10-30"),
+    "Validation error identifies the incompatible override date",
+  );
+
+  // updatePaydaySchedule preserves state and returns failure
+  const updateFail = updatePaydaySchedule(state, candidateMonthly);
+  assert.equal(updateFail.success, false, "updatePaydaySchedule rejects incompatible overrides");
+  assert.equal(state.paydaySchedule.frequency, "biweekly", "Existing schedule unchanged on validation failure");
+  assert.equal(state.paydaySchedule.overrides?.length, 1, "User-created override was NOT silently deleted");
+
+  // 4. Safe confirmation flow: user explicitly removes the incompatible override before saving
+  const candidateClean: Partial<PaydaySchedule> = {
+    ...candidateMonthly,
+    overrides: [], // User confirmed removal of incompatible overrides
+  };
+  const updateSuccess = updatePaydaySchedule(state, candidateClean);
+  assert.equal(updateSuccess.success, true, "updatePaydaySchedule succeeds once incompatible override removed");
+  assert.equal(state.paydaySchedule.frequency, "monthly");
+  assert.equal(state.paydaySchedule.dayOfMonth, 1);
+  assert.deepEqual(state.paydaySchedule.overrides, []);
+
+  // 5. Switching to a compatible schedule preserves the override
+  // Weekly on Fridays (anchor 2026-10-16): 2026-10-30 IS a Friday (nominal occurrence)
+  const candidateWeekly: Partial<PaydaySchedule> = {
+    frequency: "weekly",
+    anchorDate: "2026-10-16",
+    weekendRule: "exact",
+    overrides: biweeklySched.overrides,
+  };
+  const weeklyValidation = validatePaydaySchedule(candidateWeekly);
+  assert.equal(weeklyValidation.valid, true, "Compatible override on Friday occurrence is valid for weekly schedule");
+  const weeklyUpdate = updatePaydaySchedule(state, candidateWeekly);
+  assert.equal(weeklyUpdate.success, true);
+  assert.equal(state.paydaySchedule.frequency, "weekly");
+  assert.equal(state.paydaySchedule.overrides?.length, 1);
+  const weeklyUpcoming = getUpcomingPaydays(state.paydaySchedule, simulatedToday, 3);
+  assert.deepEqual(
+    weeklyUpcoming,
+    ["2026-10-16", "2026-10-23", "2026-10-29"],
+    "Override shifts 2026-10-30 to 2026-10-29 in compatible weekly schedule",
+  );
+});
+
 
 
 

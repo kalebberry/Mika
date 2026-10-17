@@ -4,6 +4,7 @@ import {
   today,
   type PaydaySchedule,
   getUpcomingPaydays,
+  resolveNominalOccurrenceDate,
 } from "../../model";
 import { date, frequencyLabel } from "../../utils/format";
 import { companionPortraits } from "../../companion";
@@ -57,19 +58,21 @@ const draftSchedule = ref<PaydaySchedule>(initDraft());
 const scheduleError = ref("");
 const scheduleSaved = ref(false);
 
-const isDirty = computed(() => {
+const isScheduleFormDirty = computed(() => {
   const orig = state.value.paydaySchedule;
   if (!orig) return true;
   const d = draftSchedule.value;
   if (d.frequency !== orig.frequency) return true;
   if (d.anchorDate !== orig.anchorDate) return true;
   if (d.weekendRule !== orig.weekendRule) return true;
-  if (d.frequency === "monthly" && d.dayOfMonth !== orig.dayOfMonth) return true;
-  if (
-    d.frequency === "semimonthly" &&
-    (d.firstDay !== orig.firstDay || d.secondDay !== orig.secondDay)
-  )
-    return true;
+  if (d.frequency === "monthly" && Number(d.dayOfMonth) !== Number(orig.dayOfMonth)) return true;
+  if (d.frequency === "semimonthly") {
+    const draftD1 = Math.min(Number(d.firstDay) || 0, Number(d.secondDay) || 0);
+    const draftD2 = Math.max(Number(d.firstDay) || 0, Number(d.secondDay) || 0);
+    const origD1 = Math.min(Number(orig.firstDay) || 0, Number(orig.secondDay) || 0);
+    const origD2 = Math.max(Number(orig.firstDay) || 0, Number(orig.secondDay) || 0);
+    if (draftD1 !== origD1 || draftD2 !== origD2) return true;
+  }
   if (
     d.frequency === "manual" &&
     (d.manualFollowingPayday || "") !== (orig.manualFollowingPayday || "")
@@ -77,6 +80,22 @@ const isDirty = computed(() => {
     return true;
   return false;
 });
+
+const hasOverridesChanged = computed(() => {
+  const orig = state.value.paydaySchedule;
+  const origOverrides = orig?.overrides || [];
+  const draftOverrides = draftSchedule.value.overrides || [];
+  if (origOverrides.length !== draftOverrides.length) return true;
+  for (const o of origOverrides) {
+    const match = draftOverrides.find((dO) => dO.scheduledDate === o.scheduledDate);
+    if (!match || match.overrideDate !== o.overrideDate || (match.note || "") !== (o.note || "")) {
+      return true;
+    }
+  }
+  return false;
+});
+
+const isDirty = computed(() => isScheduleFormDirty.value || hasOverridesChanged.value);
 
 watch(
   () => state.value.paydaySchedule,
@@ -108,6 +127,44 @@ const upcomingPreview = computed(() => {
   }
 });
 
+const incompatibleOverrides = computed(() => {
+  const d = draftSchedule.value;
+  if (!d.frequency || !d.anchorDate) return [];
+  const overrides = d.overrides || [];
+  if (overrides.length === 0) return [];
+
+  const testSched: PaydaySchedule = {
+    frequency: d.frequency,
+    anchorDate: d.anchorDate,
+    dayOfMonth:
+      d.frequency === "monthly" ? Number(d.dayOfMonth) : undefined,
+    firstDay:
+      d.frequency === "semimonthly"
+        ? Math.min(Number(d.firstDay), Number(d.secondDay))
+        : undefined,
+    secondDay:
+      d.frequency === "semimonthly"
+        ? Math.max(Number(d.firstDay), Number(d.secondDay))
+        : undefined,
+    weekendRule: d.weekendRule || "exact",
+    manualFollowingPayday:
+      d.frequency === "manual" ? d.manualFollowingPayday : undefined,
+    overrides: [],
+  };
+
+  return overrides.filter(
+    (o) => !resolveNominalOccurrenceDate(testSched, o.scheduledDate),
+  );
+});
+
+function removeIncompatibleOverrides() {
+  const badDates = new Set(incompatibleOverrides.value.map((o) => o.scheduledDate));
+  draftSchedule.value.overrides = (draftSchedule.value.overrides || []).filter(
+    (o) => !badDates.has(o.scheduledDate),
+  );
+  scheduleError.value = "";
+}
+
 function onFrequencyChange() {
   scheduleError.value = "";
   const d = draftSchedule.value;
@@ -128,6 +185,7 @@ function handleSaveSchedule() {
   const result = saveSchedule(draftSchedule.value);
   if (result.success) {
     scheduleSaved.value = true;
+    draftSchedule.value = initDraft(); // Re-sync draft with normalized persisted schedule
     setTimeout(() => {
       scheduleSaved.value = false;
     }, 3000);
@@ -148,11 +206,16 @@ const newOverride = ref({ scheduledDate: "", overrideDate: "", note: "" });
 const overrideError = ref("");
 
 const activeOverrides = computed(
-  () => state.value.paydaySchedule?.overrides || [],
+  () => draftSchedule.value.overrides || [],
 );
 
 function handleAddOverride() {
   overrideError.value = "";
+  if (isScheduleFormDirty.value) {
+    overrideError.value =
+      "Please save your schedule settings above before adding a one-time override.";
+    return;
+  }
   if (!newOverride.value.scheduledDate || !newOverride.value.overrideDate) {
     overrideError.value =
       "Please select both a scheduled date and a substitute override date.";
@@ -175,10 +238,16 @@ function handleAddOverride() {
 }
 
 function handleRemoveOverride(idOrDate: string) {
-  removeScheduleOverride(idOrDate);
-  draftSchedule.value.overrides = JSON.parse(
-    JSON.stringify(state.value.paydaySchedule?.overrides || []),
-  );
+  if (isScheduleFormDirty.value) {
+    draftSchedule.value.overrides = (draftSchedule.value.overrides || []).filter(
+      (o) => o.id !== idOrDate && o.scheduledDate !== idOrDate,
+    );
+  } else {
+    removeScheduleOverride(idOrDate);
+    draftSchedule.value.overrides = JSON.parse(
+      JSON.stringify(state.value.paydaySchedule?.overrides || []),
+    );
+  }
 }
 </script>
 
@@ -412,6 +481,43 @@ function handleRemoveOverride(idOrDate: string) {
             </div>
           </div>
 
+          <!-- Incompatible Overrides Warning Banner -->
+          <div
+            v-if="incompatibleOverrides.length > 0"
+            class="formula-note warning incompatible-overrides-banner"
+            role="alert"
+          >
+            <strong>⚠️ Incompatible Overrides Detected</strong>
+            <p>
+              Switching to this {{ frequencyLabel(draftSchedule.frequency) }} schedule makes
+              {{ incompatibleOverrides.length }} existing one-time override{{
+                incompatibleOverrides.length > 1 ? "s" : ""
+              }}
+              incompatible:
+            </p>
+            <ul class="incompatible-list">
+              <li
+                v-for="ov in incompatibleOverrides"
+                :key="ov.scheduledDate"
+              >
+                {{ date(ov.scheduledDate) }} → {{ date(ov.overrideDate) }}
+                <span v-if="ov.note">({{ ov.note }})</span>
+              </li>
+            </ul>
+            <p class="muted">
+              These overrides will not affect the new schedule. Remove them to proceed with saving, or click Cancel to restore your previous schedule.
+            </p>
+            <div class="incompatible-actions">
+              <button
+                type="button"
+                class="secondary small remove-incompatible-btn"
+                @click="removeIncompatibleOverrides"
+              >
+                Remove incompatible {{ incompatibleOverrides.length > 1 ? "overrides" : "override" }}
+              </button>
+            </div>
+          </div>
+
           <!-- Error Alert Banner -->
           <div
             v-if="scheduleError"
@@ -445,7 +551,9 @@ function handleRemoveOverride(idOrDate: string) {
             <button
               type="button"
               class="text-link"
+              :disabled="isScheduleFormDirty"
               @click="showAddOverride = !showAddOverride; overrideError = '';"
+              :title="isScheduleFormDirty ? 'Save your schedule settings first' : ''"
             >
               {{ showAddOverride ? "Hide" : "+ Add override" }}
             </button>
@@ -453,6 +561,9 @@ function handleRemoveOverride(idOrDate: string) {
           <p class="muted settings-desc">
             Temporarily shift a specific payday (e.g., for early holiday
             deposits) without altering your recurring schedule.
+          </p>
+          <p v-if="isScheduleFormDirty" class="formula-note warning" style="margin-bottom: 0.75rem;">
+            Save your schedule changes above before adding or editing one-time overrides.
           </p>
 
           <!-- List of existing overrides -->

@@ -446,10 +446,12 @@ export function getUpcomingPaydays(
   const effectiveAsOf = isValidDateString(asOf) ? asOf : today();
   const nominals = new Set<string>();
 
-  // Include any scheduledDate explicitly overridden
+  // Include any scheduledDate explicitly overridden that belongs to this schedule
   for (const o of schedule.overrides || []) {
     if (o && isValidDateString(o.scheduledDate)) {
-      nominals.add(o.scheduledDate);
+      if (resolveNominalOccurrenceDate(schedule, o.scheduledDate) !== null) {
+        nominals.add(o.scheduledDate);
+      }
     }
   }
 
@@ -824,6 +826,47 @@ export function validatePaydaySchedule(
         break;
       }
       dates.add(o.scheduledDate);
+
+      // Verify that override scheduledDate is compatible with the schedule
+      if (
+        schedule.frequency &&
+        schedule.anchorDate &&
+        isValidDateString(schedule.anchorDate) &&
+        !errors.frequency &&
+        !errors.anchorDate &&
+        !errors.dayOfMonth &&
+        !errors.firstDay &&
+        !errors.secondDay &&
+        !errors.manualFollowingPayday
+      ) {
+        const fullSched: PaydaySchedule = {
+          frequency: schedule.frequency,
+          anchorDate: schedule.anchorDate,
+          dayOfMonth:
+            schedule.frequency === "monthly"
+              ? Number(schedule.dayOfMonth)
+              : undefined,
+          firstDay:
+            schedule.frequency === "semimonthly"
+              ? Math.min(Number(schedule.firstDay), Number(schedule.secondDay))
+              : undefined,
+          secondDay:
+            schedule.frequency === "semimonthly"
+              ? Math.max(Number(schedule.firstDay), Number(schedule.secondDay))
+              : undefined,
+          weekendRule: schedule.weekendRule || "exact",
+          manualFollowingPayday:
+            schedule.frequency === "manual"
+              ? schedule.manualFollowingPayday
+              : undefined,
+          overrides: [],
+        };
+        const resolved = resolveNominalOccurrenceDate(fullSched, o.scheduledDate);
+        if (!resolved) {
+          errors.overrides = `Override for ${o.scheduledDate} is not a valid occurrence for a ${schedule.frequency} schedule.`;
+          break;
+        }
+      }
     }
   }
 
@@ -836,7 +879,16 @@ export function updatePaydaySchedule(
   state: State,
   draft: Partial<PaydaySchedule>,
 ): { success: boolean; errors?: Record<string, string>; message?: string } {
-  const validation = validatePaydaySchedule(draft);
+  const candidateOverrides = Array.isArray(draft.overrides)
+    ? draft.overrides
+    : state.paydaySchedule?.overrides || [];
+
+  const candidateDraft: Partial<PaydaySchedule> = {
+    ...draft,
+    overrides: candidateOverrides,
+  };
+
+  const validation = validatePaydaySchedule(candidateDraft);
   if (!validation.valid) {
     return {
       success: false,
@@ -875,7 +927,7 @@ export function updatePaydaySchedule(
 
   const overrides = Array.isArray(draft.overrides)
     ? [...draft.overrides]
-    : [...(state.paydaySchedule?.overrides || [])];
+    : [...candidateOverrides];
 
   state.paydaySchedule = {
     frequency: freq,
