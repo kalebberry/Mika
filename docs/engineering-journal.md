@@ -1454,4 +1454,70 @@ All 202 automated tests pass cleanly (`npm test`):
 Production build check (`npm run build`):
 - `vue-tsc -b && vite build` passed cleanly with 0 errors in 2.56s.
 
+---
+
+## Phase 4A: Final Compact Dashboard Pass (ADHD-Friendly Progressive Disclosure)
+
+**Date**: October 17, 2026  
+**Branch**: `phase/4a-daily-home-dashboard`
+
+### 1. Architectural Overview & Design Rationale
+
+The objective of this pass is to deliver a genuinely compact, ADHD-friendly dashboard through **progressive disclosure** while preserving Mika Budget's financial engine, manual-first philosophy, and existing visual design language.
+
+Users with ADHD require immediate clarity on what is safe to spend and what requires action, without being overwhelmed by massive stacked cards, repeated numbers, or walls of secondary metrics.
+
+#### 1. Compact-First Hierarchy
+By default, the Overview page presents strictly:
+1. **Safe to Spend**: Single prominent hero card with spendable cash, daily cycle average, and an accessible "How is this calculated?" disclosure control.
+2. **One Primary Attention Item**: The single highest-urgency actionable step with a primary action button; additional items (up to 3) appear as low-profile, single-line rows with secondary buttons.
+3. **Compact Next Payday Row**: Single-line horizontal row with calendar icon, date, countdown, schedule status badge, and Settings navigation.
+4. **Compact Quick Actions**: Streamlined 4-button action grid with direct labels ("Add expense", "Add income", "Record bill payment", "View bills") free of cognitive-cluttering sub-captions, reducing card height by ~50%.
+5. **Collapsed Supporting Financial Details**: `StatGrid`, monthly totals, and secondary cards are tucked neatly behind an accessible disclosure button, collapsed by default.
+
+#### 2. Collapsible Safe to Spend Breakdown
+- In [`SafeToSpendCard.vue`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/components/overview/SafeToSpendCard.vue):
+  - Retained the primary Safe to Spend number, shortfall warnings, and daily average.
+  - Relocated balance, pots, budgets, bill reserves, credit reserves, and shortfall details into an expandable region controlled by an accessible `<button id="safe-breakdown-toggle" :aria-expanded="showBreakdown" aria-controls="safe-breakdown-details">`.
+  - Labeled "How is this calculated? ▾" / "▲".
+  - Preserved signed shortfall invariants, all breakdown figures, and `totals()` without altering financial logic.
+
+#### 3. Collapsed Supporting Financial Details
+- In [`OverviewView.vue`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/components/views/OverviewView.vue):
+  - Wrapped secondary cards (`StatGrid`, `PaydaySummaryCard`, `MiniPotsCard`, `MiniTransactionsCard`, `MiniBudgetsCard`, `MiniBillsCard`, `CompanionCard`) inside `<div v-show="showFinancialDetails" id="supporting-details-content">`.
+  - Collapsed by default (`showFinancialDetails = ref(false)`) without creating separate modes or persistent storage state.
+  - Controlled by an accessible disclosure button with visible focus outline, keyboard accessibility (`Enter`/`Space`), and accurate `:aria-expanded`.
+
+#### 4. Simplified Attention Presentation
+- One primary suggested action with primary button; no duplicate card rendered in the list below.
+- Additional attention items render as compact, low-profile rows with secondary buttons (`.secondary.small`).
+- Total items count badge (`totalCount`) accurately reports all outstanding obligations.
+- `hasMore` overflow navigation directs users directly to the specific target page where hidden obligations reside.
+
+#### 5. Accurate Credit Minimum Coverage Wording
+- **Correction**: Resolved the issue where credit card minimums claimed `"Protected in Safe to Spend"` merely because `totals().shortfall === 0`.
+- Extracted pure presentation helper [`getCreditMinimumCoverageNote()`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts):
+  - If a global budget shortfall exists (`t.shortfall > 0`), reports `" · Reserve shortfall in budget"`.
+  - If the card has allocated payment reserves (`d.readyToPay > 0`), reports `" · $XX.XX in card reserve"`.
+  - If `d.readyToPay === 0` and `t.shortfall === 0`, uses neutral wording describing the obligation date and timing without claiming full protection.
+  - Preserves recorded vs. estimated labeling (`(Est.)` and `"Estimated "`).
+- Zero changes to the underlying financial engine or Covered Credit rules.
+
+#### 6. Companion Behavior
+- Maintained `showCompanion: false` default. No artwork, mascot, or AI guidance introduced.
+
+---
+
+### 2. Validation & Test Suite
+
+All 205 tests passing (`npm test`):
+- `Test 4A.11`: Updated to verify per-card coverage wording, ensuring neutral descriptions when card reserves are $0 and exact reserve reporting when card reserves exist.
+- `Test 4A.19`: Verifies Safe to Spend breakdown disclosure contracts, defaults to collapsed, dynamic `aria-expanded`, and `aria-controls`.
+- `Test 4A.20`: Verifies Supporting Financial Details disclosure contracts, defaults to collapsed, dynamic `aria-expanded`, and `aria-controls`.
+- `Test 4A.21`: Verifies compact payday row layout without redundant paragraphs and clean quick actions without wordy subcaptions.
+
+Production build check (`npm run build`):
+- `vue-tsc -b && vite build` completed with 0 errors.
+
+
 

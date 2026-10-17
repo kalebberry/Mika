@@ -3459,6 +3459,24 @@ export interface DailyPaydayPresentation {
 }
 
 /**
+ * Pure presentation helper for credit minimum coverage notes.
+ * Distinguishes per-card reserves and budget shortfalls without inferring full protection from shortfall === 0.
+ */
+export function getCreditMinimumCoverageNote(
+  d: Pick<CreditCardMinimumProtection, "readyToPay">,
+  shortfall: number,
+): string {
+  if (shortfall > 0) {
+    return " · Reserve shortfall in budget";
+  }
+  if (d.readyToPay > 0) {
+    const formattedReady = `$${(d.readyToPay / 100).toFixed(2)}`;
+    return ` · ${formattedReady} in card reserve`;
+  }
+  return "";
+}
+
+/**
  * Derives daily attention items from existing state, prioritizing by urgency and financial impact.
  * Limits returned other items to a maximum of 3, providing a path to more if additional items exist.
  * Deduplicates related concerns (e.g. scheduled transactions linked to an overdue bill).
@@ -3496,17 +3514,14 @@ export function getDailyAttentionItems(
       const title = isEst
         ? `${d.account.name} Minimum Overdue (Est.)`
         : `${d.account.name} Minimum Overdue`;
-      const protectionNote =
-        t.shortfall > 0
-          ? "Reserve shortfall in budget"
-          : "Protected in Safe to Spend";
+      const coverageNote = getCreditMinimumCoverageNote(d, t.shortfall);
 
       candidates.push({
         id: `attention-overdue-min-${d.account.id}`,
         category: "overdue_minimum",
         severity: "critical",
         title,
-        description: `${isEst ? "Estimated " : ""}${formattedAmt} unpaid minimum was due on ${d.dueDate} · ${protectionNote}.`,
+        description: `${isEst ? "Estimated " : ""}${formattedAmt} unpaid minimum was due on ${d.dueDate}${coverageNote}.`,
         amount: d.remainingMinimumRequirement,
         dueDate: d.dueDate,
         actionLabel: "Review card",
@@ -3597,17 +3612,14 @@ export function getDailyAttentionItems(
       const title = isEst
         ? `${d.account.name} Minimum Due Soon (Est.)`
         : `${d.account.name} Minimum Due Soon`;
-      const protectionNote =
-        t.shortfall > 0
-          ? "Reserve shortfall in budget"
-          : "Protected in Safe to Spend";
+      const coverageNote = getCreditMinimumCoverageNote(d, t.shortfall);
 
       candidates.push({
         id: `attention-uncovered-min-${d.account.id}`,
         category: "uncovered_minimum",
         severity: "warning",
         title,
-        description: `${isEst ? "Estimated " : ""}${formattedAmt} minimum due ${timing} (${d.dueDate}) · ${protectionNote}.`,
+        description: `${isEst ? "Estimated " : ""}${formattedAmt} minimum due ${timing} (${d.dueDate})${coverageNote}.`,
         amount: d.remainingMinimumRequirement,
         dueDate: d.dueDate!,
         actionLabel: "Review card",

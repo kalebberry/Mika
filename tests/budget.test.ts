@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import {
   type State,
   type Bill,
@@ -84,6 +86,7 @@ import {
   getDailySuggestedAction,
   getDailyPaydayPresentation,
   isCreditCardMinimumDueSoon,
+  getCreditMinimumCoverageNote,
   type DailyAttentionItem,
   type DailyAttentionSummary,
   type DailySuggestedAction,
@@ -11379,6 +11382,23 @@ test("Test 4A.10 — Phase 3 bill and credit safeguards remain intact", () => {
 });
 
 test("Test 4A.11 — Credit minimum coverage wording distinguishes protected reserves from shortfalls", () => {
+  // 1. Pure presentation helper unit tests
+  assert.equal(
+    getCreditMinimumCoverageNote({ readyToPay: 0 }, 0),
+    "",
+    "When shortfall is 0 and card reserve is 0, yields neutral note without claiming full protection",
+  );
+  assert.equal(
+    getCreditMinimumCoverageNote({ readyToPay: 1500 }, 0),
+    " · $15.00 in card reserve",
+    "When card reserve is positive, reports exact card reserve coverage",
+  );
+  assert.equal(
+    getCreditMinimumCoverageNote({ readyToPay: 1500 }, 2500),
+    " · Reserve shortfall in budget",
+    "When global budget shortfall exists, reports reserve shortfall",
+  );
+
   const state: State = blank();
   const simulatedToday = "2026-10-17";
   state.payday = "2026-10-24";
@@ -11405,15 +11425,38 @@ test("Test 4A.11 — Credit minimum coverage wording distinguishes protected res
     },
   ];
 
-  // Cash covers everything, shortfall === 0
+  // Cash covers everything, shortfall === 0, but card payment reserve (readyToPay) is 0
   const summaryProtected = getDailyAttentionItems(state, simulatedToday);
   const cardItem = summaryProtected.primaryItem;
   assert.ok(cardItem);
   assert.equal(cardItem!.amount, 3500, "Unpaid minimum obligation is $35.00");
-  assert.ok(cardItem!.description.includes("Protected in Safe to Spend"), "Clearly indicates money is protected in Safe to Spend");
-  assert.ok(!cardItem!.description.includes("needs payment coverage"), "Never claims reserved money is unprotected");
+  assert.ok(
+    !cardItem!.description.includes("Protected in Safe to Spend"),
+    "Does not infer full protection merely because totals().shortfall === 0",
+  );
+  assert.ok(
+    cardItem!.description.includes("minimum due in 2 days (2026-10-19)"),
+    "Uses neutral wording describing the obligation date and timing",
+  );
+
+  // Now assign cash to Chase Card payment reserve to give it a positive card reserve
+  state.accounts[1] = {
+    ...state.accounts[1]!,
+    assignedPaymentReserve: 1000, // $10 reserve allocated
+  };
+  const summaryWithReserve = getDailyAttentionItems(state, simulatedToday);
+  const cardWithReserve = summaryWithReserve.primaryItem;
+  assert.ok(cardWithReserve);
+  assert.ok(
+    cardWithReserve!.description.includes("$10.00 in card reserve"),
+    "Accurately reports per-card payment reserve coverage",
+  );
 
   // Create an intentional shortfall: cash $20, card min $35
+  state.accounts[1] = {
+    ...state.accounts[1]!,
+    assignedPaymentReserve: 0,
+  };
   state.accounts[0]!.balance = 2000;
   state.accounts[0]!.opening = 2000;
   const t = totals(state, simulatedToday);
@@ -11424,7 +11467,10 @@ test("Test 4A.11 — Credit minimum coverage wording distinguishes protected res
   assert.equal(summaryShortfall.primaryItem!.category, "shortfall");
   const cardUnderShortfall = summaryShortfall.items[0];
   assert.ok(cardUnderShortfall);
-  assert.ok(cardUnderShortfall!.description.includes("Reserve shortfall in budget"), "Accurately notes budget reserve shortfall when deficit exists");
+  assert.ok(
+    cardUnderShortfall!.description.includes("Reserve shortfall in budget"),
+    "Accurately notes budget reserve shortfall when deficit exists",
+  );
 });
 
 test("Test 4A.12 — Recorded versus estimated credit card minimums are transparently labeled", () => {
@@ -11693,5 +11739,135 @@ test("Test 4A.18 — Safe to Spend average available per day description", () =>
   assert.equal(days, 7, "7 days in cycle");
   const avgPerDay = Math.floor(t.safe / days);
   assert.equal(avgPerDay, 10000, "Average available is $100.00 / day without prescribing spending target");
+});
+
+test("Test 4A.19 — Safe to Spend breakdown collapsible disclosure contracts and defaults", () => {
+  const safeCardPath = path.resolve("src/components/overview/SafeToSpendCard.vue");
+  const content = fs.readFileSync(safeCardPath, "utf-8");
+
+  // Default collapsed state
+  assert.ok(
+    content.includes("const showBreakdown = ref(false)"),
+    "Detailed breakdown is collapsed by default",
+  );
+
+  // Accessible disclosure toggle button
+  assert.ok(
+    content.includes('id="safe-breakdown-toggle"'),
+    "Toggle button has unique descriptive ID",
+  );
+  assert.ok(
+    content.includes(':aria-expanded="showBreakdown"'),
+    "Toggle button binds dynamic aria-expanded state",
+  );
+  assert.ok(
+    content.includes('aria-controls="safe-breakdown-details"'),
+    "Toggle button controls the details section",
+  );
+  assert.ok(
+    content.includes("How is this calculated?"),
+    "Clearly labeled 'How is this calculated?' control",
+  );
+
+  // Accessible details region
+  assert.ok(
+    content.includes('id="safe-breakdown-details"'),
+    "Breakdown details container has matching ID",
+  );
+  assert.ok(
+    content.includes('v-show="showBreakdown"'),
+    "Breakdown visibility toggles progressively",
+  );
+  assert.ok(
+    content.includes('role="region"'),
+    "Breakdown has region role for assistive technology",
+  );
+});
+
+test("Test 4A.20 — Supporting Financial Details collapsible disclosure contracts and defaults", () => {
+  const overviewPath = path.resolve("src/components/views/OverviewView.vue");
+  const content = fs.readFileSync(overviewPath, "utf-8");
+
+  // Default collapsed state
+  assert.ok(
+    content.includes("const showFinancialDetails = ref(false)"),
+    "Supporting financial details are collapsed by default",
+  );
+
+  // Accessible disclosure toggle button
+  assert.ok(
+    content.includes('id="supporting-details-toggle"'),
+    "Disclosure button has unique descriptive ID",
+  );
+  assert.ok(
+    content.includes(':aria-expanded="showFinancialDetails"'),
+    "Disclosure button binds accurate aria-expanded state",
+  );
+  assert.ok(
+    content.includes('aria-controls="supporting-details-content"'),
+    "Disclosure button controls supporting details container",
+  );
+  assert.ok(
+    content.includes("Supporting Financial Details"),
+    "Header clearly identifies Supporting Financial Details",
+  );
+
+  // Accessible details region
+  assert.ok(
+    content.includes('id="supporting-details-content"'),
+    "Supporting details container has matching ID",
+  );
+  assert.ok(
+    content.includes('v-show="showFinancialDetails"'),
+    "Supporting details visibility toggles progressively without resetting user input",
+  );
+});
+
+test("Test 4A.21 — Concise payday and quick actions presentation models", () => {
+  const paydayPath = path.resolve("src/components/overview/DailyPaydayCard.vue");
+  const paydayContent = fs.readFileSync(paydayPath, "utf-8");
+
+  // Payday row is concise without redundant paragraph
+  assert.ok(
+    !paydayContent.includes("payday-desc"),
+    "Redundant explanatory description paragraph is eliminated",
+  );
+  assert.ok(
+    paydayContent.includes("Next Payday:"),
+    "Concise label identifies next payday date",
+  );
+  assert.ok(
+    paydayContent.includes("payday.daysLabel"),
+    "Includes cycle countdown in concise row",
+  );
+  assert.ok(
+    paydayContent.includes("Settings ↗"),
+    "Includes concise navigation to Settings",
+  );
+
+  const quickActionsPath = path.resolve("src/components/overview/QuickActionsCard.vue");
+  const quickActionsContent = fs.readFileSync(quickActionsPath, "utf-8");
+
+  // Quick actions have direct action labels without wordy subcaptions
+  assert.ok(
+    !quickActionsContent.includes("<small>"),
+    "Subcaptions removed to cut excessive button height and ADHD cognitive clutter",
+  );
+  assert.ok(
+    quickActionsContent.includes("Add expense"),
+    "Contains clean Add expense action",
+  );
+  assert.ok(
+    quickActionsContent.includes("Add income"),
+    "Contains clean Add income action",
+  );
+  assert.ok(
+    quickActionsContent.includes("Record bill payment"),
+    "Contains clean Record bill payment action",
+  );
+  assert.ok(
+    quickActionsContent.includes("View bills"),
+    "Contains clean View bills action",
+  );
 });
 

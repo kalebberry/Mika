@@ -15,55 +15,48 @@ const freqName = computed(() => frequencyLabel(payday.value.frequency));
 <template>
   <section class="card daily-payday-card" aria-labelledby="payday-status-title">
     <div class="payday-content">
-      <div class="payday-info">
-        <div class="payday-badge-row">
-          <span class="payday-icon" aria-hidden="true">📅</span>
-          <h2 id="payday-status-title" class="payday-title">Next Payday</h2>
-          <span
-            v-if="payday.statusLabel === 'Manually scheduled'"
-            class="badge badge-teal"
-            title="Manually scheduled deposit date"
-          >
-            Manually scheduled
-          </span>
-          <span
-            v-else-if="payday.statusLabel === 'Adjusted schedule'"
-            class="badge badge-teal"
-            title="One-time payday adjustment for this cycle"
-          >
-            Adjusted schedule
-          </span>
-          <span
-            v-else-if="payday.statusLabel === 'Projected'"
-            class="badge badge-neutral"
-            title="Projected based on recurring schedule"
-          >
-            Projected
-          </span>
-          <span
-            v-else-if="payday.statusLabel === 'Payday passed'"
-            class="badge badge-amber"
-            title="Scheduled payday has passed"
-          >
-            Payday passed
-          </span>
-          <span
-            v-else
-            class="badge badge-amber"
-            title="Payday schedule is not configured"
-          >
-            Not configured
-          </span>
-        </div>
-        <div class="payday-date-row">
+      <div class="payday-left">
+        <span class="payday-icon" aria-hidden="true">📅</span>
+        <div class="payday-date-group">
+          <span id="payday-status-title" class="payday-label">Next Payday:</span>
           <strong class="payday-date">{{ formattedDate }}</strong>
-          <span class="payday-countdown">
-            ({{ payday.daysLabel }})
-          </span>
+          <span class="payday-countdown">({{ payday.daysLabel }})</span>
         </div>
-        <p class="payday-desc">
-          {{ payday.statusDescription }}
-        </p>
+        <span
+          v-if="payday.statusLabel === 'Manually scheduled'"
+          class="badge badge-teal"
+          title="Manually scheduled deposit date"
+        >
+          Manually scheduled
+        </span>
+        <span
+          v-else-if="payday.statusLabel === 'Adjusted schedule'"
+          class="badge badge-teal"
+          title="One-time payday adjustment for this cycle"
+        >
+          Adjusted schedule
+        </span>
+        <span
+          v-else-if="payday.statusLabel === 'Projected'"
+          class="badge badge-neutral"
+          title="Projected based on recurring schedule"
+        >
+          Projected
+        </span>
+        <span
+          v-else-if="payday.statusLabel === 'Payday passed'"
+          class="badge badge-amber"
+          title="Scheduled payday has passed"
+        >
+          Payday passed
+        </span>
+        <span
+          v-else
+          class="badge badge-amber"
+          title="Payday schedule is not configured"
+        >
+          Not configured
+        </span>
       </div>
 
       <div class="payday-actions">
@@ -72,7 +65,7 @@ const freqName = computed(() => frequencyLabel(payday.value.frequency));
           class="secondary small payday-btn"
           @click="page = 'Settings'"
         >
-          Manage schedule ↗
+          Settings ↗
         </button>
       </div>
     </div>

@@ -1,13 +1,15 @@
 <script setup lang="ts">
+import { ref } from "vue";
 import { today } from "../../model";
 import { money } from "../../utils/format";
 import { useBudget } from "../../composables/useBudget";
 
 const { state, sum, days, currentPayday } = useBudget();
+const showBreakdown = ref(false);
 </script>
 
 <template>
-  <section class="safe-card">
+  <section class="safe-card" :class="{ expanded: showBreakdown }">
     <div class="safe-main">
       <div class="safe-label">
         <span class="spark">✦</span> Safe to spend
@@ -27,8 +29,29 @@ const { state, sum, days, currentPayday } = useBudget();
         <strong>{{ money(Math.floor(sum.safe / (days > 0 ? days : 1))) }} / day</strong>
         over the {{ days }}-day cycle.
       </p>
+
+      <div class="safe-breakdown-control">
+        <button
+          type="button"
+          id="safe-breakdown-toggle"
+          class="safe-breakdown-toggle"
+          :aria-expanded="showBreakdown"
+          aria-controls="safe-breakdown-details"
+          @click="showBreakdown = !showBreakdown"
+        >
+          <span>How is this calculated?</span>
+          <span class="disclosure-arrow" aria-hidden="true">{{ showBreakdown ? "▲" : "▼" }}</span>
+        </button>
+      </div>
     </div>
-    <div class="safe-breakdown">
+
+    <div
+      v-show="showBreakdown"
+      id="safe-breakdown-details"
+      class="safe-breakdown"
+      role="region"
+      aria-label="Safe to spend calculation details"
+    >
       <div>
         <span>Current balance</span>
         <strong>{{ money(sum.balance) }}</strong>

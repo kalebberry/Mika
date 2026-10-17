@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref } from "vue";
 import SafeToSpendCard from "../overview/SafeToSpendCard.vue";
 import DailyAttentionCard from "../overview/DailyAttentionCard.vue";
 import DailyPaydayCard from "../overview/DailyPaydayCard.vue";
@@ -10,6 +11,8 @@ import MiniPotsCard from "../overview/MiniPotsCard.vue";
 import MiniTransactionsCard from "../overview/MiniTransactionsCard.vue";
 import PaydaySummaryCard from "../overview/PaydaySummaryCard.vue";
 import CompanionCard from "../overview/CompanionCard.vue";
+
+const showFinancialDetails = ref(false);
 </script>
 
 <template>
@@ -26,36 +29,56 @@ import CompanionCard from "../overview/CompanionCard.vue";
     <!-- 4. Quick actions: Common daily tasks -->
     <QuickActionsCard />
 
-    <!-- 5. Supporting financial details: Secondary, accessible without overwhelming the main view -->
+    <!-- 5. Supporting financial details: Secondary, collapsed by default for compact ADHD-friendly view -->
     <section
       class="supporting-financial-details"
       aria-labelledby="supporting-details-title"
     >
       <div class="supporting-details-header">
-        <h2 id="supporting-details-title" class="supporting-details-heading">
-          Supporting Financial Details
-        </h2>
-        <span class="supporting-details-caption">
-          Accounts, monthly totals, and category breakdown
-        </span>
+        <button
+          type="button"
+          id="supporting-details-toggle"
+          class="supporting-details-toggle-btn"
+          :aria-expanded="showFinancialDetails"
+          aria-controls="supporting-details-content"
+          @click="showFinancialDetails = !showFinancialDetails"
+        >
+          <div class="supporting-toggle-text">
+            <h2 id="supporting-details-title" class="supporting-details-heading">
+              Supporting Financial Details
+            </h2>
+            <span class="supporting-details-caption">
+              Accounts, monthly totals, and category breakdown
+            </span>
+          </div>
+          <span class="supporting-toggle-badge" aria-hidden="true">
+            {{ showFinancialDetails ? "Hide details ▲" : "Show details ▼" }}
+          </span>
+        </button>
       </div>
 
-      <StatGrid />
+      <div
+        v-show="showFinancialDetails"
+        id="supporting-details-content"
+        class="supporting-details-body"
+      >
+        <StatGrid />
 
-      <div class="overview-grid">
-        <div class="column">
-          <PaydaySummaryCard />
-          <MiniPotsCard />
-          <MiniTransactionsCard />
+        <div class="overview-grid">
+          <div class="column">
+            <PaydaySummaryCard />
+            <MiniPotsCard />
+            <MiniTransactionsCard />
+          </div>
+          <div class="column">
+            <MiniBudgetsCard />
+            <MiniBillsCard />
+          </div>
         </div>
-        <div class="column">
-          <MiniBudgetsCard />
-          <MiniBillsCard />
-        </div>
+
+        <!-- Companion mascot card (if enabled in user settings) -->
+        <CompanionCard />
       </div>
-
-      <!-- Companion mascot card (if enabled in user settings) -->
-      <CompanionCard />
     </section>
   </div>
 </template>

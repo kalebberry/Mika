@@ -52,7 +52,6 @@ function handleViewBills() {
         <span class="quick-actions-icon" aria-hidden="true">⚡</span>
         Quick Actions
       </h2>
-      <span class="quick-actions-caption">Common daily tasks</span>
     </div>
 
     <div class="quick-actions-grid" role="group" aria-label="Quick financial actions">
@@ -65,7 +64,6 @@ function handleViewBills() {
         <span class="btn-icon" aria-hidden="true">−</span>
         <span class="btn-text">
           <strong>Add expense</strong>
-          <small>Record daily spending</small>
         </span>
       </button>
 
@@ -78,7 +76,6 @@ function handleViewBills() {
         <span class="btn-icon plus" aria-hidden="true">＋</span>
         <span class="btn-text">
           <strong>Add income</strong>
-          <small>Record money received</small>
         </span>
       </button>
 
@@ -91,10 +88,6 @@ function handleViewBills() {
         <span class="btn-icon check" aria-hidden="true">✓</span>
         <span class="btn-text">
           <strong>Record bill payment</strong>
-          <small v-if="urgentBill">
-            Pay {{ urgentBill.title.replace(" Overdue", "").replace(" Due Soon", "") }}
-          </small>
-          <small v-else>Pay an upcoming bill</small>
         </span>
       </button>
 
@@ -107,7 +100,6 @@ function handleViewBills() {
         <span class="btn-icon doc" aria-hidden="true">▤</span>
         <span class="btn-text">
           <strong>View bills</strong>
-          <small>Manage recurring list</small>
         </span>
       </button>
     </div>

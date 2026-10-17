@@ -267,7 +267,7 @@ const dailyAttentionSummary = computed(() =>
   getDailyAttentionItems(state.value, today()),
 );
 const dailySuggestedAction = computed(() =>
-  getDailySuggestedAction(state.value, dailyAttentionSummary.value.items, today()),
+  getDailySuggestedAction(state.value, dailyAttentionSummary.value.allCandidates, today()),
 );
 const dailyPayday = computed(() =>
   getDailyPaydayPresentation(state.value, today()),
