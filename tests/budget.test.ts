@@ -63,6 +63,8 @@ import {
   getCreditCardMinimumProtection,
   getCreditCardMinimumBreakdown,
   getCreditCardDueDate,
+  getPastCreditCardDueDate,
+  updateCreditCardMinimumSettings,
   confirmCreditCardMinimum,
   unconfirmCreditCardMinimum,
   setCreditCardMinimumObligation,
@@ -9530,10 +9532,10 @@ test("Test 3C.32 — Historical minimum-payment stability: editing card's minimu
     creditLimit: 200000,
     minPayment: 10000, // $100 min
     dueDay: 15, // due 15th
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
     includeInSafeToSpend: false,
   };
-  // Establish explicit obligation for October 15 ($100.00)
-  card = setCreditCardMinimumObligation(card, "2026-10-15", 10000);
   state.accounts = [checking, card];
 
   // User paid $30.00 on Oct 12 towards October minimum
@@ -9550,7 +9552,13 @@ test("Test 3C.32 — Historical minimum-payment stability: editing card's minimu
   });
 
   // In November (2026-11-10), user changes configured minimum to $25 (2500 cents)
-  card.minPayment = 2500;
+  // Tested through model update function without manually pre-populating snapshots
+  const updatedCard = updateCreditCardMinimumSettings(card, 2500, "2026-11-10");
+  card.minPayment = updatedCard.minPayment;
+  card.minimumObligations = updatedCard.minimumObligations;
+
+  assert.equal(card.minimumObligations?.["2026-10-15"], 10000, "Snapshots October 15 with $100");
+  assert.equal(card.minimumObligations?.["2026-11-15"], undefined, "Does NOT contaminate November 15 with $100");
 
   // Evaluate on 2026-11-10 (November cycle):
   // October required $100. $30 was paid. $30 < $100!
@@ -9682,4 +9690,123 @@ test("Test 3C.34 — Avoid fabricating historical minimums for legacy accounts w
   assert.equal(prot.configuredMinimum, 5000);
   assert.equal(prot.effectiveMinimum, 5000);
 });
+
+test("Test 3C.35 — Snapshot lifecycle: updateAccount preserves overdue obligations and prevents future due date contamination", () => {
+  const { state: budgetState, updateAccount } = useBudget();
+
+  // Reset budget state
+  budgetState.value = blank();
+  budgetState.value.payday = "2026-11-20";
+  budgetState.value.followingPayday = "2026-12-04";
+
+  const checking: Account = {
+    id: "acc-chk-live",
+    name: "Primary Checking",
+    type: "checking",
+    opening: 100000, // $1,000 cash
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  const card: Account = {
+    id: "acc-crd-live",
+    name: "Credit Card",
+    type: "credit",
+    opening: 50000, // $500 balance
+    creditLimit: 200000,
+    minPayment: 10000, // $100 min
+    dueDay: 15,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+    includeInSafeToSpend: false,
+  };
+  budgetState.value.accounts = [checking, card];
+
+  // User paid $30 on October 12 towards October statement
+  budgetState.value.transactions.push({
+    id: "tx-live-pay",
+    name: "Card Payment",
+    amount: -3000,
+    category: "Payment",
+    date: "2026-10-12",
+    status: "cleared",
+    accountId: checking.id,
+    kind: "payment",
+    targetAccountId: card.id,
+  });
+
+  // On November 10, user changes configured minimum to $25 through the actual updateAccount composable workflow
+  updateAccount(
+    card.id,
+    {
+      name: "Credit Card",
+      minPayment: 2500,
+    },
+    "2026-11-10",
+  );
+
+  const updatedCard = budgetState.value.accounts.find((a) => a.id === card.id)!;
+  assert.equal(updatedCard.minPayment, 2500, "New configured minimum is $25");
+  assert.equal(
+    updatedCard.minimumObligations?.["2026-10-15"],
+    10000,
+    "October 15 obligation accurately snapshotted as $100",
+  );
+  assert.equal(
+    updatedCard.minimumObligations?.["2026-11-15"],
+    undefined,
+    "November 15 future due date NEVER receives the old $100 snapshot",
+  );
+
+  // Evaluate protection on 2026-11-10
+  const prot = getCreditCardMinimumProtection(updatedCard, budgetState.value, "2026-11-10");
+  assert.equal(prot.dueDate, "2026-10-15", "Overdue target remains October 15");
+  assert.equal(prot.isOverdue, true);
+  assert.equal(prot.status, "overdue");
+  assert.equal(prot.configuredMinimum, 10000, "Configured minimum for overdue cycle is $100");
+  assert.equal(prot.paidTowardCycle, 3000, "$30 paid toward cycle");
+  assert.equal(prot.remainingMinimumRequirement, 7000, "$70 remains required");
+  assert.equal(prot.additionalProtection, 7000, "Protects $70 in Safe to Spend");
+
+  // Subsequent edit on November 10: user updates card name and adjusts minimum to $20
+  updateAccount(
+    card.id,
+    {
+      name: "Renamed Card",
+      minPayment: 2000,
+    },
+    "2026-11-10",
+  );
+
+  const cardAfterSecondEdit = budgetState.value.accounts.find((a) => a.id === card.id)!;
+  assert.equal(
+    cardAfterSecondEdit.minimumObligations?.["2026-10-15"],
+    10000,
+    "Subsequent edit does not rewrite or erase established historical obligation",
+  );
+  assert.equal(cardAfterSecondEdit.minPayment, 2000, "Updated configured minimum is $20");
+
+  // Pay remaining $70 on November 11
+  budgetState.value.transactions.push({
+    id: "tx-live-pay-late",
+    name: "Late Card Payment",
+    amount: -7000,
+    category: "Payment",
+    date: "2026-11-11",
+    status: "cleared",
+    accountId: checking.id,
+    kind: "payment",
+    targetAccountId: card.id,
+  });
+
+  const protAfterSettlement = getCreditCardMinimumProtection(
+    cardAfterSecondEdit,
+    budgetState.value,
+    "2026-11-11",
+  );
+  assert.equal(protAfterSettlement.dueDate, "2026-11-15", "Target advances to November 15");
+  assert.equal(protAfterSettlement.isOverdue, false);
+  assert.equal(protAfterSettlement.configuredMinimum, 2000, "November target has newly configured $20 minimum");
+});
+
 

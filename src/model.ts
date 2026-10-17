@@ -1679,6 +1679,76 @@ export function getCreditCardDueDate(
   return `${year}-${String(month).padStart(2, "0")}-${String(clampedDay).padStart(2, "0")}`;
 }
 
+export function getPastCreditCardDueDate(
+  account: Account,
+  asOf = today(),
+): string | null {
+  if (
+    account.type !== "credit" ||
+    typeof account.dueDay !== "number" ||
+    !Number.isInteger(account.dueDay) ||
+    account.dueDay < 1 ||
+    account.dueDay > 31 ||
+    !isValidDateString(asOf)
+  ) {
+    return null;
+  }
+  const [nowY, nowM] = asOf.split("-").map(Number);
+  if (!nowY || !nowM) return null;
+  const currentMonthDue = getCreditCardDueDate(account, nowY, nowM);
+  if (!currentMonthDue) return null;
+
+  if (asOf > currentMonthDue) {
+    return currentMonthDue;
+  }
+  const [prevY, prevM] = nowM === 1 ? [nowY - 1, 12] : [nowY, nowM - 1];
+  return getCreditCardDueDate(account, prevY, prevM);
+}
+
+export function updateCreditCardMinimumSettings(
+  account: Account,
+  newMinPayment: number | undefined,
+  now = today(),
+): Account {
+  if (account.type !== "credit") return account;
+  const sanitizedNewMin =
+    typeof newMinPayment === "number" && Number.isFinite(newMinPayment) && newMinPayment > 0
+      ? Math.round(newMinPayment)
+      : undefined;
+
+  let updatedObligations = account.minimumObligations ? { ...account.minimumObligations } : undefined;
+
+  // When changing minPayment, snapshot the previous obligation for the past due date that already occurred.
+  // Never assign an old minimum to a future due date.
+  if (
+    account.minPayment !== undefined &&
+    account.minPayment > 0 &&
+    account.minPayment !== sanitizedNewMin &&
+    account.dueDay
+  ) {
+    const pastDue = getPastCreditCardDueDate(account, now);
+    if (pastDue) {
+      const createdDate = account.createdAt ? account.createdAt.slice(0, 10) : "";
+      // Only snapshot if the past due date occurred during the account's active lifetime in Mika Budget
+      // and do not overwrite an existing established snapshot.
+      const isWithinLifetime = !createdDate || (isValidDateString(createdDate) && pastDue >= createdDate);
+      if (isWithinLifetime && (!updatedObligations || updatedObligations[pastDue] === undefined)) {
+        updatedObligations = {
+          ...(updatedObligations || {}),
+          [pastDue]: account.minPayment,
+        };
+      }
+    }
+  }
+
+  return {
+    ...account,
+    minPayment: sanitizedNewMin,
+    minimumObligations: updatedObligations,
+    updatedAt: now,
+  };
+}
+
 export function getCreditCardMinimumProtection(
   account: Account,
   s: State,
@@ -1793,18 +1863,26 @@ export function getCreditCardMinimumProtection(
 
   if (validNow <= currentMonthDue) {
     // Current month due date has NOT passed yet.
-    // Check if the previous cycle (prevMonthDue) had an established snapshot obligation that remains unfulfilled.
+    // Check if the previous cycle (prevMonthDue) had an established snapshot obligation or active lifetime obligation.
     const prevSnapshot = getCreditCardMinimumObligation(account, prevMonthDue);
     const confirmedPrev = Boolean(
       account.confirmedMinimumDueDates?.includes(prevMonthDue),
     );
+
+    const createdDate = account.createdAt ? account.createdAt.slice(0, 10) : "";
+    const isKnownAccountCycle =
+      isValidDateString(createdDate) && prevMonthDue >= createdDate;
+    const shouldEvaluatePrev =
+      prevSnapshot !== null ||
+      (isKnownAccountCycle && configuredMin > 0 && account.dueDay !== undefined);
+    const prevObligation = prevSnapshot !== null ? prevSnapshot : configuredMin;
 
     let isPrevUnfulfilled = false;
     let onTimePaidPrev = 0;
     let latePaidPrev = 0;
     let totalPaidPrev = 0;
 
-    if (prevSnapshot !== null && !confirmedPrev) {
+    if (shouldEvaluatePrev && !confirmedPrev) {
       const [prevPrevY, prevPrevM] =
         prevM === 1 ? [prevY - 1, 12] : [prevY, prevM - 1];
       const prevPrevMonthDue =
@@ -1827,22 +1905,22 @@ export function getCreditCardMinimumProtection(
       );
       totalPaidPrev = onTimePaidPrev + latePaidPrev;
 
-      if (totalPaidPrev < prevSnapshot) {
+      if (totalPaidPrev < prevObligation) {
         isPrevUnfulfilled = true;
       }
     }
 
-    if (isPrevUnfulfilled && prevSnapshot !== null) {
+    if (isPrevUnfulfilled) {
       // Previous cycle obligation remains unfulfilled and is OVERDUE!
       targetDueDate = prevMonthDue;
       isOverdue = true;
       isConfirmedPaid = false;
       paidTowardCycle = totalPaidPrev;
-      const rawRemaining = Math.max(0, prevSnapshot - paidTowardCycle);
+      const rawRemaining = Math.max(0, prevObligation - paidTowardCycle);
       remainingMinRequirement = Math.min(rawRemaining, totalOwed);
-      baseResult.configuredMin = prevSnapshot;
-      baseResult.configuredMinimum = prevSnapshot;
-      baseResult.effectiveMin = Math.min(prevSnapshot, totalOwed);
+      baseResult.configuredMin = prevObligation;
+      baseResult.configuredMinimum = prevObligation;
+      baseResult.effectiveMin = Math.min(prevObligation, totalOwed);
       baseResult.effectiveMinimum = baseResult.effectiveMin;
     } else {
       // Previous cycle is satisfied or has no snapshot. Active target is currentMonthDue.
@@ -1862,8 +1940,8 @@ export function getCreditCardMinimumProtection(
 
       // Portions of payments after prevMonthDue absorbed by previous cycle obligation
       const unfulfilledPrev =
-        prevSnapshot !== null && !confirmedPrev
-          ? Math.max(0, prevSnapshot - onTimePaidPrev)
+        shouldEvaluatePrev && !confirmedPrev
+          ? Math.max(0, prevObligation - onTimePaidPrev)
           : 0;
       const absorbedByPrev = Math.min(onTimePaid, unfulfilledPrev);
       const effectivePaidCurrent = Math.max(0, onTimePaid - absorbedByPrev);

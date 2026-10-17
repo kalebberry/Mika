@@ -1003,6 +1003,17 @@ Production build check (`npm run build`):
   - **Due Date Validation on Manual Confirmations**: Hardened `confirmCreditCardMinimum(account, dueDate)` to validate that `dueDate` is a valid date string and strictly matches `getCreditCardDueDate(account, year, month)` (accounting for leap years and month-end clamping), rejecting mismatched dates or non-credit accounts.
   - **Absorption Without Double Counting**: Payments absorbed by past unfulfilled obligations are deducted from current-cycle payments, preventing the same payment from satisfying both a past overdue cycle and the upcoming cycle.
 
+#### Correction 6 — Minimum Obligation Snapshot Lifecycle & Due Date Targeting
+- **Finding**: Review identified that in `useBudget.ts:updateAccount()`, changing `minPayment` snapshotted the previous value using the current calendar month's due date (`getCreditCardDueDate(acc, nowY, nowM)`). When evaluated on November 10, this evaluated to November 15 (future), wrongly assigning the prior $100 minimum to the upcoming November statement while leaving October 15 without a snapshot.
+- **Root Cause & Fix**:
+  - **Past Due Date Resolver**: Introduced `getPastCreditCardDueDate(account, asOf)` in [`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts) to strictly return the most recent due date that has already elapsed (`pastDue < asOf`). This makes it mathematically impossible to assign a historical minimum to a future due date.
+  - **Account Settings Lifecycle Helper**: Introduced pure model helper `updateCreditCardMinimumSettings(account, newMinPayment, now)` in [`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts) and integrated it into [`src/composables/useBudget.ts:updateAccount()`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/composables/useBudget.ts):
+    1. Determines `pastDue = getPastCreditCardDueDate(account, now)`.
+    2. Validates `pastDue >= account.createdAt.slice(0, 10)` to prevent inferring historical obligations for dates before the account existed in Mika Budget.
+    3. Preserves stability: if `minimumObligations[pastDue]` is already established, it is never overwritten by subsequent edits.
+    4. Applies `newMinPayment` to `account.minPayment`, ensuring upcoming statement cycles (e.g. November 15) reflect the newly configured minimum without contamination.
+  - **Composable Workflow Regression Testing**: Added `Test 3C.35` in [`tests/budget.test.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/tests/budget.test.ts) exercising the exact `useBudget().updateAccount` workflow across multiple edits without any manual pre-population of snapshots.
+
 ---
 
 ### 2. Following-Cycle Credit Minimum Policy & Parity with Recurring Bills
@@ -1020,8 +1031,8 @@ Production build check (`npm run build`):
 
 ### 3. Verification & Test Metrics
 
-- **Automated Tests**: 158 passing tests (`node --test tests/budget.test.ts`), 0 failures, 0 skipped.
-  - Added 14 new regression tests `Test 3C.21` through `Test 3C.34`:
+- **Automated Tests**: 159 passing tests (`node --test tests/budget.test.ts`), 0 failures, 0 skipped.
+  - Added 15 new regression tests `Test 3C.21` through `Test 3C.35`:
     - `Test 3C.21`: Changing minimum payment amount on overdue card retains overdue obligation without silent discard.
     - `Test 3C.22`: Changing card balance does not retroactively invent past statement satisfaction.
     - `Test 3C.23`: Due date boundary payment absorption: late payment satisfies overdue obligation first without double-counting in next cycle.
@@ -1036,7 +1047,9 @@ Production build check (`npm run build`):
     - `Test 3C.32`: Historical minimum-payment stability: editing card's minimum or balance does not rewrite previously established obligation.
     - `Test 3C.33`: Due date validation before recording manual statement confirmation.
     - `Test 3C.34`: Avoid fabricating historical minimums for legacy accounts where no snapshot exists.
+    - `Test 3C.35`: Snapshot lifecycle: `updateAccount` preserves overdue obligations and prevents future due date contamination.
 - **Production Build**: `npm run build` (`vue-tsc -b && vite build`) passed cleanly with 0 TypeScript or bundling errors.
+
 
 
 

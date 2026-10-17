@@ -49,6 +49,8 @@ import {
   setCreditCardMinimumObligation,
   getCreditCardMinimumObligation,
   getCreditCardDueDate,
+  getPastCreditCardDueDate,
+  updateCreditCardMinimumSettings,
   getMonthlyExpenses,
   getMonthlyIncome,
   assignCardPaymentReserve as modelAssignCardPaymentReserve,
@@ -544,11 +546,12 @@ export function useBudget() {
       minPayment?: number;
       includeInSafeToSpend?: boolean;
     },
+    now = today(),
   ) {
     const acc = (state.value.accounts || []).find((a) => a.id === id);
     if (!acc) return false;
     acc.name = metadata.name.trim() || acc.name;
-    acc.updatedAt = today();
+    acc.updatedAt = now;
 
     if (acc.type === "credit") {
       if (metadata.creditLimit !== undefined) {
@@ -558,26 +561,13 @@ export function useBudget() {
         acc.dueDay = metadata.dueDay ? Math.min(31, Math.max(1, metadata.dueDay)) : undefined;
       }
       if (metadata.minPayment !== undefined) {
-        const newMin = metadata.minPayment ? Math.max(0, metadata.minPayment) : undefined;
-        if (
-          acc.minPayment !== undefined &&
-          acc.minPayment !== newMin &&
-          acc.minPayment > 0 &&
-          acc.dueDay
-        ) {
-          const nowStr = today();
-          const [y, m] = nowStr.split("-").map(Number);
-          if (y && m) {
-            const currentDue = getCreditCardDueDate(acc, y, m);
-            if (currentDue && !acc.minimumObligations?.[currentDue]) {
-              acc.minimumObligations = {
-                ...(acc.minimumObligations || {}),
-                [currentDue]: acc.minPayment,
-              };
-            }
-          }
-        }
-        acc.minPayment = newMin;
+        const updated = updateCreditCardMinimumSettings(
+          acc,
+          metadata.minPayment ? Math.max(0, metadata.minPayment) : undefined,
+          now,
+        );
+        acc.minPayment = updated.minPayment;
+        acc.minimumObligations = updated.minimumObligations;
       }
       acc.includeInSafeToSpend = false;
     } else {
@@ -938,6 +928,8 @@ export function useBudget() {
     confirmCardMinimum,
     unconfirmCardMinimum,
     setCardMinimumObligation,
+    updateCreditCardMinimumSettings,
+    getPastCreditCardDueDate,
     getMonthlyExpenses: (m = month.value) => getMonthlyExpenses(state.value, m),
     getMonthlyIncome: (m = month.value) => getMonthlyIncome(state.value, m),
     registerModelContext,
