@@ -676,7 +676,7 @@ function getCoverageBadge(status: string) {
                     <div v-if="getMinProtection(acc).dueDate">
                       <span class="cc-min-label">Due Date:</span>
                       <strong>{{ getMinProtection(acc).dueDate }}</strong>
-                      <span v-if="getMinProtection(acc).isOverdue" class="warn-val" style="color: var(--color-danger, #c94a29); margin-left: 0.25rem;">(Past Due)</span>
+                      <span v-if="getMinProtection(acc).isOverdue" class="warn-val" style="color: var(--color-danger, #c94a29); margin-left: 0.25rem;">{{ getMinProtection(acc).isEstimated ? '(Past Due - Est.)' : '(Past Due)' }}</span>
                     </div>
                     <div v-if="getMinProtection(acc).additionalProtection > 0">
                       <span class="cc-min-label">Protected in Safe to Spend:</span>

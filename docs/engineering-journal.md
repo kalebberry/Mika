@@ -1007,12 +1007,21 @@ Production build check (`npm run build`):
 - **Finding**: Review identified that in `useBudget.ts:updateAccount()`, changing `minPayment` snapshotted the previous value using the current calendar month's due date (`getCreditCardDueDate(acc, nowY, nowM)`). When evaluated on November 10, this evaluated to November 15 (future), wrongly assigning the prior $100 minimum to the upcoming November statement while leaving October 15 without a snapshot.
 - **Root Cause & Fix**:
   - **Past Due Date Resolver**: Introduced `getPastCreditCardDueDate(account, asOf)` in [`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts) to strictly return the most recent due date that has already elapsed (`pastDue < asOf`). This makes it mathematically impossible to assign a historical minimum to a future due date.
-  - **Account Settings Lifecycle Helper**: Introduced pure model helper `updateCreditCardMinimumSettings(account, newMinPayment, now)` in [`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts) and integrated it into [`src/composables/useBudget.ts:updateAccount()`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/composables/useBudget.ts):
-    1. Determines `pastDue = getPastCreditCardDueDate(account, now)`.
-    2. Validates `pastDue >= account.createdAt.slice(0, 10)` to prevent inferring historical obligations for dates before the account existed in Mika Budget.
-    3. Preserves stability: if `minimumObligations[pastDue]` is already established, it is never overwritten by subsequent edits.
-    4. Applies `newMinPayment` to `account.minPayment`, ensuring upcoming statement cycles (e.g. November 15) reflect the newly configured minimum without contamination.
+  - **Account Settings Lifecycle Helper**: Introduced pure model helper `updateCreditCardMinimumSettings(account, newMinPayment, now)` in [`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts) and integrated it into [`src/composables/useBudget.ts:updateAccount()`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/composables/useBudget.ts).
   - **Composable Workflow Regression Testing**: Added `Test 3C.35` in [`tests/budget.test.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/tests/budget.test.ts) exercising the exact `useBudget().updateAccount` workflow across multiple edits without any manual pre-population of snapshots.
+
+#### Correction 7 — Historical Statement Integrity Policy: Explicit Obligations vs Inferred Estimates
+- **Finding**: Review of commit `b809d11` identified a financial-data integrity concern: `updateCreditCardMinimumSettings()` previously snapshotted the old configured minimum against the previous due date when settings changed, fabricating a confirmed historical statement obligation without evidence that Mika had recorded that amount for that historical statement.
+- **Root Cause & Fix**:
+  - **No Synthetic Historical Snapshots from Settings Edits**: Corrected [`updateCreditCardMinimumSettings`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts) and [`updateAccount`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/composables/useBudget.ts) to never create a historical statement snapshot solely from a settings change. Existing explicitly established occurrence-level obligations in `account.minimumObligations` are preserved unchanged.
+  - **Explicit Uncertainty Labeling (`isEstimated`, `obligationType`)**: In [`getCreditCardMinimumProtection`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts):
+    - When an overdue cycle has an explicit snapshot recorded in `minimumObligations`: `isEstimated: false`, `obligationType: "recorded"`.
+    - When an overdue cycle is unsnapshotted (e.g. from an existing active card with unpaid balance), Mika protects the obligation in Safe to Spend so cash is not silently under-reserved, but marks it explicitly as an estimate: `isEstimated: true`, `obligationType: "estimated"`.
+    - In [`AccountsView.vue`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/components/views/AccountsView.vue), overdue minimums with `isEstimated` are rendered as `(Past Due - Est.)` to keep uncertainty transparent.
+  - **No Spurious Overdue Statements for Newly Configured Cards**: If a card is added after its calendar month due date (`currentMonthDue < account.createdAt`), Mika recognizes that the card did not exist in Mika on that due date, never acquires a fabricated overdue statement, and cleanly targets the upcoming statement (`nextMonthDue`) with `isOverdue: false`.
+  - **Regression Test Coverage**:
+    - `Test 3C.36`: Unsnapshotted overdue cycles are protected as estimates without creating synthetic snapshots on settings edits.
+    - `Test 3C.37`: A new card configured after its previous due date does not acquire a fabricated overdue statement.
 
 ---
 
@@ -1031,8 +1040,8 @@ Production build check (`npm run build`):
 
 ### 3. Verification & Test Metrics
 
-- **Automated Tests**: 159 passing tests (`node --test tests/budget.test.ts`), 0 failures, 0 skipped.
-  - Added 15 new regression tests `Test 3C.21` through `Test 3C.35`:
+- **Automated Tests**: 161 passing tests (`node --test tests/budget.test.ts`), 0 failures, 0 skipped.
+  - Added 17 new regression tests `Test 3C.21` through `Test 3C.37`:
     - `Test 3C.21`: Changing minimum payment amount on overdue card retains overdue obligation without silent discard.
     - `Test 3C.22`: Changing card balance does not retroactively invent past statement satisfaction.
     - `Test 3C.23`: Due date boundary payment absorption: late payment satisfies overdue obligation first without double-counting in next cycle.
@@ -1048,6 +1057,8 @@ Production build check (`npm run build`):
     - `Test 3C.33`: Due date validation before recording manual statement confirmation.
     - `Test 3C.34`: Avoid fabricating historical minimums for legacy accounts where no snapshot exists.
     - `Test 3C.35`: Snapshot lifecycle: `updateAccount` preserves overdue obligations and prevents future due date contamination.
+    - `Test 3C.36`: Unsnapshotted overdue cycles are protected as estimates without creating synthetic snapshots on settings edits.
+    - `Test 3C.37`: A new card configured after its previous due date does not acquire a fabricated overdue statement.
 - **Production Build**: `npm run build` (`vue-tsc -b && vite build`) passed cleanly with 0 TypeScript or bundling errors.
 
 

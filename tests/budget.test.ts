@@ -9536,6 +9536,8 @@ test("Test 3C.32 — Historical minimum-payment stability: editing card's minimu
     updatedAt: "2026-10-01",
     includeInSafeToSpend: false,
   };
+  // Establish explicit statement obligation for October 15 ($100.00) recorded before its due date
+  card = setCreditCardMinimumObligation(card, "2026-10-15", 10000);
   state.accounts = [checking, card];
 
   // User paid $30.00 on Oct 12 towards October minimum
@@ -9552,12 +9554,12 @@ test("Test 3C.32 — Historical minimum-payment stability: editing card's minimu
   });
 
   // In November (2026-11-10), user changes configured minimum to $25 (2500 cents)
-  // Tested through model update function without manually pre-populating snapshots
+  // Tested through model update function
   const updatedCard = updateCreditCardMinimumSettings(card, 2500, "2026-11-10");
   card.minPayment = updatedCard.minPayment;
   card.minimumObligations = updatedCard.minimumObligations;
 
-  assert.equal(card.minimumObligations?.["2026-10-15"], 10000, "Snapshots October 15 with $100");
+  assert.equal(card.minimumObligations?.["2026-10-15"], 10000, "Preserves explicitly recorded October 15 with $100");
   assert.equal(card.minimumObligations?.["2026-11-15"], undefined, "Does NOT contaminate November 15 with $100");
 
   // Evaluate on 2026-11-10 (November cycle):
@@ -9572,6 +9574,8 @@ test("Test 3C.32 — Historical minimum-payment stability: editing card's minimu
   assert.equal(prot.paidTowardCycle, 3000, "$30 paid toward cycle");
   assert.equal(prot.remainingMinimumRequirement, 7000, "$70 remaining obligation");
   assert.equal(prot.additionalProtection, 7000, "Protects remaining $70 in Safe to Spend");
+  assert.equal(prot.isEstimated, false, "Recorded statement obligation is not an estimate");
+  assert.equal(prot.obligationType, "recorded");
 
   let t = totals(state, "2026-11-10");
   assert.equal(t.creditCardMinimums, 7000, "Safeguards $70 overdue minimum");
@@ -9716,6 +9720,7 @@ test("Test 3C.35 — Snapshot lifecycle: updateAccount preserves overdue obligat
     creditLimit: 200000,
     minPayment: 10000, // $100 min
     dueDay: 15,
+    minimumObligations: { "2026-10-15": 10000 }, // Explicitly established statement obligation recorded before due date
     createdAt: "2026-10-01",
     updatedAt: "2026-10-01",
     includeInSafeToSpend: false,
@@ -9750,7 +9755,7 @@ test("Test 3C.35 — Snapshot lifecycle: updateAccount preserves overdue obligat
   assert.equal(
     updatedCard.minimumObligations?.["2026-10-15"],
     10000,
-    "October 15 obligation accurately snapshotted as $100",
+    "October 15 explicit obligation remains preserved at $100",
   );
   assert.equal(
     updatedCard.minimumObligations?.["2026-11-15"],
@@ -9767,6 +9772,8 @@ test("Test 3C.35 — Snapshot lifecycle: updateAccount preserves overdue obligat
   assert.equal(prot.paidTowardCycle, 3000, "$30 paid toward cycle");
   assert.equal(prot.remainingMinimumRequirement, 7000, "$70 remains required");
   assert.equal(prot.additionalProtection, 7000, "Protects $70 in Safe to Spend");
+  assert.equal(prot.isEstimated, false, "Explicitly recorded obligation is not an estimate");
+  assert.equal(prot.obligationType, "recorded");
 
   // Subsequent edit on November 10: user updates card name and adjusts minimum to $20
   updateAccount(
@@ -9807,6 +9814,136 @@ test("Test 3C.35 — Snapshot lifecycle: updateAccount preserves overdue obligat
   assert.equal(protAfterSettlement.dueDate, "2026-11-15", "Target advances to November 15");
   assert.equal(protAfterSettlement.isOverdue, false);
   assert.equal(protAfterSettlement.configuredMinimum, 2000, "November target has newly configured $20 minimum");
+});
+
+test("Test 3C.36 — Unsnapshotted overdue cycles are protected as estimates without creating synthetic snapshots on settings edits", () => {
+  const { state: budgetState, updateAccount } = useBudget();
+  budgetState.value = blank();
+  budgetState.value.payday = "2026-11-20";
+  budgetState.value.followingPayday = "2026-12-04";
+
+  const checking: Account = {
+    id: "acc-chk-36",
+    name: "Checking",
+    type: "checking",
+    opening: 100000,
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  // Card existed in October, but has NO explicit snapshot in minimumObligations
+  const card: Account = {
+    id: "acc-crd-36",
+    name: "Card Without Snapshot",
+    type: "credit",
+    opening: 50000, // $500 balance
+    creditLimit: 200000,
+    minPayment: 10000, // $100 min
+    dueDay: 15,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+    includeInSafeToSpend: false,
+  };
+  budgetState.value.accounts = [checking, card];
+
+  // User paid $10 on October 12 towards card
+  budgetState.value.transactions.push({
+    id: "tx-pay-10",
+    name: "Small Card Payment",
+    amount: -1000, // $10
+    category: "Payment",
+    date: "2026-10-12",
+    status: "cleared",
+    accountId: checking.id,
+    kind: "payment",
+    targetAccountId: card.id,
+  });
+
+  // On November 10, user changes configured minimum to $25 (2500 cents) through updateAccount
+  updateAccount(
+    card.id,
+    {
+      name: "Card Without Snapshot",
+      minPayment: 2500,
+    },
+    "2026-11-10",
+  );
+
+  const updatedCard = budgetState.value.accounts.find((a) => a.id === card.id)!;
+  assert.equal(updatedCard.minPayment, 2500);
+  assert.equal(
+    updatedCard.minimumObligations?.["2026-10-15"],
+    undefined,
+    "Never creates a confirmed historical statement obligation solely from a later settings edit",
+  );
+  assert.equal(
+    updatedCard.minimumObligations?.["2026-11-15"],
+    undefined,
+    "Does not contaminate November 15",
+  );
+
+  // Evaluate on 2026-11-10:
+  // Card has unpaid overdue cycle. Since no snapshot exists, Mika protects it as an ESTIMATE.
+  const prot = getCreditCardMinimumProtection(updatedCard, budgetState.value, "2026-11-10");
+  assert.equal(prot.dueDate, "2026-10-15");
+  assert.equal(prot.isOverdue, true, "Does not silently release protection for overdue cycle");
+  assert.equal(prot.isEstimated, true, "Unsnapshotted past cycle is labeled as an estimate");
+  assert.equal(prot.obligationType, "estimated");
+  // $10 paid toward $25 estimate = $15 remaining
+  assert.equal(prot.configuredMinimum, 2500);
+  assert.equal(prot.paidTowardCycle, 1000);
+  assert.equal(prot.remainingMinimumRequirement, 1500);
+  assert.equal(prot.additionalProtection, 1500, "Safeguards $15 in Safe to Spend based on estimate");
+});
+
+test("Test 3C.37 — A new card configured after its previous due date does not acquire a fabricated overdue statement", () => {
+  const { state: budgetState } = useBudget();
+  budgetState.value = blank();
+  budgetState.value.payday = "2026-11-20";
+  budgetState.value.followingPayday = "2026-12-04";
+
+  const checking: Account = {
+    id: "acc-chk-37",
+    name: "Checking",
+    type: "checking",
+    opening: 100000,
+    includeInSafeToSpend: true,
+  };
+  // Card created on October 20, 2026 with due day 15. Previous due date is October 15.
+  const newCard: Account = {
+    id: "acc-crd-37",
+    name: "Newly Added Card",
+    type: "credit",
+    opening: 50000, // $500 balance
+    creditLimit: 200000,
+    minPayment: 5000, // $50 min
+    dueDay: 15,
+    createdAt: "2026-10-20",
+    updatedAt: "2026-10-20",
+    includeInSafeToSpend: false,
+  };
+  budgetState.value.accounts = [checking, newCard];
+
+  // Evaluated on October 20 (now > currentMonthDue of Oct 15):
+  const protOct = getCreditCardMinimumProtection(newCard, budgetState.value, "2026-10-20");
+  assert.equal(
+    protOct.dueDate,
+    "2026-11-15",
+    "Advances to upcoming November statement rather than fabricating October 15 overdue",
+  );
+  assert.equal(protOct.isOverdue, false, "Not overdue");
+  assert.equal(protOct.isEstimated, false);
+  assert.equal(protOct.obligationType, "recorded");
+
+  // Evaluated on November 10 (now <= currentMonthDue of Nov 15):
+  const protNov = getCreditCardMinimumProtection(newCard, budgetState.value, "2026-11-10");
+  assert.equal(
+    protNov.dueDate,
+    "2026-11-15",
+    "Evaluates November 15 statement cleanly",
+  );
+  assert.equal(protNov.isOverdue, false, "Not overdue");
+  assert.equal(protNov.isEstimated, false);
 });
 
 
