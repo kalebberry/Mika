@@ -942,3 +942,78 @@ Production build check (`npm run build`):
 
 3. **Why does Mika treat credit card minimums as planning estimates rather than banking statement facts?**
    - *Answer*: Mika is a local-first, privacy-respecting budgeting companion that does not directly query bank APIs for statement closing documents or dynamic interest-adjusted minimum payment calculations. In banking reality, credit card minimum payments fluctuate based on finance charges, statement balances, fees, and past-due amounts. Treating the user's configured minimum as an authoritative bank statement would risk misleading the user into believing an official obligation was satisfied. Clearly labeling it as a planning estimate ensures transparency, avoids liability, and reinforces user agency while still safeguarding cash needed for upcoming payments.
+
+---
+
+## Phase 3C Independent Review Corrections & Hardening
+
+### 1. Root Causes & Findings Addressed
+
+#### Correction 1 — Credit Minimum Cycle Attribution
+- **Finding**: The initial implementation used the present card balance and present configured minimum to infer whether a past monthly minimum was satisfied. When card configurations (e.g. changing `minPayment` from $100 to $25) or balances changed after a due date, the code risked misattributing payments or silently discarding overdue obligations. Additionally, late payments made after a past due date risked being counted both toward curing the overdue cycle and toward the upcoming cycle.
+- **Root Cause & Fix**:
+  - Separated confirmed statement satisfaction from estimated coverage.
+  - Added optional `confirmedMinimumDueDates?: string[]` to `Account` and pure model helpers `confirmCreditCardMinimum(account, dueDate)` / `unconfirmCreditCardMinimum(account, dueDate)`. If a due date is explicitly confirmed, it is marked as `isConfirmedPaid = true`.
+  - When evaluating past cycles (`validNow > currentMonthDue`):
+    - Payments between `prevMonthDue` and `currentMonthDue` are evaluated as on-time payments.
+    - If unpaid on time, payments between `currentMonthDue` and `validNow` are evaluated as late payments.
+    - If `onTimePaid + latePaid < effectiveMin` and not confirmed paid, the card is **overdue** (`status: "overdue"`, `isOverdue: true`, `dueCycle: "current"`). It is never silently discarded even if the configured minimum or card balance changes.
+    - If late payments satisfy the overdue obligation, only the *true excess* $(\max(0, \text{latePaid} - \text{unfulfilledPastRequirement}))$ is attributed to `nextMonthDue`. The portion required to satisfy the overdue obligation is absorbed, completely preventing double-counting.
+
+#### Correction 2 — Following-Payday Minimum Protection
+- **Finding**: Credit minimums due between `currentPaydayEnd` and `followingEnd` previously received zero protection without distinction from obligations outside the horizon, and lacked parity with Phase 3A's `bill.protected` mechanism.
+- **Root Cause & Fix**:
+  - Defined an explicit following-cycle credit minimum protection policy:
+    - Cards with due dates in `currentPaydayEnd < targetDueDate <= followingEnd` are classified as `dueCycle = "following"` and `isDueInFollowingWindow = true`.
+    - Protection need is calculated as $\text{followingAdditionalProtection} = \max(0, \text{remainingMin} - \text{readyToPay})$ and aggregated into `followingCycleMinimums`.
+    - Added `protected?: boolean` on `Account` (mirroring `Bill.protected`). If `account.protected === true`, the following-cycle minimum is protected in current Safe to Spend (`protectedFollowingMinimums`), deducting it alongside current cycle minimums. If `account.protected !== true`, it is tracked in `followingCycleMinimums` without reducing current Safe to Spend.
+    - Overdue minimums are unconditionally treated as `dueCycle = "current"` and protected immediately regardless of original due date.
+    - Each card evaluates exactly one target due date at a time; Ready to Pay deduplication applies to both current and following calculations.
+
+#### Correction 3 — Dashboard Expenses Metric Showing $0.00
+- **Finding**: User reported that the dashboard Expenses card displayed $0.00.
+- **Root Cause Analysis**:
+  - Traced UI component `StatGrid.vue`: displays `{{ money(expenses) }}` using `expenses` from `useBudget()`.
+  - Traced `useBudget.ts`: `expenses` was computed via `monthly = transactions.filter(t => isLedgerStatus(t.status) && t.date.startsWith(month.value))`.
+  - In `model.ts`, `isLedgerStatus(status?: string)` strictly checked `status === "pending" || status === "cleared" || status === "posted"`.
+  - In legacy data, imported transactions, or transactions constructed without explicit status fields, `status` was `undefined`. Because `isLedgerStatus(undefined)` was `false`, `monthly` filtered out 100% of transactions with undefined status, leaving `expenses = 0` ($0.00).
+- **Fix**:
+  - Extracted pure model functions `getMonthlyExpenses(s: State, month: string): number` and `getMonthlyIncome(s: State, month: string): number` in `src/model.ts`.
+  - `getMonthlyExpenses` explicitly allows legacy transactions where `!t.status`, alongside ledger statuses `isLedgerStatus(t.status)`, while strictly excluding `t.status === "scheduled"`.
+  - Excludes `isLegacyDebt` transactions.
+  - Excludes transfers (`kind === "transfer"`) and credit card debt repayments (`kind === "payment"`).
+  - Includes eligible posted, cleared, and pending purchases on cash and credit accounts.
+  - Includes bill payments once (recorded as standard expense transactions).
+  - Preserves separation between actual spending and scheduled expenses.
+
+---
+
+### 2. Following-Cycle Credit Minimum Policy & Parity with Recurring Bills
+
+| Characteristic | Recurring Bills (Phase 3A) | Credit Card Minimums (Phase 3C) |
+|---|---|---|
+| **Current Paycheck Window** (`due <= currentPaydayEnd`) | Always reserved in `currentCycleBills` and deducted from Safe to Spend. | Always reserved in `currentCycleMinimums` and deducted from Safe to Spend (including all overdue obligations). |
+| **Following Paycheck Window** (`currentPaydayEnd < due <= followingEnd`) | Tracked in breakdown; reserved in `protectedCycleBills` and deducted from Safe to Spend **only if** `bill.protected === true`. | Tracked in breakdown (`followingCycleMinimums`); reserved in `protectedFollowingMinimums` and deducted from Safe to Spend **only if** `account.protected === true`. |
+| **Beyond Horizon** (`due > followingEnd`) | Ignored for immediate planning. | Ignored for immediate planning (`dueCycle: "none"`). |
+| **Covered Credit Deduplication** | N/A (bills do not use Covered Credit). | Fully deduplicated against `readyToPay`: $\max(0, \text{remainingMin} - \text{readyToPay})$. |
+| **Occurrences per Window** | Multi-occurrence evaluation supported (e.g. semimonthly bills). | Single active cycle target per card (`dueDate`), preventing duplicate reservations. |
+| **Overdue Handling** | Overdue occurrences evaluated from `trackingStartDate`. | Overdue minimums forced to `dueCycle: "current"` with highest priority. |
+
+---
+
+### 3. Verification & Test Metrics
+
+- **Automated Tests**: 154 passing tests (`node --test tests/budget.test.ts`), 0 failures, 0 skipped.
+  - Added 10 new regression tests `Test 3C.21` through `Test 3C.30`:
+    - `Test 3C.21`: Changing minimum payment amount on overdue card retains overdue obligation without silent discard.
+    - `Test 3C.22`: Changing card balance does not retroactively invent past statement satisfaction.
+    - `Test 3C.23`: Due date boundary payment absorption: late payment satisfies overdue obligation first without double-counting in next cycle.
+    - `Test 3C.24`: Explicit cycle-level confirmation via `confirmCreditCardMinimum` advances cycle cleanly and separates confirmed from estimated satisfaction.
+    - `Test 3C.25`: Following-payday minimum protection with `account.protected === false` (tracked in breakdown, not deducted from Safe to Spend).
+    - `Test 3C.26`: Following-payday minimum protection with `account.protected === true` (protected in breakdown and deducted from Safe to Spend).
+    - `Test 3C.27`: Overdue minimum priority: overdue is always treated as current-cycle priority and protected immediately.
+    - `Test 3C.28`: Deterministic regression for dashboard Expenses $0.00 issue: legacy transactions lacking status field are accurately included in monthly expenses.
+    - `Test 3C.29`: Monthly expenses inclusion and exclusion: includes credit purchases and bill payments, excludes transfers and card repayments.
+    - `Test 3C.30`: Scheduled expenses separation: scheduled purchases do not contaminate actual spending totals or monthly expenses.
+- **Production Build**: `npm run build` (`vue-tsc -b && vite build`) passed cleanly with 0 TypeScript or bundling errors.
+

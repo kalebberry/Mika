@@ -79,6 +79,8 @@ export interface Account {
   assignedPaymentReserve?: number; // Integer cents (credit card only). Current net manual reserve
   paymentReservations?: PaymentReservation[]; // Chronological manual reservation entries
   coveredCreditBaselineAt?: string; // ISO timestamp of baseline
+  confirmedMinimumDueDates?: string[]; // YYYY-MM-DD confirmed paid minimum due dates
+  protected?: boolean; // Credit card following-payday protection flag (mirrors Bill.protected)
 }
 
 export type PaydayFrequency =
@@ -1500,13 +1502,74 @@ export function releaseCardPaymentReserve(
   return true;
 }
 
+export function confirmCreditCardMinimum(
+  account: Account,
+  dueDate: string,
+): Account {
+  if (account.type !== "credit") return account;
+  const existing = Array.isArray(account.confirmedMinimumDueDates)
+    ? account.confirmedMinimumDueDates
+    : [];
+  if (existing.includes(dueDate)) return account;
+  return {
+    ...account,
+    confirmedMinimumDueDates: [...existing, dueDate],
+    updatedAt: today(),
+  };
+}
+
+export function unconfirmCreditCardMinimum(
+  account: Account,
+  dueDate: string,
+): Account {
+  if (account.type !== "credit") return account;
+  const existing = Array.isArray(account.confirmedMinimumDueDates)
+    ? account.confirmedMinimumDueDates
+    : [];
+  if (!existing.includes(dueDate)) return account;
+  return {
+    ...account,
+    confirmedMinimumDueDates: existing.filter((d) => d !== dueDate),
+    updatedAt: today(),
+  };
+}
+
+export function getMonthlyExpenses(s: State, month: string): number {
+  if (!s || !Array.isArray(s.transactions)) return 0;
+  return -s.transactions
+    .filter(
+      (t) =>
+        t.status !== "scheduled" &&
+        (!t.status || isLedgerStatus(t.status)) &&
+        !t.isLegacyDebt &&
+        (t.kind === "standard" || !t.kind) &&
+        t.amount < 0 &&
+        t.date.startsWith(month),
+    )
+    .reduce((sum, t) => sum + t.amount, 0);
+}
+
+export function getMonthlyIncome(s: State, month: string): number {
+  if (!s || !Array.isArray(s.transactions)) return 0;
+  return s.transactions
+    .filter(
+      (t) =>
+        t.status !== "scheduled" &&
+        (!t.status || isLedgerStatus(t.status)) &&
+        !t.isLegacyDebt &&
+        (t.kind === "standard" || !t.kind) &&
+        t.amount > 0 &&
+        t.date.startsWith(month),
+    )
+    .reduce((sum, t) => sum + t.amount, 0);
+}
+
 export type CreditCardMinimumStatus =
   | "covered"
   | "partially_covered"
   | "uncovered"
   | "not_applicable"
-  | "zero_balance"
-  | "no_minimum";
+  | "overdue";
 
 export interface CreditCardMinimumProtection {
   account: Account;
@@ -1518,16 +1581,23 @@ export interface CreditCardMinimumProtection {
   dueDate: string | null; // Applicable due date (YYYY-MM-DD)
   dueCycle: "current" | "following" | "none";
   isDueInCurrentWindow: boolean;
+  isDueInFollowingWindow: boolean;
+  isOverdue: boolean;
+  isConfirmedPaid: boolean;
   paidTowardCycle: number; // Payments already made toward this cycle
   remainingMinimumRequirement: number;
   readyToPay: number; // Cash already held in Ready to Pay
-  additionalProtection: number; // Additional cash to reserve in Safe to Spend
+  additionalProtection: number; // Additional cash to reserve in Safe to Spend in current cycle
   additionalProtectionRequired: number; // Alias
+  followingAdditionalProtection: number; // Additional cash needed if evaluated in following cycle
   status: CreditCardMinimumStatus;
 }
 
 export interface CreditCardMinimumBreakdown {
-  totalAdditionalProtection: number; // Sum of additional protection needed in current planning window
+  currentCycleMinimums: number; // Additional protection for minimums due in current window (or overdue)
+  followingCycleMinimums: number; // Potential additional protection for minimums due in following window
+  protectedFollowingMinimums: number; // Portions of followingCycleMinimums where account.protected === true
+  totalAdditionalProtection: number; // currentCycleMinimums + protectedFollowingMinimums
   totalConfiguredMinimums: number;
   totalEffectiveMinimums: number;
   details: CreditCardMinimumProtection[];
@@ -1571,11 +1641,15 @@ export function getCreditCardMinimumProtection(
     dueDate: null,
     dueCycle: "none",
     isDueInCurrentWindow: false,
+    isDueInFollowingWindow: false,
+    isOverdue: false,
+    isConfirmedPaid: false,
     paidTowardCycle: 0,
     remainingMinimumRequirement: 0,
     readyToPay: 0,
     additionalProtection: 0,
     additionalProtectionRequired: 0,
+    followingAdditionalProtection: 0,
     status: "not_applicable",
   };
 
@@ -1647,58 +1721,156 @@ export function getCreditCardMinimumProtection(
       t.amount < 0,
   );
 
-  let targetDueDate: string;
-  let paidTowardCycle = 0;
-
-  if (validNow <= currentMonthDue) {
-    targetDueDate = currentMonthDue;
-    paidTowardCycle = payments
-      .filter((t) => t.date > prevMonthDue && t.date <= currentMonthDue)
-      .reduce((sum, t) => sum + Math.abs(t.amount), 0);
-  } else {
-    // Current month due date has passed. Check if it was satisfied.
-    const paidInCurrentMonth = payments
-      .filter((t) => t.date > prevMonthDue && t.date <= validNow)
-      .reduce((sum, t) => sum + Math.abs(t.amount), 0);
-
-    if (paidInCurrentMonth >= effectiveMin) {
-      // Current month minimum was already satisfied! Target next month.
-      targetDueDate = nextMonthDue;
-      paidTowardCycle = payments
-        .filter((t) => t.date > currentMonthDue && t.date <= validNow)
-        .reduce((sum, t) => sum + Math.abs(t.amount), 0);
-    } else {
-      // Current month minimum is OVERDUE!
-      targetDueDate = currentMonthDue;
-      paidTowardCycle = paidInCurrentMonth;
-    }
-  }
-
-  baseResult.dueDate = targetDueDate;
-  baseResult.paidTowardCycle = paidTowardCycle;
-
-  // Payday window check
+  // Payday horizon windows
   const currentPayday = getCurrentPayday(s, validNow);
   const currentPaydayEnd =
     isValidDateString(currentPayday) && currentPayday >= validNow
       ? currentPayday
       : validNow;
+  const rawFollowingEnd = getFollowingPayday(s, validNow);
+  const followingEnd = isValidDateString(rawFollowingEnd)
+    ? rawFollowingEnd
+    : addDays(validNow, 14);
 
-  const remainingMinRequirement = Math.max(0, effectiveMin - paidTowardCycle);
+  let targetDueDate: string;
+  let isOverdue = false;
+  let isConfirmedPaid = false;
+  let paidTowardCycle = 0;
+  let remainingMinRequirement = 0;
+
+  if (validNow <= currentMonthDue) {
+    // Current month due date has NOT passed yet
+    const confirmedCurrent = Boolean(
+      account.confirmedMinimumDueDates?.includes(currentMonthDue),
+    );
+
+    const onTimePayments = payments.filter(
+      (t) => t.date > prevMonthDue && t.date <= currentMonthDue,
+    );
+    const onTimePaid = onTimePayments.reduce(
+      (sum, t) => sum + Math.abs(t.amount),
+      0,
+    );
+
+    if (confirmedCurrent) {
+      isConfirmedPaid = true;
+      targetDueDate = currentMonthDue;
+      paidTowardCycle = Math.max(onTimePaid, effectiveMin);
+      remainingMinRequirement = 0;
+    } else {
+      isConfirmedPaid = false;
+      targetDueDate = currentMonthDue;
+      paidTowardCycle = onTimePaid;
+      remainingMinRequirement = Math.max(0, effectiveMin - paidTowardCycle);
+    }
+  } else {
+    // Current month due date has PASSED (validNow > currentMonthDue)
+    const confirmedCurrent = Boolean(
+      account.confirmedMinimumDueDates?.includes(currentMonthDue),
+    );
+
+    const onTimePayments = payments.filter(
+      (t) => t.date > prevMonthDue && t.date <= currentMonthDue,
+    );
+    const onTimePaid = onTimePayments.reduce(
+      (sum, t) => sum + Math.abs(t.amount),
+      0,
+    );
+
+    const latePayments = payments.filter(
+      (t) => t.date > currentMonthDue && t.date <= validNow,
+    );
+    const latePaid = latePayments.reduce(
+      (sum, t) => sum + Math.abs(t.amount),
+      0,
+    );
+
+    const totalPaidCurrentCycle = onTimePaid + latePaid;
+
+    if (confirmedCurrent || totalPaidCurrentCycle >= effectiveMin) {
+      // Current month was satisfied on time or late! Target advances to next month
+      targetDueDate = nextMonthDue;
+      isOverdue = false;
+
+      const confirmedNext = Boolean(
+        account.confirmedMinimumDueDates?.includes(nextMonthDue),
+      );
+      if (confirmedNext) {
+        isConfirmedPaid = true;
+        paidTowardCycle = effectiveMin;
+        remainingMinRequirement = 0;
+      } else {
+        isConfirmedPaid = false;
+        // Absorption & excess attribution:
+        // What portion of late payments was absorbed by the past minimum?
+        const unfulfilledPastMin = confirmedCurrent
+          ? 0
+          : Math.max(0, effectiveMin - onTimePaid);
+        const excessLatePaid = Math.max(0, latePaid - unfulfilledPastMin);
+        paidTowardCycle = excessLatePaid;
+        remainingMinRequirement = Math.max(0, effectiveMin - paidTowardCycle);
+      }
+    } else {
+      // Current month minimum is OVERDUE!
+      targetDueDate = currentMonthDue;
+      isOverdue = true;
+      isConfirmedPaid = false;
+      paidTowardCycle = totalPaidCurrentCycle;
+      remainingMinRequirement = Math.max(0, effectiveMin - paidTowardCycle);
+    }
+  }
+
+  baseResult.dueDate = targetDueDate;
+  baseResult.isOverdue = isOverdue;
+  baseResult.isConfirmedPaid = isConfirmedPaid;
+  baseResult.paidTowardCycle = paidTowardCycle;
   baseResult.remainingMinimumRequirement = remainingMinRequirement;
 
-  if (targetDueDate <= currentPaydayEnd) {
+  // Window attribution
+  if (isOverdue || targetDueDate <= currentPaydayEnd) {
     baseResult.dueCycle = "current";
     baseResult.isDueInCurrentWindow = true;
-    // Ready to Pay already covers credit debt; never reserve a second copy
+    baseResult.isDueInFollowingWindow = false;
+
     const additionalProtection = Math.max(
       0,
       remainingMinRequirement - coverage.readyToPay,
     );
     baseResult.additionalProtection = additionalProtection;
     baseResult.additionalProtectionRequired = additionalProtection;
+    baseResult.followingAdditionalProtection = 0;
 
-    if (additionalProtection === 0) {
+    if (isOverdue) {
+      baseResult.status = "overdue";
+    } else if (remainingMinRequirement === 0 || additionalProtection === 0) {
+      baseResult.status = "covered";
+    } else if (paidTowardCycle + coverage.readyToPay > 0) {
+      baseResult.status = "partially_covered";
+    } else {
+      baseResult.status = "uncovered";
+    }
+  } else if (targetDueDate <= followingEnd) {
+    baseResult.dueCycle = "following";
+    baseResult.isDueInCurrentWindow = false;
+    baseResult.isDueInFollowingWindow = true;
+
+    const followingProtection = Math.max(
+      0,
+      remainingMinRequirement - coverage.readyToPay,
+    );
+    baseResult.followingAdditionalProtection = followingProtection;
+
+    // Follows Phase 3A bill protection policy:
+    // If account.protected is true, protect into following cycle; else reserve 0 for current paycheck
+    if (account.protected) {
+      baseResult.additionalProtection = followingProtection;
+      baseResult.additionalProtectionRequired = followingProtection;
+    } else {
+      baseResult.additionalProtection = 0;
+      baseResult.additionalProtectionRequired = 0;
+    }
+
+    if (remainingMinRequirement === 0 || followingProtection === 0) {
       baseResult.status = "covered";
     } else if (paidTowardCycle + coverage.readyToPay > 0) {
       baseResult.status = "partially_covered";
@@ -1706,10 +1878,14 @@ export function getCreditCardMinimumProtection(
       baseResult.status = "uncovered";
     }
   } else {
-    baseResult.dueCycle = "following";
+    // Beyond following payday horizon
+    baseResult.dueCycle = "none";
     baseResult.isDueInCurrentWindow = false;
+    baseResult.isDueInFollowingWindow = false;
     baseResult.additionalProtection = 0;
     baseResult.additionalProtectionRequired = 0;
+    baseResult.followingAdditionalProtection = 0;
+
     if (remainingMinRequirement <= coverage.readyToPay) {
       baseResult.status = "covered";
     } else if (paidTowardCycle + coverage.readyToPay > 0) {
@@ -1732,10 +1908,25 @@ export function getCreditCardMinimumBreakdown(
   const details = activeCards.map((a) =>
     getCreditCardMinimumProtection(a, s, now),
   );
-  const totalAdditionalProtection = details.reduce(
-    (sum, d) => sum + d.additionalProtection,
-    0,
-  );
+
+  let currentCycleMinimums = 0;
+  let followingCycleMinimums = 0;
+  let protectedFollowingMinimums = 0;
+
+  for (const d of details) {
+    if (d.dueCycle === "current") {
+      currentCycleMinimums += d.additionalProtection;
+    } else if (d.dueCycle === "following") {
+      followingCycleMinimums += d.followingAdditionalProtection;
+      if (d.account.protected) {
+        protectedFollowingMinimums += d.additionalProtection;
+      }
+    }
+  }
+
+  const totalAdditionalProtection =
+    currentCycleMinimums + protectedFollowingMinimums;
+
   const totalConfiguredMinimums = details.reduce(
     (sum, d) => sum + d.configuredMinimum,
     0,
@@ -1744,7 +1935,11 @@ export function getCreditCardMinimumBreakdown(
     (sum, d) => sum + d.effectiveMinimum,
     0,
   );
+
   return {
+    currentCycleMinimums,
+    followingCycleMinimums,
+    protectedFollowingMinimums,
     totalAdditionalProtection,
     totalConfiguredMinimums,
     totalEffectiveMinimums,
@@ -2835,6 +3030,9 @@ export function totals(s: State, now = today()) {
     protectedCycleBills: billBreakdown.protectedCycleBills,
     uncoveredScheduledExpenses,
     creditCardMinimums,
+    currentCycleMinimums: creditMinBreakdown.currentCycleMinimums,
+    followingCycleMinimums: creditMinBreakdown.followingCycleMinimums,
+    protectedFollowingMinimums: creditMinBreakdown.protectedFollowingMinimums,
     scheduledIncome,
     scheduledExpenses,
     totalReadyToPay,
@@ -3183,6 +3381,12 @@ export function migrateState(raw: any, now = today()): State {
         acc.coveredCreditBaselineAt = (hasCoveredCredit && a.coveredCreditBaselineAt)
           ? String(a.coveredCreditBaselineAt)
           : now;
+        if (a.protected !== undefined) {
+          acc.protected = Boolean(a.protected);
+        }
+        if (Array.isArray(a.confirmedMinimumDueDates)) {
+          acc.confirmedMinimumDueDates = a.confirmedMinimumDueDates.map(String);
+        }
       }
       return acc;
     });

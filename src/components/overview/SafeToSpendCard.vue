@@ -60,9 +60,13 @@ const { state, sum, days, page, currentPayday } = useBudget();
         <span>Credit card payment reserves</span>
         <span>− {{ money(sum.totalReadyToPay) }}</span>
       </div>
-      <div v-if="sum.creditCardMinimums > 0">
+      <div v-if="sum.currentCycleMinimums > 0">
         <span>Credit card minimums protected</span>
-        <span>− {{ money(sum.creditCardMinimums) }}</span>
+        <span>− {{ money(sum.currentCycleMinimums) }}</span>
+      </div>
+      <div v-if="sum.protectedFollowingMinimums > 0">
+        <span>Next cycle card minimums protected</span>
+        <span>− {{ money(sum.protectedFollowingMinimums) }}</span>
       </div>
       <div v-if="sum.shortfall > 0" style="color: #ff9b82; font-weight: 600;">
         <span>Reserve shortfall</span>

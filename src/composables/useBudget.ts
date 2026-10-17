@@ -44,6 +44,10 @@ import {
   type CreditCardMinimumStatus,
   getCreditCardMinimumProtection,
   getCreditCardMinimumBreakdown,
+  confirmCreditCardMinimum,
+  unconfirmCreditCardMinimum,
+  getMonthlyExpenses,
+  getMonthlyIncome,
   assignCardPaymentReserve as modelAssignCardPaymentReserve,
   releaseCardPaymentReserve as modelReleaseCardPaymentReserve,
   uid,
@@ -123,18 +127,9 @@ const monthly = computed(() =>
   ),
 );
 
-const income = computed(() =>
-  monthly.value
-    .filter((t) => (t.kind === "standard" || !t.kind) && t.amount > 0)
-    .reduce((n, t) => n + t.amount, 0),
-);
+const income = computed(() => getMonthlyIncome(state.value, month.value));
 
-const expenses = computed(
-  () =>
-    -monthly.value
-      .filter((t) => (t.kind === "standard" || !t.kind) && t.amount < 0)
-      .reduce((n, t) => n + t.amount, 0),
-);
+const expenses = computed(() => getMonthlyExpenses(state.value, month.value));
 
 const scheduledIncome = computed(() =>
   state.value.transactions
@@ -742,6 +737,24 @@ export function useBudget() {
     return true;
   }
 
+  function confirmCardMinimum(accountId: string, dueDate: string) {
+    const accIndex = state.value.accounts.findIndex((a) => a.id === accountId);
+    if (accIndex === -1) return;
+    state.value.accounts[accIndex] = confirmCreditCardMinimum(
+      state.value.accounts[accIndex]!,
+      dueDate,
+    );
+  }
+
+  function unconfirmCardMinimum(accountId: string, dueDate: string) {
+    const accIndex = state.value.accounts.findIndex((a) => a.id === accountId);
+    if (accIndex === -1) return;
+    state.value.accounts[accIndex] = unconfirmCreditCardMinimum(
+      state.value.accounts[accIndex]!,
+      dueDate,
+    );
+  }
+
   function registerModelContext() {
     const context = (document as any).modelContext;
     if (context?.registerTool) {
@@ -871,23 +884,25 @@ export function useBudget() {
           ? (state.value.accounts || []).find((a) => a.id === accOrId)
           : accOrId;
       if (!acc) {
-        return {
-          account: acc as any,
-          totalOwed: 0,
-          configuredMin: 0,
-          effectiveMin: 0,
-          dueDate: null,
-          dueCycle: "none" as const,
-          paidTowardCycle: 0,
-          readyToPay: 0,
-          additionalProtection: 0,
-          status: "zero_balance" as const,
+        const dummyAccount: Account = {
+          id: "",
+          name: "",
+          type: "credit",
+          opening: 0,
+          includeInSafeToSpend: false,
+          createdAt: "",
+          updatedAt: "",
         };
+        return getCreditCardMinimumProtection(dummyAccount, state.value, now || today());
       }
       return getCreditCardMinimumProtection(acc, state.value, now || today());
     },
     getCreditCardMinimumBreakdown: (now?: string) =>
       getCreditCardMinimumBreakdown(state.value, now || today()),
+    confirmCardMinimum,
+    unconfirmCardMinimum,
+    getMonthlyExpenses: (m = month.value) => getMonthlyExpenses(state.value, m),
+    getMonthlyIncome: (m = month.value) => getMonthlyIncome(state.value, m),
     registerModelContext,
   };
 }

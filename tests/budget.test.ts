@@ -63,6 +63,10 @@ import {
   getCreditCardMinimumProtection,
   getCreditCardMinimumBreakdown,
   getCreditCardDueDate,
+  confirmCreditCardMinimum,
+  unconfirmCreditCardMinimum,
+  getMonthlyExpenses,
+  getMonthlyIncome,
   type CreditCardMinimumProtection,
   type CreditCardMinimumStatus,
 } from "../src/model.ts";
@@ -8946,3 +8950,539 @@ test("Test 3C.20 — Covered Credit (Phase 2B) and Flexible Bill Payments (Phase
   assert.equal(t.bills, 7000);
   assert.equal(t.safe, 269000, "All subsystems integrate cleanly with mathematical precision");
 });
+
+test("Test 3C.21 — Changing minimum payment amount on overdue card retains overdue obligation without silent discard", () => {
+  const simulatedPastDue = "2026-10-18";
+  const state: State = blank();
+  state.payday = "2026-10-25";
+  state.followingPayday = "2026-11-08";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000, // $1,000 cash
+    includeInSafeToSpend: true,
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Card",
+    type: "credit",
+    opening: 50000, // $500 balance
+    creditLimit: 200000,
+    minPayment: 10000, // $100 min
+    dueDay: 15, // due Oct 15
+    includeInSafeToSpend: false,
+  };
+  state.accounts = [checking, card];
+
+  // On Oct 18, card was due on Oct 15 and nothing was paid ($0 paid)
+  let prot = getCreditCardMinimumProtection(card, state, simulatedPastDue);
+  assert.equal(prot.dueDate, "2026-10-15");
+  assert.equal(prot.isOverdue, true);
+  assert.equal(prot.status, "overdue");
+  assert.equal(prot.dueCycle, "current");
+  assert.equal(prot.isDueInCurrentWindow, true);
+  assert.equal(prot.configuredMinimum, 10000);
+  assert.equal(prot.effectiveMinimum, 10000);
+  assert.equal(prot.additionalProtection, 10000);
+
+  let t = totals(state, simulatedPastDue);
+  assert.equal(t.creditCardMinimums, 10000);
+  assert.equal(t.safe, 90000); // $1,000 - $100
+
+  // User changes minimum payment configuration from $100 to $25
+  card.minPayment = 2500;
+
+  prot = getCreditCardMinimumProtection(card, state, simulatedPastDue);
+  // Requirement: Do not silently discard an overdue obligation merely because card configuration changed
+  assert.equal(prot.dueDate, "2026-10-15");
+  assert.equal(prot.isOverdue, true, "Retains overdue status");
+  assert.equal(prot.status, "overdue");
+  assert.equal(prot.configuredMinimum, 2500);
+  assert.equal(prot.effectiveMinimum, 2500);
+  assert.equal(prot.additionalProtection, 2500, "Safeguard protects new $25 amount, never drops to 0");
+
+  t = totals(state, simulatedPastDue);
+  assert.equal(t.creditCardMinimums, 2500);
+  assert.equal(t.safe, 97500);
+});
+
+test("Test 3C.22 — Changing card balance does not retroactively invent past statement satisfaction", () => {
+  const simulatedToday = "2026-10-18";
+  const state: State = blank();
+  state.payday = "2026-10-25";
+  state.followingPayday = "2026-11-08";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000,
+    includeInSafeToSpend: true,
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Card",
+    type: "credit",
+    opening: 50000, // $500 balance
+    creditLimit: 200000,
+    minPayment: 10000, // $100 min
+    dueDay: 15, // due Oct 15
+    includeInSafeToSpend: false,
+  };
+  state.accounts = [checking, card];
+
+  // Overdue on Oct 18 with 0 paid
+  let prot = getCreditCardMinimumProtection(card, state, simulatedToday);
+  assert.equal(prot.isOverdue, true);
+  assert.equal(prot.effectiveMinimum, 10000);
+
+  // Balance drops to $80 (e.g. merchant refund)
+  card.opening = 8000;
+
+  prot = getCreditCardMinimumProtection(card, state, simulatedToday);
+  assert.equal(prot.totalOwed, 8000);
+  assert.equal(prot.effectiveMinimum, 8000, "Clamped to remaining total debt");
+  assert.equal(prot.isOverdue, true, "Does not invent that past statement was satisfied");
+  assert.equal(prot.status, "overdue");
+  assert.equal(prot.remainingMinimumRequirement, 8000);
+  assert.equal(prot.additionalProtection, 8000);
+
+  // If balance drops to 0 (fully paid off debt)
+  card.opening = 0;
+  prot = getCreditCardMinimumProtection(card, state, simulatedToday);
+  assert.equal(prot.totalOwed, 0);
+  assert.equal(prot.status, "not_applicable");
+  assert.equal(prot.additionalProtection, 0);
+});
+
+test("Test 3C.23 — Due date boundary payment absorption: late payment satisfies overdue obligation first without double-counting in next cycle", () => {
+  const simulatedToday = "2026-10-18";
+  const state: State = blank();
+  state.payday = "2026-10-25";
+  state.followingPayday = "2026-11-08";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000,
+    includeInSafeToSpend: true,
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Card",
+    type: "credit",
+    opening: 40000, // $400 owed
+    creditLimit: 200000,
+    minPayment: 5000, // $50 min
+    dueDay: 15, // due Oct 15
+    includeInSafeToSpend: false,
+  };
+  state.accounts = [checking, card];
+
+  // Step 1: Before payment on Oct 18 (unpaid Oct 15 min) -> Overdue for $50
+  let prot = getCreditCardMinimumProtection(card, state, simulatedToday);
+  assert.equal(prot.dueDate, "2026-10-15");
+  assert.equal(prot.isOverdue, true);
+  assert.equal(prot.status, "overdue");
+  assert.equal(prot.additionalProtection, 5000);
+
+  // Step 2: User makes a $70 late payment on Oct 17
+  state.transactions.push({
+    id: "tx-late-pay",
+    name: "Late Card Payment",
+    amount: -7000,
+    category: "Payment",
+    date: "2026-10-17",
+    status: "cleared",
+    accountId: checking.id,
+    kind: "payment",
+    targetAccountId: card.id,
+  });
+
+  // Step 3: Re-evaluate on Oct 18
+  // $50 satisfies the overdue Oct 15 obligation.
+  // Target advances to Nov 15!
+  // Excess late payment is $70 - $50 = $20.
+  // $20 applies toward November cycle ($50 min), leaving $30 remaining!
+  prot = getCreditCardMinimumProtection(card, state, simulatedToday);
+  assert.equal(prot.dueDate, "2026-11-15");
+  assert.equal(prot.isOverdue, false, "Overdue cycle was fulfilled");
+  assert.equal(prot.paidTowardCycle, 2000, "Only true excess ($20) carries forward to next cycle");
+  assert.equal(prot.remainingMinimumRequirement, 3000, "$50 min - $20 excess = $30 remaining");
+  assert.equal(prot.isDueInCurrentWindow, false, "Nov 15 is after Oct 25 payday");
+  assert.equal(prot.isDueInFollowingWindow, false, "Nov 15 is after Nov 08 following payday");
+});
+
+test("Test 3C.24 — Explicit cycle-level confirmation via confirmCreditCardMinimum advances cycle cleanly and separates confirmed from estimated satisfaction", () => {
+  const simulatedToday = "2026-10-10";
+  const state: State = blank();
+  state.payday = "2026-10-20";
+  state.followingPayday = "2026-11-05";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000,
+    includeInSafeToSpend: true,
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Card",
+    type: "credit",
+    opening: 30000,
+    creditLimit: 100000,
+    minPayment: 5000, // $50 min
+    dueDay: 15,
+    includeInSafeToSpend: false,
+  };
+  state.accounts = [checking, card];
+
+  // Initially unconfirmed: estimated requirement is $50
+  let prot = getCreditCardMinimumProtection(card, state, simulatedToday);
+  assert.equal(prot.dueDate, "2026-10-15");
+  assert.equal(prot.isConfirmedPaid, false);
+  assert.equal(prot.remainingMinimumRequirement, 5000);
+  assert.equal(prot.additionalProtection, 5000);
+
+  // User explicitly confirms statement minimum paid
+  const confirmedCard = confirmCreditCardMinimum(card, "2026-10-15");
+  assert.deepEqual(confirmedCard.confirmedMinimumDueDates, ["2026-10-15"]);
+
+  prot = getCreditCardMinimumProtection(confirmedCard, state, simulatedToday);
+  assert.equal(prot.dueDate, "2026-10-15");
+  assert.equal(prot.isConfirmedPaid, true);
+  assert.equal(prot.remainingMinimumRequirement, 0);
+  assert.equal(prot.additionalProtection, 0);
+  assert.equal(prot.status, "covered");
+
+  // Reversible without corruption
+  const unconfirmedCard = unconfirmCreditCardMinimum(confirmedCard, "2026-10-15");
+  assert.deepEqual(unconfirmedCard.confirmedMinimumDueDates, []);
+  prot = getCreditCardMinimumProtection(unconfirmedCard, state, simulatedToday);
+  assert.equal(prot.isConfirmedPaid, false);
+  assert.equal(prot.remainingMinimumRequirement, 5000);
+  assert.equal(prot.additionalProtection, 5000);
+});
+
+test("Test 3C.25 — Following-payday minimum protection with account.protected === false", () => {
+  const simulatedToday = "2026-10-05";
+  const state: State = blank();
+  state.payday = "2026-10-10"; // currentPaydayEnd = 2026-10-10
+  state.followingPayday = "2026-10-24"; // followingEnd = 2026-10-24
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000, // $1,000 cash
+    includeInSafeToSpend: true,
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Card",
+    type: "credit",
+    opening: 40000, // $400 owed
+    creditLimit: 100000,
+    minPayment: 6000, // $60 min
+    dueDay: 18, // due Oct 18 (between Oct 10 and Oct 24)
+    includeInSafeToSpend: false,
+    protected: false, // NOT protected in following cycle
+  };
+  state.accounts = [checking, card];
+
+  const prot = getCreditCardMinimumProtection(card, state, simulatedToday);
+  assert.equal(prot.dueDate, "2026-10-18");
+  assert.equal(prot.dueCycle, "following");
+  assert.equal(prot.isDueInCurrentWindow, false);
+  assert.equal(prot.isDueInFollowingWindow, true);
+  assert.equal(prot.followingAdditionalProtection, 6000, "Tracks obligation needed in following window");
+  assert.equal(prot.additionalProtection, 0, "Does not reduce current paycheck when unprotected");
+
+  const bd = getCreditCardMinimumBreakdown(state, simulatedToday);
+  assert.equal(bd.currentCycleMinimums, 0);
+  assert.equal(bd.followingCycleMinimums, 6000);
+  assert.equal(bd.protectedFollowingMinimums, 0);
+  assert.equal(bd.totalAdditionalProtection, 0);
+
+  const t = totals(state, simulatedToday);
+  assert.equal(t.creditCardMinimums, 0);
+  assert.equal(t.safe, 100000);
+});
+
+test("Test 3C.26 — Following-payday minimum protection with account.protected === true", () => {
+  const simulatedToday = "2026-10-05";
+  const state: State = blank();
+  state.payday = "2026-10-10";
+  state.followingPayday = "2026-10-24";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 100000, // $1,000 cash
+    includeInSafeToSpend: true,
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Protected Card",
+    type: "credit",
+    opening: 40000, // $400 owed
+    creditLimit: 100000,
+    minPayment: 6000, // $60 min
+    dueDay: 18, // due Oct 18
+    includeInSafeToSpend: false,
+    protected: true, // EXPLICITLY protected into following cycle
+  };
+  state.accounts = [checking, card];
+
+  const prot = getCreditCardMinimumProtection(card, state, simulatedToday);
+  assert.equal(prot.dueDate, "2026-10-18");
+  assert.equal(prot.dueCycle, "following");
+  assert.equal(prot.isDueInCurrentWindow, false);
+  assert.equal(prot.isDueInFollowingWindow, true);
+  assert.equal(prot.followingAdditionalProtection, 6000);
+  assert.equal(prot.additionalProtection, 6000, "Protected into following cycle mirrors Bill.protected");
+
+  const bd = getCreditCardMinimumBreakdown(state, simulatedToday);
+  assert.equal(bd.currentCycleMinimums, 0);
+  assert.equal(bd.followingCycleMinimums, 6000);
+  assert.equal(bd.protectedFollowingMinimums, 6000);
+  assert.equal(bd.totalAdditionalProtection, 6000);
+
+  const t = totals(state, simulatedToday);
+  assert.equal(t.creditCardMinimums, 6000);
+  assert.equal(t.currentCycleMinimums, 0);
+  assert.equal(t.protectedFollowingMinimums, 6000);
+  assert.equal(t.safe, 94000, "$1,000 cash - $60 protected following minimum = $940");
+});
+
+test("Test 3C.27 — Overdue minimum priority: overdue is always treated as current-cycle priority and protected immediately", () => {
+  const simulatedToday = "2026-10-18";
+  const state: State = blank();
+  state.payday = "2026-10-25";
+  state.followingPayday = "2026-11-08";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 80000, // $800 cash
+    includeInSafeToSpend: true,
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Card",
+    type: "credit",
+    opening: 30000,
+    creditLimit: 100000,
+    minPayment: 4000, // $40 min
+    dueDay: 12, // due Oct 12 (already past)
+    includeInSafeToSpend: false,
+    protected: false,
+  };
+  state.accounts = [checking, card];
+
+  const prot = getCreditCardMinimumProtection(card, state, simulatedToday);
+  assert.equal(prot.dueDate, "2026-10-12");
+  assert.equal(prot.isOverdue, true);
+  assert.equal(prot.status, "overdue");
+  assert.equal(prot.dueCycle, "current", "Overdue debt is always highest priority / current cycle");
+  assert.equal(prot.isDueInCurrentWindow, true);
+  assert.equal(prot.additionalProtection, 4000);
+
+  const bd = getCreditCardMinimumBreakdown(state, simulatedToday);
+  assert.equal(bd.currentCycleMinimums, 4000);
+  assert.equal(bd.totalAdditionalProtection, 4000);
+
+  const t = totals(state, simulatedToday);
+  assert.equal(t.creditCardMinimums, 4000);
+  assert.equal(t.safe, 76000);
+});
+
+test("Test 3C.28 — Deterministic regression for dashboard Expenses $0.00 issue: legacy transactions lacking status field are accurately included in monthly expenses", () => {
+  const state: State = blank();
+  const currentMonth = "2026-10";
+
+  // Simulate transactions loaded from storage or legacy formats where status is omitted / undefined
+  state.transactions = [
+    {
+      id: "tx-legacy-1",
+      name: "Supermarket Groceries",
+      amount: -4500, // $45.00 expense
+      category: "Groceries",
+      date: "2026-10-05",
+      kind: "standard",
+      // status: undefined (legacy)
+    },
+    {
+      id: "tx-legacy-2",
+      name: "Coffee Shop",
+      amount: -1250, // $12.50 expense
+      category: "Dining Out",
+      date: "2026-10-08",
+      kind: "standard",
+      // status: undefined (legacy)
+    },
+    {
+      id: "tx-legacy-income",
+      name: "Old Freelance Check",
+      amount: 25000, // $250.00 income
+      category: "Income",
+      date: "2026-10-02",
+      kind: "standard",
+      // status: undefined (legacy)
+    },
+  ];
+
+  // In the original bug, isLedgerStatus(undefined) returned false, so monthly was empty and expenses showed $0.00.
+  const expenses = getMonthlyExpenses(state, currentMonth);
+  const income = getMonthlyIncome(state, currentMonth);
+
+  assert.equal(expenses, 5750, "Legacy transactions lacking status are included: $45.00 + $12.50 = $57.50");
+  assert.equal(income, 25000, "Legacy income lacking status is included: $250.00");
+});
+
+test("Test 3C.29 — Monthly expenses inclusion and exclusion: includes credit purchases and bill payments, excludes transfers and card repayments", () => {
+  const state: State = blank();
+  const currentMonth = "2026-10";
+
+  const checking: Account = {
+    id: "acc-chk",
+    name: "Checking",
+    type: "checking",
+    opening: 200000,
+    includeInSafeToSpend: true,
+  };
+  const savings: Account = {
+    id: "acc-sav",
+    name: "Savings",
+    type: "savings",
+    opening: 500000,
+    includeInSafeToSpend: false,
+  };
+  const card: Account = {
+    id: "acc-crd",
+    name: "Credit Card",
+    type: "credit",
+    opening: 50000,
+    creditLimit: 200000,
+    includeInSafeToSpend: false,
+  };
+  state.accounts = [checking, savings, card];
+
+  // 1. Credit card purchase ($85.00) -> MUST count as expense
+  state.transactions.push({
+    id: "tx-crd-purchase",
+    name: "Electronics Store",
+    amount: -8500,
+    category: "Shopping",
+    date: "2026-10-11",
+    status: "posted",
+    accountId: card.id,
+    kind: "standard",
+  });
+
+  // 2. Bill payment recorded via recordBillPayment ($120.00) -> MUST count as expense once
+  state.bills.push({
+    id: "b-water",
+    name: "City Water",
+    amount: 12000,
+    day: 15,
+    protected: false,
+    trackingStartDate: "2026-10-01",
+  });
+  recordBillPayment(state, "b-water", {
+    dueDate: "2026-10-15",
+    amount: 12000,
+    date: "2026-10-12",
+  });
+
+  // 3. Cash transfer from Checking to Savings ($300.00) -> MUST NOT count as purchase / expense
+  state.transactions.push({
+    id: "tx-xfer-chk",
+    name: "Transfer to Savings",
+    amount: -30000,
+    category: "Transfer",
+    date: "2026-10-13",
+    status: "posted",
+    accountId: checking.id,
+    kind: "transfer",
+    targetAccountId: savings.id,
+  });
+
+  // 4. Credit card debt repayment from Checking to Credit Card ($150.00) -> MUST NOT count as purchase / expense
+  state.transactions.push({
+    id: "tx-cc-pay",
+    name: "Credit Card Payment",
+    amount: -15000,
+    category: "Payment",
+    date: "2026-10-14",
+    status: "posted",
+    accountId: checking.id,
+    kind: "payment",
+    targetAccountId: card.id,
+  });
+
+  // 5. Legacy debt migration entry -> MUST NOT count as purchase
+  state.transactions.push({
+    id: "tx-legacy-debt",
+    name: "Initial Card Balance",
+    amount: -50000,
+    category: "Debt",
+    date: "2026-10-01",
+    status: "posted",
+    accountId: card.id,
+    kind: "standard",
+    isLegacyDebt: true,
+  });
+
+  // Total expenses should be $85.00 + $120.00 = $205.00 (20500 cents)
+  const expenses = getMonthlyExpenses(state, currentMonth);
+  assert.equal(expenses, 20500, "Expenses correctly aggregates credit purchases and bill payments without transfers or repayments");
+});
+
+test("Test 3C.30 — Scheduled expenses separation: scheduled purchases do not contaminate actual spending totals or monthly expenses", () => {
+  const state: State = blank();
+  const currentMonth = "2026-10";
+
+  state.transactions = [
+    {
+      id: "tx-posted-1",
+      name: "Actual Posted Purchase",
+      amount: -5000, // $50.00
+      category: "Groceries",
+      date: "2026-10-05",
+      status: "posted",
+      kind: "standard",
+    },
+    {
+      id: "tx-cleared-1",
+      name: "Actual Cleared Purchase",
+      amount: -4000, // $40.00
+      category: "Dining Out",
+      date: "2026-10-07",
+      status: "cleared",
+      kind: "standard",
+    },
+    {
+      id: "tx-sched-1",
+      name: "Future Scheduled Purchase",
+      amount: -20000, // $200.00
+      category: "Electronics",
+      date: "2026-10-28",
+      status: "scheduled",
+      kind: "standard",
+    },
+  ];
+
+  const actualExpenses = getMonthlyExpenses(state, currentMonth);
+  assert.equal(actualExpenses, 9000, "Actual monthly expenses only reflects posted and cleared: $90.00");
+
+  const t = totals(state, "2026-10-10");
+  assert.equal(t.scheduledExpenses, 20000, "Scheduled expenses tracked in separate totals metric");
+});
+

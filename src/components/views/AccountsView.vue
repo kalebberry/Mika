@@ -14,6 +14,8 @@ const {
   getCreditCardMinimumProtection,
   getAccountBalance,
   toggleArchiveAccount,
+  confirmCardMinimum,
+  unconfirmCardMinimum,
 } = useBudget();
 const { open } = useModal();
 
@@ -46,7 +48,7 @@ function toggleMenu(id: string) {
 }
 
 function handleMenuAction(
-  action: "adjust" | "edit" | "archive" | "delete",
+  action: "adjust" | "edit" | "archive" | "delete" | "toggle-confirm-min",
   id: string,
 ) {
   openMenuId.value = null;
@@ -54,6 +56,17 @@ function handleMenuAction(
   else if (action === "edit") open("Edit account", id);
   else if (action === "archive") toggleArchiveAccount(id);
   else if (action === "delete") open("Delete account", id);
+  else if (action === "toggle-confirm-min") {
+    const acc = displayedAccounts.value.find((a) => a.id === id);
+    if (!acc) return;
+    const prot = getMinProtection(acc);
+    if (!prot.dueDate) return;
+    if (prot.isConfirmedPaid) {
+      unconfirmCardMinimum(id, prot.dueDate);
+    } else {
+      confirmCardMinimum(id, prot.dueDate);
+    }
+  }
 }
 
 function onDocumentClick(e: MouseEvent) {
@@ -503,6 +516,15 @@ function getCoverageBadge(status: string) {
                     {{ acc.archived ? "Restore account" : "Archive account" }}
                   </button>
                   <button
+                    v-if="acc.minPayment && getMinProtection(acc).dueDate"
+                    type="button"
+                    class="menu-item"
+                    role="menuitem"
+                    @click="handleMenuAction('toggle-confirm-min', acc.id)"
+                  >
+                    {{ getMinProtection(acc).isConfirmedPaid ? "Unconfirm statement paid" : "Confirm statement paid" }}
+                  </button>
+                  <button
                     type="button"
                     class="menu-item danger"
                     role="menuitem"
@@ -631,13 +653,17 @@ function getCoverageBadge(status: string) {
                     <span
                       class="badge"
                       :class="{
-                        'cleared': getMinProtection(acc).status === 'covered' || getMinProtection(acc).status === 'zero_balance',
+                        'cleared': getMinProtection(acc).status === 'covered' || getMinProtection(acc).status === 'not_applicable',
                         'partially-paid': getMinProtection(acc).status === 'partially_covered',
-                        'danger': getMinProtection(acc).status === 'uncovered'
+                        'danger': getMinProtection(acc).status === 'uncovered' || getMinProtection(acc).status === 'overdue'
                       }"
                     >
-                      <template v-if="getMinProtection(acc).status === 'zero_balance'">Zero balance</template>
-                      <template v-else-if="getMinProtection(acc).status === 'covered'">Minimum covered ✓</template>
+                      <template v-if="getMinProtection(acc).status === 'not_applicable'">Zero balance</template>
+                      <template v-else-if="getMinProtection(acc).status === 'overdue'">⚠️ Overdue</template>
+                      <template v-else-if="getMinProtection(acc).status === 'covered'">
+                        <template v-if="getMinProtection(acc).isConfirmedPaid">Statement satisfied ✓</template>
+                        <template v-else>Minimum covered ✓</template>
+                      </template>
                       <template v-else-if="getMinProtection(acc).status === 'partially_covered'">Partially covered</template>
                       <template v-else>Minimum uncovered</template>
                     </span>
@@ -650,10 +676,16 @@ function getCoverageBadge(status: string) {
                     <div v-if="getMinProtection(acc).dueDate">
                       <span class="cc-min-label">Due Date:</span>
                       <strong>{{ getMinProtection(acc).dueDate }}</strong>
+                      <span v-if="getMinProtection(acc).isOverdue" class="warn-val" style="color: var(--color-danger, #c94a29); margin-left: 0.25rem;">(Past Due)</span>
                     </div>
                     <div v-if="getMinProtection(acc).additionalProtection > 0">
                       <span class="cc-min-label">Protected in Safe to Spend:</span>
                       <strong class="warn-val">+ {{ money(getMinProtection(acc).additionalProtection) }}</strong>
+                    </div>
+                    <div v-else-if="getMinProtection(acc).dueCycle === 'following' && getMinProtection(acc).followingAdditionalProtection > 0">
+                      <span class="cc-min-label">Following Cycle Need:</span>
+                      <strong>{{ money(getMinProtection(acc).followingAdditionalProtection) }}</strong>
+                      <span style="color: var(--color-muted); margin-left: 0.25rem;">(unprotected)</span>
                     </div>
                   </div>
                   <small class="cc-min-disclaimer">
