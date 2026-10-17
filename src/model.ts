@@ -3115,6 +3115,26 @@ export function isBillDueSoon(
 }
 
 /**
+ * Checks if a credit card minimum is "due soon" from asOf date.
+ * Default window is 3 days: inclusive of asOf through addDays(asOf, windowDays).
+ * Returns false if dueDate is null, invalid, in the past (overdue), or beyond windowDays.
+ */
+export function isCreditCardMinimumDueSoon(
+  dueDate: string | null | undefined,
+  asOf = today(),
+  windowDays = 3,
+): boolean {
+  if (!dueDate || !isValidDateString(dueDate) || !isValidDateString(asOf)) {
+    return false;
+  }
+  if (dueDate < asOf) {
+    return false; // Past due dates are overdue, not due soon
+  }
+  const horizon = addDays(asOf, windowDays);
+  return dueDate <= horizon;
+}
+
+/**
  * Resolves the tracking baseline for a bill:
  * Uses explicit trackingStartDate if valid.
  * If not set, checks for any prior linked transactions or settlements;
@@ -3402,7 +3422,10 @@ export interface DailyAttentionItem {
 }
 
 export interface DailyAttentionSummary {
+  primaryItem?: DailyAttentionItem;
+  otherItems: DailyAttentionItem[];
   items: DailyAttentionItem[];
+  allCandidates: DailyAttentionItem[];
   totalCount: number;
   hasMore: boolean;
   moreTargetPage?: string;
@@ -3437,7 +3460,7 @@ export interface DailyPaydayPresentation {
 
 /**
  * Derives daily attention items from existing state, prioritizing by urgency and financial impact.
- * Limits returned items to a maximum of 3, providing a path to more if additional items exist.
+ * Limits returned other items to a maximum of 3, providing a path to more if additional items exist.
  * Deduplicates related concerns (e.g. scheduled transactions linked to an overdue bill).
  */
 export function getDailyAttentionItems(
@@ -3467,15 +3490,24 @@ export function getDailyAttentionItems(
   // 2. Overdue Credit Card Minimums (Rank 20)
   const ccBreakdown = getCreditCardMinimumBreakdown(s, validNow);
   for (const d of ccBreakdown.details) {
-    if (d.additionalProtection > 0 && d.isOverdue && d.dueDate) {
-      const formattedAmt = `$${(d.additionalProtection / 100).toFixed(2)}`;
+    if (d.isOverdue && d.remainingMinimumRequirement > 0 && d.dueDate) {
+      const formattedAmt = `$${(d.remainingMinimumRequirement / 100).toFixed(2)}`;
+      const isEst = d.isEstimated;
+      const title = isEst
+        ? `${d.account.name} Minimum Overdue (Est.)`
+        : `${d.account.name} Minimum Overdue`;
+      const protectionNote =
+        t.shortfall > 0
+          ? "Reserve shortfall in budget"
+          : "Protected in Safe to Spend";
+
       candidates.push({
         id: `attention-overdue-min-${d.account.id}`,
         category: "overdue_minimum",
         severity: "critical",
-        title: `${d.account.name} Minimum Overdue`,
-        description: `Minimum payment of ${formattedAmt} was due on ${d.dueDate}.`,
-        amount: d.additionalProtection,
+        title,
+        description: `${isEst ? "Estimated " : ""}${formattedAmt} unpaid minimum was due on ${d.dueDate} · ${protectionNote}.`,
+        amount: d.remainingMinimumRequirement,
         dueDate: d.dueDate,
         actionLabel: "Review card",
         targetPage: "Accounts",
@@ -3544,23 +3576,40 @@ export function getDailyAttentionItems(
     }
   }
 
-  // 5. Uncovered Credit Card Minimums in Current Cycle (Rank 50)
+  // 5. Active Credit Card Minimums Due Soon (within 3 calendar days) (Rank 50)
   for (const d of ccBreakdown.details) {
     if (
-      d.additionalProtection > 0 &&
       !d.isOverdue &&
       d.dueCycle === "current" &&
-      d.dueDate
+      d.remainingMinimumRequirement > 0 &&
+      isCreditCardMinimumDueSoon(d.dueDate, validNow)
     ) {
-      const formattedAmt = `$${(d.additionalProtection / 100).toFixed(2)}`;
+      // If cash already held in Ready to Pay covers the requirement, no alert needed
+      if (d.readyToPay >= d.remainingMinimumRequirement) {
+        continue;
+      }
+
+      const formattedAmt = `$${(d.remainingMinimumRequirement / 100).toFixed(2)}`;
+      const days = daysBetween(validNow, d.dueDate!);
+      const timing =
+        days === 0 ? "today" : days === 1 ? "tomorrow" : `in ${days} days`;
+      const isEst = d.isEstimated;
+      const title = isEst
+        ? `${d.account.name} Minimum Due Soon (Est.)`
+        : `${d.account.name} Minimum Due Soon`;
+      const protectionNote =
+        t.shortfall > 0
+          ? "Reserve shortfall in budget"
+          : "Protected in Safe to Spend";
+
       candidates.push({
         id: `attention-uncovered-min-${d.account.id}`,
         category: "uncovered_minimum",
         severity: "warning",
-        title: `${d.account.name} Minimum Due Soon`,
-        description: `${formattedAmt} minimum due on ${d.dueDate} needs payment coverage.`,
-        amount: d.additionalProtection,
-        dueDate: d.dueDate,
+        title,
+        description: `${isEst ? "Estimated " : ""}${formattedAmt} minimum due ${timing} (${d.dueDate}) · ${protectionNote}.`,
+        amount: d.remainingMinimumRequirement,
+        dueDate: d.dueDate!,
         actionLabel: "Review card",
         targetPage: "Accounts",
         accountId: d.account.id,
@@ -3612,32 +3661,63 @@ export function getDailyAttentionItems(
   });
 
   const totalCount = candidates.length;
-  const items = candidates.slice(0, 3);
-  const hasMore = totalCount > 3;
+  const primaryItem = candidates.length > 0 ? candidates[0] : undefined;
+  // Up to 3 other distinct attention items (excluding the primary item featured in suggested next action)
+  const otherItems = candidates.slice(1, 4);
+  // Any items beyond primary (1) + otherItems (3) are overflow
+  const overflowCandidates = candidates.slice(4);
+  const hasMore = overflowCandidates.length > 0;
   let moreTargetPage: string | undefined;
   let moreLabel: string | undefined;
 
   if (hasMore) {
-    const remaining = candidates.slice(3);
-    const billCount = remaining.filter(
-      (i) => i.category === "overdue_bill" || i.category === "due_soon_bill",
+    const billCount = overflowCandidates.filter(
+      (i) => i.targetPage === "Recurring Bills",
     ).length;
-    const cardCount = remaining.filter(
-      (i) =>
-        i.category === "overdue_minimum" || i.category === "uncovered_minimum",
+    const cardCount = overflowCandidates.filter(
+      (i) => i.targetPage === "Accounts",
+    ).length;
+    const txCount = overflowCandidates.filter(
+      (i) => i.targetPage === "Transactions",
+    ).length;
+    const budgetCount = overflowCandidates.filter(
+      (i) => i.targetPage === "Budgets",
     ).length;
 
-    if (billCount >= cardCount) {
+    if (
+      billCount >= cardCount &&
+      billCount >= txCount &&
+      billCount >= budgetCount &&
+      billCount > 0
+    ) {
       moreTargetPage = "Recurring Bills";
-      moreLabel = `View all bills (${totalCount - 3} more)`;
-    } else {
+      moreLabel =
+        billCount === 1 ? "View 1 more bill" : `View all bills (${billCount} more)`;
+    } else if (
+      cardCount >= billCount &&
+      cardCount >= txCount &&
+      cardCount >= budgetCount &&
+      cardCount > 0
+    ) {
       moreTargetPage = "Accounts";
-      moreLabel = `View accounts (${totalCount - 3} more)`;
+      moreLabel =
+        cardCount === 1 ? "View 1 more account" : `View accounts (${cardCount} more)`;
+    } else if (txCount > 0 && txCount >= budgetCount) {
+      moreTargetPage = "Transactions";
+      moreLabel =
+        txCount === 1 ? "View 1 more transaction" : `View transactions (${txCount} more)`;
+    } else {
+      moreTargetPage = "Budgets";
+      moreLabel =
+        budgetCount === 1 ? "View 1 more budget" : `View budgets (${budgetCount} more)`;
     }
   }
 
   return {
-    items,
+    primaryItem,
+    otherItems,
+    items: otherItems,
+    allCandidates: candidates,
     totalCount,
     hasMore,
     moreTargetPage,
@@ -3655,10 +3735,16 @@ export function getDailySuggestedAction(
   now = today(),
 ): DailySuggestedAction {
   const validNow = isValidDateString(now) ? now : today();
-  const attentionItems = items || getDailyAttentionItems(s, validNow).items;
+  let top: DailyAttentionItem | undefined;
 
-  if (attentionItems.length > 0) {
-    const top = attentionItems[0]!;
+  if (items && items.length > 0) {
+    top = items[0];
+  } else if (!items) {
+    const summary = getDailyAttentionItems(s, validNow);
+    top = summary.primaryItem;
+  }
+
+  if (top) {
     if (top.category === "shortfall") {
       const formattedDeficit = `$${((top.amount || 0) / 100).toFixed(2)}`;
       return {
@@ -3708,7 +3794,7 @@ export function getDailySuggestedAction(
     if (top.category === "uncovered_minimum") {
       return {
         id: `action-uncovered-min-${top.accountId || ""}`,
-        title: `Protect card minimum: ${top.title.replace(" Minimum Due Soon", "")}`,
+        title: `Protect card minimum: ${top.title.replace(" Minimum Due Soon", "").replace(" (Est.)", "")}`,
         description: top.description,
         actionLabel: "Review card",
         targetPage: "Accounts",
@@ -3804,22 +3890,22 @@ export function getDailyPaydayPresentation(
       : [];
     if (confirmed.length > 0) {
       targetDate = confirmed[0]!;
-      isConfirmed = true;
+      isConfirmed = false;
       isProjected = false;
-      statusLabel = "Confirmed next payday";
-      statusDescription = "Explicitly scheduled deposit date.";
+      statusLabel = "Manually scheduled";
+      statusDescription = "Manually scheduled deposit date.";
     } else if (isValidDateString(s.payday) && s.payday < validNow) {
       targetDate = s.payday;
       isConfirmed = false;
       isProjected = false;
       statusLabel = "Payday passed";
       statusDescription =
-        "Your payday has passed. Update it in Settings to refresh your daily plan.";
+        "Your scheduled payday has passed. Update it in Settings to refresh your daily plan.";
     } else {
       targetDate = "";
       isConfirmed = false;
       isProjected = false;
-      statusLabel = "No payday set";
+      statusLabel = "Not configured";
       statusDescription = "Set your next payday in Settings.";
     }
   } else {
@@ -3832,14 +3918,14 @@ export function getDailyPaydayPresentation(
           o.overrideDate === targetDate || o.scheduledDate === targetDate,
       );
       if (hasOverride) {
-        isConfirmed = true;
+        isConfirmed = false;
         isProjected = false;
-        statusLabel = "Confirmed (adjusted)";
+        statusLabel = "Adjusted schedule";
         statusDescription = "One-time payday adjustment for this cycle.";
       } else {
         isConfirmed = false;
         isProjected = true;
-        statusLabel = "Projected next payday";
+        statusLabel = "Projected";
         statusDescription = `Calculated from your ${frequency} cadence.`;
       }
     }

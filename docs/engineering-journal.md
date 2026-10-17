@@ -1366,3 +1366,92 @@ Production build check (`npm run build`):
 1. **Local Occurrence Resolution**: Suggested bill actions target the earliest outstanding occurrence within the current tracking horizon. If a bill has multiple overdue occurrences spanning several months, the dashboard highlights the earliest one; resolving it surfaces the subsequent occurrence on the next evaluation.
 2. **Manual Payday Updates**: Automated cadence schedules project paydays deterministically, but manual schedules require user updates in Settings once the anchor date has passed. The dashboard cleanly alerts the user with a neutral "Update your next payday" suggestion when this occurs.
 
+---
+
+## Phase 4A Independent Review Corrections & Hardening
+
+**Branch**: `phase/4a-daily-home-dashboard`  
+**Status**: Completed, verified with full regression suite.
+
+### 1. Root Causes & Findings Addressed
+
+#### Correction 1 — Credit Card Minimum Accuracy & Coverage Distinction (HIGH)
+- **Finding**: `getDailyAttentionItems()` previously described credit card minimums needing `additionalProtection` as "needs payment coverage" using `additionalProtection` as the dollar amount.
+- **Root Cause & Fix**:
+  - In Mika's engine, `additionalProtection` represents the money that Safe to Spend has **already reserved** from cash. Calling it "needs payment coverage" gave the false impression that reserved money was unprotected.
+  - Corrected the wording and alert conditions:
+    - Reports the actual unpaid obligation amount (`d.remainingMinimumRequirement`).
+    - Distinguishes recorded statement minimums from inferred estimates: cards with explicit snapshots omit `(Est.)`, while unsnapshotted estimates are labeled `(Est.)` and prefixed with `"Estimated "`.
+    - If `t.shortfall === 0`: Clearly notes `"Protected in Safe to Spend"`. Reserved money is never described as unprotected.
+    - If `t.shortfall > 0`: Transparently notes `"Reserve shortfall in budget"`.
+    - Preserves all credit card calculations and Covered Credit invariants.
+
+#### Correction 2 — Correct Due Soon Timing for Credit Card Minimums
+- **Finding**: Credit card minimums previously triggered a "Due Soon" alert for any due date in the current paycheck cycle, even if due 10+ days away.
+- **Root Cause & Fix**:
+  - Introduced pure helper function `isCreditCardMinimumDueSoon(dueDate, asOf, 3)` in [`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts).
+  - Strictly requires the due date to fall within three calendar days, inclusive (`dueDate >= asOf && dueDate <= addDays(asOf, 3)`).
+  - Added boundary tests for today (due soon), 3 days away (due soon), 4 days away (not due soon), and overdue (handled with rank 20 critical priority).
+
+#### Correction 3 — Correct Hidden-Alert Navigation & Counting
+- **Finding**: When more than 3 attention items existed, the overflow link previously counted all remaining items across disparate categories and directed to a single page (e.g., claiming "2 more bills" when one of the remaining items was a scheduled transaction).
+- **Root Cause & Fix**:
+  - Filtered overflow candidates (`overflowCandidates = candidates.slice(4)`).
+  - Computed category counts for hidden items strictly belonging to each destination page.
+  - Formatted `moreLabel` to count only the hidden items belonging to that specific target page (e.g., `"View 1 more bill"` when 1 bill is hidden).
+
+#### Correction 4 — Clarified Payday Terminology
+- **Finding**: Next Payday card previously rendered a `"Confirmed"` badge for manually entered dates or adjusted schedules, which could mislead users into believing deposit income had been received.
+- **Root Cause & Fix**:
+  - Removed "Confirmed" label for future scheduled dates.
+  - Implemented precise terminology in `getDailyPaydayPresentation()` and [`DailyPaydayCard.vue`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/components/overview/DailyPaydayCard.vue):
+    - `"Manually scheduled"`: Explicit manual deposit date.
+    - `"Adjusted schedule"`: Recurring schedule with a one-time cycle override.
+    - `"Projected"`: Automated recurring cadence without manual overrides.
+    - `"Payday passed"`: Scheduled payday has passed and requires setting update.
+    - `"Not configured"`: Payday schedule is unconfigured.
+  - Preserved the financial invariant: projected income is never credited to spendable cash or ledger balances.
+
+#### Correction 5 — Eliminate Duplicate Attention Actions (UI Improvement)
+- **Finding**: When an attention item was chosen as the Suggested Next Action (e.g. Cricket Wireless Due Soon), the dashboard previously rendered it twice: once in the Suggested Step banner and immediately again as the first card in the attention items list below it, presenting duplicate buttons.
+- **Root Cause & Fix**:
+  - The suggested next action prominently features the top attention item (`summary.primaryItem`).
+  - The attention list below it strictly displays up to 3 **other distinct attention items** (`summary.otherItems = candidates.slice(1, 4)`).
+  - When exactly 1 attention item exists:
+    - Displayed in the Suggested Step callout.
+    - `otherItems` is empty (`length === 0`).
+    - The calm empty state banner is suppressed (`v-else-if="totalCount === 0"`).
+    - Result: zero duplicate cards, zero competing buttons, and no contradictory empty-state messages.
+  - When 0 attention items exist: Suggested action shows neutral task ("Record daily spending") and calm empty state renders cleanly.
+
+#### Correction 6 — Reduced Redundant Payday Presentation (UI Improvement)
+- **Finding**: Payday information was previously repeated across Safe to Spend, Next Payday, and Payday & Protection cards.
+- **Root Cause & Fix**:
+  - Assigned distinct responsibilities to each card:
+    - **Safe to Spend card**: Spending horizon and available money. Describes daily available money as average available per day over the cycle (`"Average available: $XX.XX / day over the X-day cycle"`), not a recommended spending target. Removed redundant Settings link.
+    - **Next Payday card**: Deposit date, schedule status badge, countdown, and Settings navigation.
+    - **Payday & Protection section**: Detailed breakdown of bill reservations, following-cycle protection, and reserve shortfall status.
+
+#### Correction 7 — Preserved Optional Companion Behavior
+- Maintained `showCompanion` toggle respecting user settings.
+- When companion is disabled, no mascot elements render, leaving the layout clean, accessible, and balanced.
+
+---
+
+### 2. Verification Results & Regression Suite
+
+All 202 automated tests pass cleanly (`npm test`):
+- Added Tests `Test 4A.11` through `Test 4A.18` covering:
+  - `Test 4A.11`: Credit minimum coverage wording distinguishes protected reserves from shortfalls.
+  - `Test 4A.12`: Recorded versus estimated credit card minimums are transparently labeled.
+  - `Test 4A.13`: Three-day due-soon boundaries for credit card minimums (today, 3 days away, 4 days away, overdue).
+  - `Test 4A.14`: Hidden-alert navigation with mixed-category overflow counts only target items.
+  - `Test 4A.15`: Payday terminology accurately reflects manual, projected, adjusted, passed, and not configured.
+  - `Test 4A.16`: Suggested-action deduplication across 1, 3, and more than 3 distinct attention items.
+  - `Test 4A.17`: Companion-disabled state leaves budget presentation intact.
+  - `Test 4A.18`: Safe to Spend average available per day description.
+
+Production build check (`npm run build`):
+- `vue-tsc -b && vite build` passed cleanly with 0 errors in 2.56s.
+
+

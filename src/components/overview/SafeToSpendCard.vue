@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { today } from "../../model";
-import { money, date } from "../../utils/format";
+import { money } from "../../utils/format";
 import { useBudget } from "../../composables/useBudget";
 
-const { state, sum, days, page, currentPayday } = useBudget();
+const { state, sum, days, currentPayday } = useBudget();
 </script>
 
 <template>
@@ -23,13 +23,10 @@ const { state, sum, days, page, currentPayday } = useBudget();
         <strong>{{ money(sum.shortfall) }}</strong>. Adjust your plan before spending.
       </p>
       <p v-else>
-        About
-        <strong>{{ money(Math.floor(sum.safe / days)) }} a day</strong>
-        until your next payday.
+        Average available:
+        <strong>{{ money(Math.floor(sum.safe / (days > 0 ? days : 1))) }} / day</strong>
+        over the {{ days }}-day cycle.
       </p>
-      <button class="text-link light" @click="page = 'Settings'">
-        Next payday: {{ date(currentPayday) }} <span>↗</span>
-      </button>
     </div>
     <div class="safe-breakdown">
       <div>

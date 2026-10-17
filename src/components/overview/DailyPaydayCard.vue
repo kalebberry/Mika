@@ -20,25 +20,39 @@ const freqName = computed(() => frequencyLabel(payday.value.frequency));
           <span class="payday-icon" aria-hidden="true">📅</span>
           <h2 id="payday-status-title" class="payday-title">Next Payday</h2>
           <span
-            v-if="payday.isConfirmed"
+            v-if="payday.statusLabel === 'Manually scheduled'"
             class="badge badge-teal"
-            title="Explicitly confirmed deposit date"
+            title="Manually scheduled deposit date"
           >
-            Confirmed
+            Manually scheduled
           </span>
           <span
-            v-else-if="payday.isProjected"
+            v-else-if="payday.statusLabel === 'Adjusted schedule'"
+            class="badge badge-teal"
+            title="One-time payday adjustment for this cycle"
+          >
+            Adjusted schedule
+          </span>
+          <span
+            v-else-if="payday.statusLabel === 'Projected'"
             class="badge badge-neutral"
             title="Projected based on recurring schedule"
           >
             Projected
           </span>
           <span
+            v-else-if="payday.statusLabel === 'Payday passed'"
+            class="badge badge-amber"
+            title="Scheduled payday has passed"
+          >
+            Payday passed
+          </span>
+          <span
             v-else
             class="badge badge-amber"
-            title="Requires update in Settings"
+            title="Payday schedule is not configured"
           >
-            Needs update
+            Not configured
           </span>
         </div>
         <div class="payday-date-row">

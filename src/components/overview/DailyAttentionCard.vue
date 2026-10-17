@@ -156,8 +156,8 @@ function handleSuggestedAction() {
       </article>
     </div>
 
-    <!-- Calm empty state if no attention items -->
-    <div v-else class="attention-calm-state">
+    <!-- Calm empty state ONLY if no attention items exist at all -->
+    <div v-else-if="totalCount === 0" class="attention-calm-state">
       <span class="calm-icon" aria-hidden="true">✓</span>
       <div>
         <strong v-if="hasAccountsOrTransactions">
