@@ -1,16 +1,25 @@
 <script setup lang="ts">
-import { today } from "../../model";
+import { ref, computed, watch } from "vue";
+import {
+  today,
+  type PaydaySchedule,
+  getUpcomingPaydays,
+} from "../../model";
+import { date, frequencyLabel } from "../../utils/format";
 import { companionPortraits } from "../../companion";
 import { useBudget } from "../../composables/useBudget";
 import { useCompanion } from "../../composables/useCompanion";
 import { useModal } from "../../composables/useModal";
 
 const {
+  state,
   settingsBalance,
-  settingsPayday,
-  settingsFollowingPayday,
   settingsSaved,
   saveSettings,
+  saveSchedule,
+  addScheduleOverride,
+  removeScheduleOverride,
+  currentPayday,
   backup,
   importBackup,
 } = useBudget();
@@ -23,6 +32,154 @@ const {
 } = useCompanion();
 
 const { open } = useModal();
+
+function initDraft(): PaydaySchedule {
+  const sched = state.value.paydaySchedule;
+  const currPayday = currentPayday.value || today();
+  return {
+    frequency: sched?.frequency || "manual",
+    anchorDate: sched?.anchorDate || currPayday,
+    dayOfMonth:
+      sched?.dayOfMonth ??
+      (sched?.anchorDate ? Number(sched.anchorDate.split("-")[2]) : 1),
+    firstDay: sched?.firstDay ?? 15,
+    secondDay: sched?.secondDay ?? 31,
+    weekendRule: sched?.weekendRule || "exact",
+    manualFollowingPayday:
+      sched?.manualFollowingPayday || state.value.followingPayday || "",
+    overrides: sched?.overrides
+      ? JSON.parse(JSON.stringify(sched.overrides))
+      : [],
+  };
+}
+
+const draftSchedule = ref<PaydaySchedule>(initDraft());
+const scheduleError = ref("");
+const scheduleSaved = ref(false);
+
+const isDirty = computed(() => {
+  const orig = state.value.paydaySchedule;
+  if (!orig) return true;
+  const d = draftSchedule.value;
+  if (d.frequency !== orig.frequency) return true;
+  if (d.anchorDate !== orig.anchorDate) return true;
+  if (d.weekendRule !== orig.weekendRule) return true;
+  if (d.frequency === "monthly" && d.dayOfMonth !== orig.dayOfMonth) return true;
+  if (
+    d.frequency === "semimonthly" &&
+    (d.firstDay !== orig.firstDay || d.secondDay !== orig.secondDay)
+  )
+    return true;
+  if (
+    d.frequency === "manual" &&
+    (d.manualFollowingPayday || "") !== (orig.manualFollowingPayday || "")
+  )
+    return true;
+  return false;
+});
+
+watch(
+  () => state.value.paydaySchedule,
+  (newSched) => {
+    if (!isDirty.value && newSched) {
+      draftSchedule.value = initDraft();
+    }
+  },
+  { deep: true },
+);
+
+const upcomingPreview = computed(() => {
+  try {
+    const d = draftSchedule.value;
+    if (!d.anchorDate) return [];
+    if (
+      d.frequency === "monthly" &&
+      (!d.dayOfMonth || d.dayOfMonth < 1 || d.dayOfMonth > 31)
+    )
+      return [];
+    if (
+      d.frequency === "semimonthly" &&
+      (!d.firstDay || !d.secondDay || d.firstDay === d.secondDay)
+    )
+      return [];
+    return getUpcomingPaydays(d, today(), 3);
+  } catch {
+    return [];
+  }
+});
+
+function onFrequencyChange() {
+  scheduleError.value = "";
+  const d = draftSchedule.value;
+  if (d.frequency === "monthly" && !d.dayOfMonth) {
+    d.dayOfMonth = Number(d.anchorDate?.split("-")[2]) || 1;
+  }
+  if (d.frequency === "semimonthly") {
+    if (!d.firstDay) d.firstDay = 15;
+    if (!d.secondDay) d.secondDay = 31;
+  }
+  if (d.frequency === "manual" && !d.anchorDate) {
+    d.anchorDate = currentPayday.value || today();
+  }
+}
+
+function handleSaveSchedule() {
+  scheduleError.value = "";
+  const result = saveSchedule(draftSchedule.value);
+  if (result.success) {
+    scheduleSaved.value = true;
+    setTimeout(() => {
+      scheduleSaved.value = false;
+    }, 3000);
+  } else {
+    scheduleError.value =
+      result.message || "Please correct the schedule errors.";
+  }
+}
+
+function handleCancelSchedule() {
+  draftSchedule.value = initDraft();
+  scheduleError.value = "";
+}
+
+// One-time overrides state
+const showAddOverride = ref(false);
+const newOverride = ref({ scheduledDate: "", overrideDate: "", note: "" });
+const overrideError = ref("");
+
+const activeOverrides = computed(
+  () => state.value.paydaySchedule?.overrides || [],
+);
+
+function handleAddOverride() {
+  overrideError.value = "";
+  if (!newOverride.value.scheduledDate || !newOverride.value.overrideDate) {
+    overrideError.value =
+      "Please select both a scheduled date and a substitute override date.";
+    return;
+  }
+  const result = addScheduleOverride({
+    scheduledDate: newOverride.value.scheduledDate,
+    overrideDate: newOverride.value.overrideDate,
+    note: newOverride.value.note.trim() || undefined,
+  });
+  if (result.success) {
+    newOverride.value = { scheduledDate: "", overrideDate: "", note: "" };
+    showAddOverride.value = false;
+    draftSchedule.value.overrides = JSON.parse(
+      JSON.stringify(state.value.paydaySchedule?.overrides || []),
+    );
+  } else {
+    overrideError.value = result.error || "Could not apply override.";
+  }
+}
+
+function handleRemoveOverride(idOrDate: string) {
+  removeScheduleOverride(idOrDate);
+  draftSchedule.value.overrides = JSON.parse(
+    JSON.stringify(state.value.paydaySchedule?.overrides || []),
+  );
+}
 </script>
 
 <template>
@@ -36,8 +193,8 @@ const { open } = useModal();
           </h2>
         </div>
         <p class="muted settings-desc">
-          Update your starting balance and regular payday schedule so your
-          Safe-to-Spend calculations remain accurate.
+          Update your starting cash balance. Paydays and recurring schedules are
+          managed in the Payday Schedule section below.
         </p>
         <form @submit.prevent="saveSettings" class="settings-form">
           <label>
@@ -51,38 +208,13 @@ const { open } = useModal();
               placeholder="0.00"
             />
             <small>
-              Total cash available, including any money designated for savings
-              pots.
-            </small>
-          </label>
-          <label>
-            <span>Next payday</span>
-            <input
-              v-model="settingsPayday"
-              type="date"
-              :min="today()"
-              required
-            />
-            <small>
-              Used to calculate daily safe-to-spend allowance until your next
-              income.
-            </small>
-          </label>
-          <label>
-            <span>Following payday</span>
-            <input
-              v-model="settingsFollowingPayday"
-              type="date"
-              :min="settingsPayday || today()"
-              required
-            />
-            <small>
-              The paycheck after your next one. Used to identify upcoming essential bills to protect (like next month’s rent).
+              Total cash available across your primary checking and cash accounts.
             </small>
           </label>
           <div class="formula-note">
             <strong>Formula:</strong> Safe to spend = balance − pots − remaining
-            monthly budgets − unpaid bills through payday − protected next cycle bills.
+            monthly budgets − unpaid bills through payday − protected next cycle
+            bills − credit card payment reserves.
           </div>
           <div class="settings-action-row">
             <button class="primary" type="submit">Save baseline</button>
@@ -91,6 +223,319 @@ const { open } = useModal();
             </span>
           </div>
         </form>
+      </section>
+
+      <section class="card settings-card" id="payday-schedule-card">
+        <div class="section-heading">
+          <h2>
+            <span class="settings-heading-icon">📅</span>
+            Payday Schedule
+          </h2>
+          <span class="badge" :class="`frequency-${draftSchedule.frequency}`">
+            {{ frequencyLabel(draftSchedule.frequency) }}
+          </span>
+        </div>
+        <p class="muted settings-desc">
+          Configure how frequently you receive income. Mika uses this schedule to
+          automatically reserve money for upcoming bills and calculate your daily
+          spending allowance.
+        </p>
+
+        <form @submit.prevent="handleSaveSchedule" class="settings-form">
+          <!-- Frequency Selection -->
+          <label>
+            <span>Schedule frequency</span>
+            <select
+              v-model="draftSchedule.frequency"
+              @change="onFrequencyChange"
+            >
+              <option value="biweekly">Biweekly (Every 2 weeks)</option>
+              <option value="weekly">Weekly</option>
+              <option value="semimonthly">Semimonthly (Twice a month)</option>
+              <option value="monthly">Monthly</option>
+              <option value="manual">Manual (Specific dates)</option>
+            </select>
+            <small>How often your primary income arrives.</small>
+          </label>
+
+          <!-- Progressive Disclosure Fields -->
+
+          <!-- 1. Weekly & Biweekly -->
+          <template
+            v-if="
+              draftSchedule.frequency === 'weekly' ||
+              draftSchedule.frequency === 'biweekly'
+            "
+          >
+            <label>
+              <span>Anchor payday date</span>
+              <input
+                v-model="draftSchedule.anchorDate"
+                type="date"
+                required
+              />
+              <small>
+                A recent or upcoming payday to establish the
+                {{
+                  draftSchedule.frequency === "weekly"
+                    ? "weekly day of the week"
+                    : "2-week cycle"
+                }}.
+              </small>
+            </label>
+          </template>
+
+          <!-- 2. Monthly -->
+          <template v-else-if="draftSchedule.frequency === 'monthly'">
+            <label>
+              <span>Payday day of month (1–31)</span>
+              <input
+                v-model.number="draftSchedule.dayOfMonth"
+                type="number"
+                min="1"
+                max="31"
+                step="1"
+                required
+                placeholder="e.g. 1 or 15 or 31"
+              />
+              <small>
+                Day of the month you get paid. Months with fewer days use the
+                last calendar day.
+              </small>
+            </label>
+            <label>
+              <span>Anchor date</span>
+              <input
+                v-model="draftSchedule.anchorDate"
+                type="date"
+                required
+              />
+              <small>Reference date for the monthly cycle.</small>
+            </label>
+          </template>
+
+          <!-- 3. Semimonthly -->
+          <template v-else-if="draftSchedule.frequency === 'semimonthly'">
+            <div class="form-row-2col">
+              <label>
+                <span>First payday (day 1–31)</span>
+                <input
+                  v-model.number="draftSchedule.firstDay"
+                  type="number"
+                  min="1"
+                  max="31"
+                  step="1"
+                  required
+                  placeholder="15"
+                />
+                <small>e.g., 15th</small>
+              </label>
+              <label>
+                <span>Second payday (day 1–31)</span>
+                <input
+                  v-model.number="draftSchedule.secondDay"
+                  type="number"
+                  min="1"
+                  max="31"
+                  step="1"
+                  required
+                  placeholder="31"
+                />
+                <small>e.g., 31st (last day)</small>
+              </label>
+            </div>
+            <small class="field-hint">
+              Two distinct days each month (e.g. 15th and 31st).
+            </small>
+            <label>
+              <span>Anchor date</span>
+              <input
+                v-model="draftSchedule.anchorDate"
+                type="date"
+                required
+              />
+              <small>Reference date for the semimonthly cycle.</small>
+            </label>
+          </template>
+
+          <!-- 4. Manual -->
+          <template v-else-if="draftSchedule.frequency === 'manual'">
+            <label>
+              <span>Next payday date</span>
+              <input
+                v-model="draftSchedule.anchorDate"
+                type="date"
+                required
+              />
+              <small>Your next confirmed upcoming payday.</small>
+            </label>
+            <label>
+              <span>Following payday date (optional)</span>
+              <input
+                v-model="draftSchedule.manualFollowingPayday"
+                type="date"
+                :min="draftSchedule.anchorDate"
+              />
+              <small>
+                The payday after your next one. Used to identify upcoming
+                essential bills to protect (like next month’s rent).
+              </small>
+            </label>
+          </template>
+
+          <!-- Weekend Adjustment Rule (for non-manual frequencies) -->
+          <label v-if="draftSchedule.frequency !== 'manual'">
+            <span>Weekend adjustment</span>
+            <select v-model="draftSchedule.weekendRule">
+              <option value="exact">Exact date (No weekend shift)</option>
+              <option value="preceding_friday">
+                Preceding Friday (If payday is Sat/Sun)
+              </option>
+            </select>
+            <small
+              >If your payday falls on a weekend, automatically shift it to
+              Friday.</small
+            >
+          </label>
+
+          <!-- Upcoming Preview -->
+          <div v-if="upcomingPreview.length > 0" class="payday-preview-box">
+            <span class="preview-label">Upcoming paydays preview</span>
+            <div class="preview-dates">
+              <span
+                v-for="(pDate, idx) in upcomingPreview"
+                :key="pDate"
+                class="preview-date-chip"
+              >
+                {{ idx === 0 ? "Next: " : "" }}{{ date(pDate) }}
+              </span>
+            </div>
+          </div>
+
+          <!-- Error Alert Banner -->
+          <div
+            v-if="scheduleError"
+            class="formula-note warning schedule-error"
+            role="alert"
+          >
+            ⚠ {{ scheduleError }}
+          </div>
+
+          <!-- Action Buttons: Save & Cancel -->
+          <div class="settings-action-row">
+            <button class="primary" type="submit">Save schedule</button>
+            <button
+              class="secondary"
+              type="button"
+              @click="handleCancelSchedule"
+              :disabled="!isDirty && !scheduleError"
+            >
+              Cancel
+            </button>
+            <span v-if="scheduleSaved" class="saved-badge">
+              ✓ Schedule saved
+            </span>
+          </div>
+        </form>
+
+        <!-- One-Time Overrides Section -->
+        <div class="overrides-section">
+          <div class="overrides-header">
+            <h3>One-Time Payday Overrides</h3>
+            <button
+              type="button"
+              class="text-link"
+              @click="showAddOverride = !showAddOverride; overrideError = '';"
+            >
+              {{ showAddOverride ? "Hide" : "+ Add override" }}
+            </button>
+          </div>
+          <p class="muted settings-desc">
+            Temporarily shift a specific payday (e.g., for early holiday
+            deposits) without altering your recurring schedule.
+          </p>
+
+          <!-- List of existing overrides -->
+          <div v-if="activeOverrides.length > 0" class="overrides-list">
+            <div
+              v-for="ov in activeOverrides"
+              :key="ov.id || ov.scheduledDate"
+              class="override-item"
+            >
+              <div class="override-info">
+                <strong
+                  >{{ date(ov.scheduledDate) }} →
+                  {{ date(ov.overrideDate) }}</strong
+                >
+                <span v-if="ov.note" class="override-note">{{ ov.note }}</span>
+              </div>
+              <button
+                type="button"
+                class="secondary small delete-btn"
+                @click="handleRemoveOverride(ov.id || ov.scheduledDate)"
+                title="Remove override"
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+          <p v-else-if="!showAddOverride" class="muted field-hint">
+            No active one-time overrides.
+          </p>
+
+          <!-- Add Override Form -->
+          <form
+            v-if="showAddOverride"
+            @submit.prevent="handleAddOverride"
+            class="add-override-form"
+          >
+            <div class="form-row-2col">
+              <label>
+                <span>Scheduled occurrence date</span>
+                <input
+                  v-model="newOverride.scheduledDate"
+                  type="date"
+                  required
+                />
+              </label>
+              <label>
+                <span>Substitute payday date</span>
+                <input
+                  v-model="newOverride.overrideDate"
+                  type="date"
+                  required
+                />
+              </label>
+            </div>
+            <label>
+              <span>Note (optional)</span>
+              <input
+                v-model="newOverride.note"
+                type="text"
+                placeholder="e.g. Early Thanksgiving direct deposit"
+              />
+            </label>
+            <div
+              v-if="overrideError"
+              class="formula-note warning override-error"
+              role="alert"
+            >
+              ⚠ {{ overrideError }}
+            </div>
+            <div class="settings-action-row">
+              <button class="primary small" type="submit">
+                Add override
+              </button>
+              <button
+                class="secondary small"
+                type="button"
+                @click="showAddOverride = false; overrideError = '';"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
       </section>
 
       <section class="card settings-card">

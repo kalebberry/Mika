@@ -6,6 +6,7 @@ import MiniPotsCard from "../overview/MiniPotsCard.vue";
 import MiniTransactionsCard from "../overview/MiniTransactionsCard.vue";
 import MiniBudgetsCard from "../overview/MiniBudgetsCard.vue";
 import MiniBillsCard from "../overview/MiniBillsCard.vue";
+import PaydaySummaryCard from "../overview/PaydaySummaryCard.vue";
 </script>
 
 <template>
@@ -14,6 +15,7 @@ import MiniBillsCard from "../overview/MiniBillsCard.vue";
   <StatGrid />
   <div class="overview-grid">
     <div class="column">
+      <PaydaySummaryCard />
       <MiniPotsCard />
       <MiniTransactionsCard />
     </div>

@@ -3,7 +3,7 @@ import { today } from "../../model";
 import { money, date } from "../../utils/format";
 import { useBudget } from "../../composables/useBudget";
 
-const { state, sum, days, page } = useBudget();
+const { state, sum, days, page, currentPayday } = useBudget();
 </script>
 
 <template>
@@ -15,7 +15,7 @@ const { state, sum, days, page } = useBudget();
       <div class="safe-number" :class="{ negative: sum.shortfall > 0 }">
         {{ money(sum.safe) }}
       </div>
-      <p v-if="state.payday < today()">
+      <p v-if="currentPayday < today()">
         Your payday has passed. Update it to refresh your spending plan.
       </p>
       <p v-else-if="sum.shortfall > 0">
@@ -28,7 +28,7 @@ const { state, sum, days, page } = useBudget();
         until your next payday.
       </p>
       <button class="text-link light" @click="page = 'Settings'">
-        Next payday: {{ date(state.payday) }} <span>↗</span>
+        Next payday: {{ date(currentPayday) }} <span>↗</span>
       </button>
     </div>
     <div class="safe-breakdown">

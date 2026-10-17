@@ -462,5 +462,112 @@ During final independent review, an issue was identified in [`src/composables/us
 1. **Why must transaction editing treat existing occurrence linkage as immutable unless explicitly altered by the user?**
    - *Answer*: Recurring bill payments often occur out of strict chronological order in the real world (e.g. a user pays current October utilities online while disputing or delaying an August charge). If editing unrelated fields like the payee note or payment account recalculated the occurrence via `nextUnpaidDueDate`, the system would retroactively rewrite financial history, shifting funds to earlier overdue cycles and silently destabilizing the user's current cycle reservations. Preserving the existing `billDueDate` guarantees that routine edits never alter financial attribution.
 
+---
+
+## Phase 3A.3: Payday Settings & Overview UI
+
+### 1. Architectural Overview & UI Flow
+
+Phase 3A.3 connects the Phase 3A.1 scheduling engine and Phase 3A.2 financial integration into Mika Budget's user interface, maintaining full fidelity with Mika's ADHD-friendly usability principles and financial safety boundaries.
+
+#### State Flow Architecture:
+1. **Isolated Draft State in Settings**:
+   - Edits in [`src/components/views/SettingsView.vue`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/components/views/SettingsView.vue) are held in an isolated reactive draft ref (`draftSchedule`).
+   - Partial edits, typing in inputs, or switching dropdown frequencies do not mutate the core application state or trigger immediate recalculation of Safe to Spend or bill reservations.
+   - Users must explicitly click **Save schedule** to validate and persist the configuration, or **Cancel** to revert changes to the persisted state.
+2. **Deterministic Schedule Validation**:
+   - `validatePaydaySchedule()` pure function in [`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts) validates input constraints across all 5 frequencies (`weekly`, `biweekly`, `semimonthly`, `monthly`, `manual`).
+   - If validation fails, `updatePaydaySchedule()` returns `{ success: false, errors, message }` and preserves the previous valid schedule completely untouched. No state mutation occurs on invalid inputs.
+3. **Synchronization with Top-Level Payday Anchors**:
+   - Upon successful save, `updatePaydaySchedule()` updates `state.paydaySchedule`.
+   - For manual schedules, `state.payday` and `state.followingPayday` are set directly to `anchorDate` and `manualFollowingPayday`.
+   - For automatic schedules (`weekly`, `biweekly`, `semimonthly`, `monthly`), `getCurrentPayday(state)` and `getFollowingPayday(state)` calculate active occurrences dynamically from the engine.
+   - Module-level state deep watcher automatically persists the updated state to `localStorage`.
+4. **Overview Payday & Protection Summary**:
+   - [`src/components/overview/PaydaySummaryCard.vue`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/components/overview/PaydaySummaryCard.vue) renders a compact, ADHD-friendly summary answering: *"When do I get paid next, and how does Mika protect my money until then?"*
+   - Displays active frequency, next payday date, following payday date, and countdown.
+   - For incomplete manual schedules (e.g. past anchor without known upcoming dates), displays a clear empty state prompting the user to configure their payday in Settings, without inventing hypothetical dates.
+   - Displays bill protection breakdown using approved `reserveBillsBreakdown(state)` and `totals(state)` outputs:
+     - Current cycle reserved bills.
+     - Following cycle protected bills.
+     - Overdue unpaid obligations held until settled or paid.
+     - Safe to Spend impact: displays reserve shortfall deficit if `rawSafe < 0` (`sum.shortfall > 0`), or confirmation that Safe to Spend accounts for all reserved obligations.
+   - Avoids internal accounting jargon or raw engine variable names.
+
+---
+
+### 2. Files and Functions Changed
+
+| File | Changes Made |
+|---|---|
+| [`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts) | - Added `validatePaydaySchedule` to validate date formats, day-of-month ranges (1–31), unique semimonthly days, chronological manual dates, and override consistency.<br>- Added `updatePaydaySchedule` to safely validate, normalize (e.g. sort semimonthly days), update `state.paydaySchedule`, and synchronize `state.payday` / `state.followingPayday`.<br>- Exported `ScheduleValidationResult`. |
+| [`src/utils/format.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/utils/format.ts) | - Added `dateWithDay` for friendly weekday formatting (e.g., "Wed, Oct 21, 2026").<br>- Added `frequencyLabel` for human-readable schedule titles.<br>- Added defensive date validation checks to `date()` preventing "Invalid Date" output. |
+| [`src/composables/useBudget.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/composables/useBudget.ts) | - Added `saveSchedule` composable method for saving draft schedules with toast feedback.<br>- Added `addScheduleOverride` and `removeScheduleOverride` composable methods.<br>- Exposed `currentPayday`, `followingPayday`, `saveSchedule`, `addScheduleOverride`, and `removeScheduleOverride`.<br>- Updated `days` computation to use `getCurrentPayday(state.value)` so daily allowance automatically stays dynamic.<br>- Updated `saveSettings()` to save starting balance without requiring redundant payday re-entry when automatic schedule is active. |
+| [`src/components/overview/PaydaySummaryCard.vue`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/components/overview/PaydaySummaryCard.vue) | - Created new ADHD-friendly Overview component displaying active frequency, next payday, following payday, empty state for incomplete manual schedules, and bill protection explanation breakdown. |
+| [`src/components/overview/SafeToSpendCard.vue`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/components/overview/SafeToSpendCard.vue) | - Updated to use `currentPayday` from `useBudget()` so the dynamic next payday is displayed consistently across both cards. |
+| [`src/components/views/OverviewView.vue`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/components/views/OverviewView.vue) | - Imported and integrated `PaydaySummaryCard.vue` into the Overview dashboard grid. |
+| [`src/components/views/SettingsView.vue`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/components/views/SettingsView.vue) | - Added clearly labeled **Payday Schedule** section with progressive disclosure for all 5 frequencies.<br>- Added draft form isolation with explicit Save and Cancel buttons.<br>- Added live 3-occurrence upcoming paydays preview.<br>- Added one-time overrides management subsection (list, add, remove).<br>- Streamlined Financial Baseline section to focus on cash balance baseline while referencing the schedule below. |
+| [`src/styles/pages/_settings.css`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/styles/pages/_settings.css) | - Added styling for 2-column form rows, field hints, payday preview chips, and one-time overrides list and form. |
+| [`src/styles/pages/_overview.css`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/styles/pages/_overview.css) | - Added styling for `PaydaySummaryCard`, highlight row, days tag, protection metric items with color dots, safe/shortfall status banners, and empty state layout. |
+| [`tests/budget.test.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/tests/budget.test.ts) | - Added comprehensive tests `Test 3A.3.1` through `Test 3A.3.9` covering loading from persisted state, saving each supported schedule, invalid configurations leaving prior state unchanged, switching between manual and automatic, weekend adjustments and overrides, correct next/following presentation, manual schedules with missing dates, persistence across serialization, and financial parity. |
+
+---
+
+### 3. Key Decisions & Rationale
+
+1. **Why use an isolated draft form with explicit Save/Cancel in Settings?**
+   - *Rationale*: In personal finance and especially for neurodivergent (ADHD) users, immediate unconfirmed auto-saving on text or date inputs creates cognitive anxiety. If a user temporarily types an incomplete date or changes the dropdown while exploring options, immediately recalculating Safe to Spend, bill reservations, and daily allowances would flicker numbers and risk corrupting financial planning. The explicit draft with Save and Cancel ensures intentionality and keeps financial state stable until the user confirms.
+
+2. **Why preserve the previous valid schedule when validation fails?**
+   - *Rationale*: If a user enters an impossible configuration (such as duplicate semimonthly dates like 15th and 15th, or an invalid calendar date like Feb 31), rejecting the change without modifying the in-memory or persisted state guarantees financial invariants remain intact. Silent correction or fallback to arbitrary dates would risk surprising the user by shifting bill reservations unexpectedly.
+
+3. **Why avoid inventing dates for incomplete manual schedules on Overview?**
+   - *Rationale*: An automatic schedule (weekly, biweekly, monthly, semimonthly) has a deterministic cadence rule from which future paydays can always be computed. A manual schedule, by definition, represents irregular or user-specified income dates. If a manual schedule's configured dates have expired, inventing an imaginary payday would mislead the user into believing their spending allowance is safely funded when in reality income timing is unknown. Providing a clear empty state with a direct button to Settings empowers the user to set their actual date.
+
+---
+
+### 4. Verification & Test Metrics
+
+- **Automated Tests**: 105 passing tests (`npm test` / `node --test tests/budget.test.ts`), 0 failures, 0 skipped.
+  - 9 dedicated Phase 3A.3 tests:
+    - `Test 3A.3.1`: Loading payday settings from persisted state.
+    - `Test 3A.3.2`: Saving each supported schedule type.
+    - `Test 3A.3.3`: Invalid configurations leaving prior state unchanged.
+    - `Test 3A.3.4`: Switching between manual and automatic schedules.
+    - `Test 3A.3.5`: Weekend adjustments and explicit overrides.
+    - `Test 3A.3.6`: Correct next and following payday presentation.
+    - `Test 3A.3.7`: Manual schedules with missing dates.
+    - `Test 3A.3.8`: Settings persistence across serialization and reload.
+    - `Test 3A.3.9`: Unchanged Safe to Spend and Covered Credit calculations for equivalent financial states.
+- **Production Build**: `npm run build` (`vue-tsc -b && vite build`) passed with 0 errors.
+- **Manual UI Verification**:
+  - Validated responsive 2-column grid layout on Settings and Overview.
+  - Verified progressive disclosure logic for all 5 schedule frequencies.
+  - Verified Save and Cancel button state interactivity and validation error alerts.
+  - Verified that local dev server starts cleanly and transforms all modules without errors.
+
+---
+
+### 5. Known Limitations
+
+1. **Automated Headless Browser Navigation in Sandbox**:
+   - The environment's Playwright browser automation is restricted due to sandbox download limitations; consequently, end-to-end browser execution was substituted with direct unit testing of validation and state functions, component template type-checking via `vue-tsc`, and manual dev server inspection.
+2. **One-Time Overrides Beyond Planning Horizon**:
+   - One-time overrides are supported for any nominal occurrence within engine boundary rules; overrides set years into the future will be stored but will not affect immediate Safe to Spend until their cycle approaches.
+
+---
+
+### 6. Engineering Learning Questions
+
+1. **Why must semimonthly paydays automatically sort `firstDay` and `secondDay`?**
+   - *Answer*: Users may enter paydays in any order (e.g. entering the 31st first and then the 15th, or vice-versa). Sorting them so `firstDay = Math.min(d1, d2)` and `secondDay = Math.max(d1, d2)` creates a canonical representation that eliminates ordering ambiguity during interval calculations, prevents duplicate logic branches in the scheduling engine, and guarantees consistent presentation in the UI.
+
+2. **Why must the Overview bill protection breakdown explicitly separate current-cycle bills from protected following-cycle bills?**
+   - *Answer*: For financial peace of mind, users need to understand *why* money is being withheld from their Safe to Spend. Current-cycle bills are immediate obligations due before the next paycheck arrives, meaning failing to pay them will result in late fees or service cutoffs. Following-cycle protected bills (like the 1st of next month's rent when getting paid on the 28th) are future obligations held early by choice. Conflating them into a single lump sum obscures where the user's money is going and creates confusion about whether rent was already due.
+
+3. **Why should `days` in `useBudget` use `getCurrentPayday(state)` rather than the static `state.payday` string?**
+   - *Answer*: For automatic schedules (weekly, biweekly, monthly, semimonthly), paydays advance dynamically based on the current calendar date without requiring the user to open Settings and manually edit the date each cycle. If the daily allowance calculation relied on a static string, passing a payday without updating Settings would cause `days` to calculate negative or 1-day spans against an obsolete past date. Using `getCurrentPayday(state)` ensures the daily allowance always reflects the true upcoming income boundary.
+
+
 
 

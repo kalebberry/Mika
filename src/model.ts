@@ -698,6 +698,208 @@ export function removePaydayOverride(
   };
 }
 
+export interface ScheduleValidationResult {
+  valid: boolean;
+  errors: Record<string, string>;
+  message?: string;
+}
+
+export function validatePaydaySchedule(
+  schedule: Partial<PaydaySchedule>,
+): ScheduleValidationResult {
+  const errors: Record<string, string> = {};
+
+  const validFrequencies: PaydayFrequency[] = [
+    "weekly",
+    "biweekly",
+    "semimonthly",
+    "monthly",
+    "manual",
+  ];
+  if (!schedule.frequency || !validFrequencies.includes(schedule.frequency)) {
+    errors.frequency = "Please select a valid schedule frequency.";
+  }
+
+  const validWeekendRules: WeekendRule[] = ["exact", "preceding_friday"];
+  if (
+    schedule.weekendRule !== undefined &&
+    schedule.weekendRule !== null &&
+    !validWeekendRules.includes(schedule.weekendRule)
+  ) {
+    errors.weekendRule = "Please select a valid weekend adjustment rule.";
+  }
+
+  // Anchor date validation
+  if (!schedule.anchorDate || !isValidDateString(schedule.anchorDate)) {
+    errors.anchorDate = "Please enter a valid anchor date in YYYY-MM-DD format.";
+  }
+
+  // Frequency-specific validations
+  if (schedule.frequency === "monthly") {
+    if (
+      schedule.dayOfMonth === undefined ||
+      schedule.dayOfMonth === null ||
+      schedule.dayOfMonth === ("" as any)
+    ) {
+      errors.dayOfMonth = "Please enter a payday day of the month.";
+    } else {
+      const day = Number(schedule.dayOfMonth);
+      if (!Number.isInteger(day) || day < 1 || day > 31) {
+        errors.dayOfMonth = "Day of the month must be a whole number between 1 and 31.";
+      }
+    }
+  } else if (schedule.frequency === "semimonthly") {
+    let day1Valid = false;
+    let day2Valid = false;
+    let d1 = 0;
+    let d2 = 0;
+
+    if (
+      schedule.firstDay === undefined ||
+      schedule.firstDay === null ||
+      schedule.firstDay === ("" as any)
+    ) {
+      errors.firstDay = "Please enter the first payday day.";
+    } else {
+      d1 = Number(schedule.firstDay);
+      if (!Number.isInteger(d1) || d1 < 1 || d1 > 31) {
+        errors.firstDay = "First payday day must be a whole number between 1 and 31.";
+      } else {
+        day1Valid = true;
+      }
+    }
+
+    if (
+      schedule.secondDay === undefined ||
+      schedule.secondDay === null ||
+      schedule.secondDay === ("" as any)
+    ) {
+      errors.secondDay = "Please enter the second payday day.";
+    } else {
+      d2 = Number(schedule.secondDay);
+      if (!Number.isInteger(d2) || d2 < 1 || d2 > 31) {
+        errors.secondDay = "Second payday day must be a whole number between 1 and 31.";
+      } else {
+        day2Valid = true;
+      }
+    }
+
+    if (day1Valid && day2Valid && d1 === d2) {
+      errors.secondDay = "The two payday days must be different days of the month.";
+    }
+  } else if (schedule.frequency === "manual") {
+    if (
+      schedule.manualFollowingPayday !== undefined &&
+      schedule.manualFollowingPayday !== null &&
+      schedule.manualFollowingPayday !== ""
+    ) {
+      if (!isValidDateString(schedule.manualFollowingPayday)) {
+        errors.manualFollowingPayday =
+          "Following payday must be a valid date in YYYY-MM-DD format.";
+      } else if (
+        isValidDateString(schedule.anchorDate) &&
+        schedule.manualFollowingPayday <= schedule.anchorDate
+      ) {
+        errors.manualFollowingPayday =
+          "Following payday must be strictly after the next payday.";
+      }
+    }
+  }
+
+  // Overrides validation if present
+  if (Array.isArray(schedule.overrides)) {
+    const dates = new Set<string>();
+    for (const o of schedule.overrides) {
+      if (
+        !o ||
+        !isValidDateString(o.scheduledDate) ||
+        !isValidDateString(o.overrideDate)
+      ) {
+        errors.overrides = "All overrides must contain valid dates.";
+        break;
+      }
+      if (dates.has(o.scheduledDate)) {
+        errors.overrides =
+          "Duplicate overrides for the same scheduled date are not allowed.";
+        break;
+      }
+      dates.add(o.scheduledDate);
+    }
+  }
+
+  const valid = Object.keys(errors).length === 0;
+  const message = valid ? undefined : Object.values(errors)[0];
+  return { valid, errors, message };
+}
+
+export function updatePaydaySchedule(
+  state: State,
+  draft: Partial<PaydaySchedule>,
+): { success: boolean; errors?: Record<string, string>; message?: string } {
+  const validation = validatePaydaySchedule(draft);
+  if (!validation.valid) {
+    return {
+      success: false,
+      errors: validation.errors,
+      message: validation.message,
+    };
+  }
+
+  const freq = draft.frequency!;
+  const anchorDate = draft.anchorDate!;
+  const weekendRule: WeekendRule =
+    draft.weekendRule === "preceding_friday" ? "preceding_friday" : "exact";
+
+  let dayOfMonth: number | undefined;
+  if (freq === "monthly") {
+    dayOfMonth = Math.round(Number(draft.dayOfMonth));
+  }
+
+  let firstDay: number | undefined;
+  let secondDay: number | undefined;
+  if (freq === "semimonthly") {
+    const d1 = Math.round(Number(draft.firstDay));
+    const d2 = Math.round(Number(draft.secondDay));
+    firstDay = Math.min(d1, d2);
+    secondDay = Math.max(d1, d2);
+  }
+
+  let manualFollowingPayday: string | undefined;
+  if (
+    freq === "manual" &&
+    draft.manualFollowingPayday &&
+    isValidDateString(draft.manualFollowingPayday)
+  ) {
+    manualFollowingPayday = draft.manualFollowingPayday;
+  }
+
+  const overrides = Array.isArray(draft.overrides)
+    ? [...draft.overrides]
+    : [...(state.paydaySchedule?.overrides || [])];
+
+  state.paydaySchedule = {
+    frequency: freq,
+    anchorDate,
+    dayOfMonth,
+    firstDay,
+    secondDay,
+    weekendRule,
+    manualFollowingPayday,
+    overrides,
+  };
+
+  // Sync state.payday and state.followingPayday
+  if (freq === "manual") {
+    state.payday = anchorDate;
+    state.followingPayday = manualFollowingPayday || addDays(anchorDate, 14);
+  } else {
+    state.payday = getCurrentPayday(state);
+    state.followingPayday = getFollowingPayday(state);
+  }
+
+  return { success: true };
+}
+
 export function nextPayday() {
   return addDays(today(), 14);
 }

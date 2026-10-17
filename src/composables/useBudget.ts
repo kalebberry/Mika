@@ -11,6 +11,12 @@ import {
   spent,
   migrateState,
   getFollowingPayday,
+  getCurrentPayday,
+  validatePaydaySchedule,
+  updatePaydaySchedule,
+  applyPaydayOverride,
+  removePaydayOverride,
+  type PaydaySchedule,
   addDays,
   isBillPaid,
   nextUnpaidDueDate,
@@ -229,12 +235,15 @@ const days = computed(() =>
   Math.max(
     1,
     Math.ceil(
-      (new Date(state.value.payday + "T12:00:00").getTime() -
+      (new Date(getCurrentPayday(state.value) + "T12:00:00").getTime() -
         new Date(today() + "T12:00:00").getTime()) /
         86400000,
     ),
   ),
 );
+
+const currentPayday = computed(() => getCurrentPayday(state.value));
+const followingPayday = computed(() => getFollowingPayday(state.value));
 
 const categoryRecent = (c: string) =>
   [...monthly.value]
@@ -244,7 +253,7 @@ const categoryRecent = (c: string) =>
 
 // Settings form state
 const settingsBalance = ref(String(sum.value.balance / 100));
-const settingsPayday = ref(state.value.payday);
+const settingsPayday = ref(getCurrentPayday(state.value));
 const settingsFollowingPayday = ref(getFollowingPayday(state.value));
 const settingsSaved = ref(false);
 
@@ -258,13 +267,14 @@ watch(
 );
 
 watch(
-  () => state.value.payday,
-  (val) => {
+  () => [state.value.payday, state.value.paydaySchedule],
+  () => {
     if (page.value !== "Settings") {
-      settingsPayday.value = val;
+      settingsPayday.value = getCurrentPayday(state.value);
       settingsFollowingPayday.value = getFollowingPayday(state.value);
     }
   },
+  { deep: true },
 );
 
 // Watch state changes for local storage persistence
@@ -294,14 +304,8 @@ export function useBudget() {
 
   function saveSettings() {
     const balance = cents(Number(settingsBalance.value));
-    if (
-      !Number.isFinite(balance) ||
-      !settingsPayday.value ||
-      settingsPayday.value < today() ||
-      settingsPayday.value >
-        String(Number(today().slice(0, 4)) + 1) + today().slice(4)
-    ) {
-      toast("Enter a valid balance and a payday within the next year.");
+    if (!Number.isFinite(balance)) {
+      toast("Enter a valid account balance.");
       return;
     }
     const postedSum = state.value.transactions
@@ -309,14 +313,57 @@ export function useBudget() {
       .reduce((n, t) => n + t.amount, 0);
 
     state.value.opening = balance - postedSum;
-    state.value.payday = settingsPayday.value;
-    state.value.followingPayday =
-      settingsFollowingPayday.value || addDays(settingsPayday.value, 14);
+    state.value.payday = getCurrentPayday(state.value);
+    state.value.followingPayday = getFollowingPayday(state.value);
     settingsSaved.value = true;
     setTimeout(() => {
       settingsSaved.value = false;
     }, 3000);
     toast("Financial baseline saved.");
+  }
+
+  function saveSchedule(draft: Partial<PaydaySchedule>) {
+    const result = updatePaydaySchedule(state.value, draft);
+    if (!result.success) {
+      toast(result.message || "Please correct the schedule errors.");
+      return result;
+    }
+    settingsPayday.value = getCurrentPayday(state.value);
+    settingsFollowingPayday.value = getFollowingPayday(state.value);
+    toast("Payday schedule saved.");
+    return result;
+  }
+
+  function addScheduleOverride(override: {
+    scheduledDate: string;
+    overrideDate: string;
+    note?: string;
+  }): { success: boolean; error?: string } {
+    const result = applyPaydayOverride(state.value.paydaySchedule, override);
+    if (!result.success) {
+      toast(result.error || "Could not add payday override.");
+      return { success: false, error: result.error };
+    }
+    state.value.paydaySchedule = result.schedule;
+    state.value.payday = getCurrentPayday(state.value);
+    state.value.followingPayday = getFollowingPayday(state.value);
+    settingsPayday.value = state.value.payday;
+    settingsFollowingPayday.value = state.value.followingPayday;
+    toast("Payday override added.");
+    return { success: true };
+  }
+
+  function removeScheduleOverride(scheduledDateOrId: string) {
+    state.value.paydaySchedule = removePaydayOverride(
+      state.value.paydaySchedule,
+      scheduledDateOrId,
+    );
+    state.value.payday = getCurrentPayday(state.value);
+    state.value.followingPayday = getFollowingPayday(state.value);
+    settingsPayday.value = state.value.payday;
+    settingsFollowingPayday.value = state.value.followingPayday;
+    toast("Payday override removed.");
+    return true;
   }
 
   function backup() {
@@ -732,7 +779,12 @@ export function useBudget() {
     settingsPayday,
     settingsFollowingPayday,
     settingsSaved,
+    currentPayday,
+    followingPayday,
     saveSettings,
+    saveSchedule,
+    addScheduleOverride,
+    removeScheduleOverride,
     backup,
     importBackup,
     postTransaction,

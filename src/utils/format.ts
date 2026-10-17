@@ -1,11 +1,13 @@
 import {
   type Bill,
   type State,
+  type PaydayFrequency,
   isBillPaid,
   nextUnpaidDueDate,
   getCurrentPayday,
   getFollowingPayday,
   today,
+  isValidDateString,
 } from "../model.ts";
 
 export const money = (v: number) =>
@@ -13,12 +15,41 @@ export const money = (v: number) =>
     v / 100,
   );
 
-export const date = (v: string) =>
-  new Date(v + "T12:00:00").toLocaleDateString("en-US", {
+export const date = (v: string) => {
+  if (!v || !isValidDateString(v)) return "";
+  return new Date(v + "T12:00:00").toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
   });
+};
+
+export const dateWithDay = (v?: string | null) => {
+  if (!v || !isValidDateString(v)) return "";
+  return new Date(v + "T12:00:00").toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+};
+
+export const frequencyLabel = (freq?: PaydayFrequency): string => {
+  switch (freq) {
+    case "weekly":
+      return "Weekly";
+    case "biweekly":
+      return "Biweekly";
+    case "semimonthly":
+      return "Semimonthly";
+    case "monthly":
+      return "Monthly";
+    case "manual":
+      return "Manual";
+    default:
+      return "Schedule";
+  }
+};
 
 export const formatNextDue = (v: string) => {
   const dt = new Date(v + "T12:00:00");

@@ -51,6 +51,8 @@ import {
   validatePaydayOverride,
   applyPaydayOverride,
   removePaydayOverride,
+  validatePaydaySchedule,
+  updatePaydaySchedule,
   recordBillPayment,
 } from "../src/model.ts";
 import { useBudget } from "../src/composables/useBudget.ts";
@@ -6007,6 +6009,535 @@ test("Test 3A.2.19 — Editing an existing transaction preserves billDueDate unl
   assert.equal(octTx.billDueDate, undefined, "Removing billId clears billDueDate consistently");
   assert.equal(isBillPaid(state.value, waterBill, "2026-10-15"), false, "Water bill is now unpaid");
 });
+
+test("Test 3A.3.1 — Loading payday settings from persisted state", () => {
+  const simulatedToday = "2026-10-16";
+  const persistedRaw = {
+    version: 5,
+    demo: false,
+    opening: 500000,
+    payday: "2026-10-23",
+    followingPayday: "2026-11-06",
+    paydaySchedule: {
+      frequency: "biweekly",
+      anchorDate: "2026-10-09",
+      weekendRule: "preceding_friday",
+      overrides: [
+        {
+          id: "ov-test-1",
+          scheduledDate: "2026-11-20",
+          overrideDate: "2026-11-19",
+          note: "Early direct deposit",
+          createdAt: "2026-10-16T12:00:00.000Z",
+        },
+      ],
+    },
+    transactions: [],
+    budgets: [],
+    pots: [],
+    bills: [],
+    accounts: [
+      {
+        id: "acc-default-checking",
+        name: "Primary Checking",
+        type: "checking",
+        opening: 500000,
+        includeInSafeToSpend: true,
+        archived: false,
+        createdAt: "2026-10-01",
+        updatedAt: "2026-10-01",
+      },
+    ],
+  };
+
+  const state = migrateState(persistedRaw, simulatedToday);
+  assert.equal(state.paydaySchedule.frequency, "biweekly");
+  assert.equal(state.paydaySchedule.anchorDate, "2026-10-09");
+  assert.equal(state.paydaySchedule.weekendRule, "preceding_friday");
+  assert.equal(state.paydaySchedule.overrides.length, 1);
+  assert.equal(state.paydaySchedule.overrides[0]!.scheduledDate, "2026-11-20");
+  assert.equal(state.paydaySchedule.overrides[0]!.overrideDate, "2026-11-19");
+
+  // Verify next and following paydays derived correctly
+  const next = getCurrentPayday(state, simulatedToday);
+  const following = getFollowingPayday(state, simulatedToday);
+  assert.equal(next, "2026-10-23", "Next biweekly payday should be Oct 23");
+  assert.equal(following, "2026-11-06", "Following biweekly payday should be Nov 06");
+});
+
+test("Test 3A.3.2 — Saving each supported schedule type", () => {
+  const simulatedToday = "2026-10-16";
+  const state: State = blank();
+  state.opening = 300000;
+
+  // 1. Weekly schedule
+  const resWeekly = updatePaydaySchedule(state, {
+    frequency: "weekly",
+    anchorDate: "2026-10-16",
+    weekendRule: "exact",
+  });
+  assert.equal(resWeekly.success, true);
+  assert.equal(state.paydaySchedule.frequency, "weekly");
+  assert.equal(state.paydaySchedule.anchorDate, "2026-10-16");
+  assert.equal(getCurrentPayday(state, simulatedToday), "2026-10-16");
+  assert.equal(getFollowingPayday(state, simulatedToday), "2026-10-23");
+
+  // 2. Biweekly schedule
+  const resBiweekly = updatePaydaySchedule(state, {
+    frequency: "biweekly",
+    anchorDate: "2026-10-09",
+    weekendRule: "exact",
+  });
+  assert.equal(resBiweekly.success, true);
+  assert.equal(state.paydaySchedule.frequency, "biweekly");
+  assert.equal(getCurrentPayday(state, simulatedToday), "2026-10-23");
+  assert.equal(getFollowingPayday(state, simulatedToday), "2026-11-06");
+
+  // 3. Semimonthly schedule (normalized & sorted)
+  const resSemi = updatePaydaySchedule(state, {
+    frequency: "semimonthly",
+    anchorDate: "2026-10-15",
+    firstDay: 30, // input reversed to test automatic sorting
+    secondDay: 15,
+    weekendRule: "preceding_friday",
+  });
+  assert.equal(resSemi.success, true);
+  assert.equal(state.paydaySchedule.frequency, "semimonthly");
+  assert.equal(state.paydaySchedule.firstDay, 15, "First day must be sorted to 15");
+  assert.equal(state.paydaySchedule.secondDay, 30, "Second day must be sorted to 30");
+  assert.equal(state.paydaySchedule.weekendRule, "preceding_friday");
+  assert.equal(getCurrentPayday(state, simulatedToday), "2026-10-30");
+
+  // 4. Monthly schedule (with dayOfMonth)
+  const resMonthly = updatePaydaySchedule(state, {
+    frequency: "monthly",
+    anchorDate: "2026-10-01",
+    dayOfMonth: 28,
+    weekendRule: "exact",
+  });
+  assert.equal(resMonthly.success, true);
+  assert.equal(state.paydaySchedule.frequency, "monthly");
+  assert.equal(state.paydaySchedule.dayOfMonth, 28);
+  assert.equal(getCurrentPayday(state, simulatedToday), "2026-10-28");
+  assert.equal(getFollowingPayday(state, simulatedToday), "2026-11-28");
+
+  // 5. Manual schedule
+  const resManual = updatePaydaySchedule(state, {
+    frequency: "manual",
+    anchorDate: "2026-10-25",
+    manualFollowingPayday: "2026-11-10",
+    weekendRule: "exact",
+  });
+  assert.equal(resManual.success, true);
+  assert.equal(state.paydaySchedule.frequency, "manual");
+  assert.equal(state.paydaySchedule.anchorDate, "2026-10-25");
+  assert.equal(state.paydaySchedule.manualFollowingPayday, "2026-11-10");
+  assert.equal(state.payday, "2026-10-25");
+  assert.equal(state.followingPayday, "2026-11-10");
+  assert.equal(getCurrentPayday(state, simulatedToday), "2026-10-25");
+  assert.equal(getFollowingPayday(state, simulatedToday), "2026-11-10");
+});
+
+test("Test 3A.3.3 — Invalid configurations leaving the prior state unchanged", () => {
+  const state: State = blank();
+  const initialSchedule: PaydaySchedule = {
+    frequency: "biweekly",
+    anchorDate: "2026-10-09",
+    weekendRule: "exact",
+    overrides: [],
+  };
+  state.paydaySchedule = { ...initialSchedule };
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
+
+  // Case 1: Invalid anchor date string
+  const resBadDate = updatePaydaySchedule(state, {
+    frequency: "biweekly",
+    anchorDate: "invalid-date-format",
+  });
+  assert.equal(resBadDate.success, false);
+  assert.ok(resBadDate.errors?.anchorDate);
+  assert.deepEqual(state.paydaySchedule, initialSchedule, "Schedule must remain unchanged on invalid date");
+
+  // Case 2: Calendar non-existent date (Feb 31)
+  const resBadCal = updatePaydaySchedule(state, {
+    frequency: "weekly",
+    anchorDate: "2026-02-31",
+  });
+  assert.equal(resBadCal.success, false);
+  assert.deepEqual(state.paydaySchedule, initialSchedule, "Schedule must remain unchanged on non-existent calendar date");
+
+  // Case 3: Monthly day out of range (< 1 or > 31 or fractional)
+  const resBadMonthDay = updatePaydaySchedule(state, {
+    frequency: "monthly",
+    anchorDate: "2026-10-01",
+    dayOfMonth: 32,
+  });
+  assert.equal(resBadMonthDay.success, false);
+  assert.ok(resBadMonthDay.errors?.dayOfMonth);
+  assert.deepEqual(state.paydaySchedule, initialSchedule, "Schedule must remain unchanged on invalid month day");
+
+  // Case 4: Semimonthly with identical days (firstDay === secondDay)
+  const resDupSemi = updatePaydaySchedule(state, {
+    frequency: "semimonthly",
+    anchorDate: "2026-10-01",
+    firstDay: 15,
+    secondDay: 15,
+  });
+  assert.equal(resDupSemi.success, false);
+  assert.ok(resDupSemi.errors?.secondDay);
+  assert.deepEqual(state.paydaySchedule, initialSchedule, "Schedule must remain unchanged on duplicate semimonthly days");
+
+  // Case 5: Manual following payday on or before next payday
+  const resBadManual = updatePaydaySchedule(state, {
+    frequency: "manual",
+    anchorDate: "2026-10-25",
+    manualFollowingPayday: "2026-10-20", // earlier than anchor
+  });
+  assert.equal(resBadManual.success, false);
+  assert.ok(resBadManual.errors?.manualFollowingPayday);
+  assert.deepEqual(state.paydaySchedule, initialSchedule, "Schedule must remain unchanged when following payday is before next payday");
+
+  // Case 6: Unsupported frequency
+  const resBadFreq = updatePaydaySchedule(state, {
+    frequency: "hourly" as any,
+    anchorDate: "2026-10-20",
+  });
+  assert.equal(resBadFreq.success, false);
+  assert.ok(resBadFreq.errors?.frequency);
+  assert.deepEqual(state.paydaySchedule, initialSchedule, "Schedule must remain unchanged on invalid frequency");
+});
+
+test("Test 3A.3.4 — Switching between manual and automatic schedules", () => {
+  const simulatedToday = "2026-10-16";
+  const state: State = blank();
+
+  // Start with manual schedule with custom dates
+  updatePaydaySchedule(state, {
+    frequency: "manual",
+    anchorDate: "2026-10-22",
+    manualFollowingPayday: "2026-11-12",
+    weekendRule: "exact",
+  });
+  assert.equal(state.paydaySchedule.frequency, "manual");
+  assert.equal(getCurrentPayday(state, simulatedToday), "2026-10-22");
+  assert.equal(getFollowingPayday(state, simulatedToday), "2026-11-12");
+
+  // Switch to biweekly: dynamic calculation takes effect
+  updatePaydaySchedule(state, {
+    frequency: "biweekly",
+    anchorDate: "2026-10-09",
+    weekendRule: "exact",
+  });
+  assert.equal(state.paydaySchedule.frequency, "biweekly");
+  assert.equal(getCurrentPayday(state, simulatedToday), "2026-10-23");
+  assert.equal(getFollowingPayday(state, simulatedToday), "2026-11-06");
+
+  // Switch to monthly: 1st of month
+  updatePaydaySchedule(state, {
+    frequency: "monthly",
+    anchorDate: "2026-10-01",
+    dayOfMonth: 1,
+    weekendRule: "exact",
+  });
+  assert.equal(state.paydaySchedule.frequency, "monthly");
+  assert.equal(getCurrentPayday(state, simulatedToday), "2026-11-01");
+
+  // Switch back to manual: explicit dates restored
+  updatePaydaySchedule(state, {
+    frequency: "manual",
+    anchorDate: "2026-10-31",
+    manualFollowingPayday: "2026-11-14",
+    weekendRule: "exact",
+  });
+  assert.equal(state.paydaySchedule.frequency, "manual");
+  assert.equal(getCurrentPayday(state, simulatedToday), "2026-10-31");
+  assert.equal(getFollowingPayday(state, simulatedToday), "2026-11-14");
+});
+
+test("Test 3A.3.5 — Weekend adjustments and explicit overrides", () => {
+  const state: State = blank();
+
+  // 1. Weekend adjustment test:
+  // 2026-10-24 is Saturday. With preceding_friday, it should adjust to 2026-10-23.
+  const satAnchor = "2026-10-24";
+  updatePaydaySchedule(state, {
+    frequency: "weekly",
+    anchorDate: satAnchor,
+    weekendRule: "preceding_friday",
+  });
+  const upcoming = getUpcomingPaydays(state.paydaySchedule, "2026-10-20", 2);
+  assert.equal(upcoming[0], "2026-10-23", "Saturday Oct 24 adjusted to Friday Oct 23");
+
+  // With exact date rule: Saturday remains Saturday Oct 24
+  updatePaydaySchedule(state, {
+    frequency: "weekly",
+    anchorDate: satAnchor,
+    weekendRule: "exact",
+  });
+  const upcomingExact = getUpcomingPaydays(state.paydaySchedule, "2026-10-20", 2);
+  assert.equal(upcomingExact[0], "2026-10-24", "Exact rule preserves Saturday Oct 24");
+
+  // 2. Explicit Override Test:
+  // Biweekly schedule: nominal Oct 23, Nov 06, Nov 20
+  updatePaydaySchedule(state, {
+    frequency: "biweekly",
+    anchorDate: "2026-10-09",
+    weekendRule: "exact",
+  });
+  assert.deepEqual(getUpcomingPaydays(state.paydaySchedule, "2026-10-16", 3), [
+    "2026-10-23",
+    "2026-11-06",
+    "2026-11-20",
+  ]);
+
+  // Apply override: shift Nov 06 to Nov 05
+  const overrideRes = applyPaydayOverride(state.paydaySchedule, {
+    scheduledDate: "2026-11-06",
+    overrideDate: "2026-11-05",
+    note: "Early payday before holiday",
+  });
+  assert.equal(overrideRes.success, true);
+  state.paydaySchedule = overrideRes.schedule;
+
+  assert.deepEqual(getUpcomingPaydays(state.paydaySchedule, "2026-10-16", 3), [
+    "2026-10-23",
+    "2026-11-05", // overridden!
+    "2026-11-20",
+  ]);
+
+  // Remove override: reverts to Nov 06
+  state.paydaySchedule = removePaydayOverride(state.paydaySchedule, "2026-11-06");
+  assert.deepEqual(getUpcomingPaydays(state.paydaySchedule, "2026-10-16", 3), [
+    "2026-10-23",
+    "2026-11-06",
+    "2026-11-20",
+  ]);
+});
+
+test("Test 3A.3.6 — Correct next and following payday presentation", () => {
+  const simulatedToday = "2026-10-16";
+  const state: State = blank();
+
+  // Test biweekly presentation
+  updatePaydaySchedule(state, {
+    frequency: "biweekly",
+    anchorDate: "2026-10-09",
+    weekendRule: "exact",
+  });
+  const nextBi = getCurrentPayday(state, simulatedToday);
+  const folBi = getFollowingPayday(state, simulatedToday);
+  assert.equal(nextBi, "2026-10-23");
+  assert.equal(folBi, "2026-11-06");
+  assert.ok(nextBi <= folBi, "Next must be before or equal to following");
+
+  // Test semimonthly presentation (15th and last day of month)
+  updatePaydaySchedule(state, {
+    frequency: "semimonthly",
+    anchorDate: "2026-10-15",
+    firstDay: 15,
+    secondDay: 31,
+    weekendRule: "exact",
+  });
+  const nextSemi = getCurrentPayday(state, simulatedToday);
+  const folSemi = getFollowingPayday(state, simulatedToday);
+  assert.equal(nextSemi, "2026-10-31");
+  assert.equal(folSemi, "2026-11-15");
+  assert.ok(nextSemi < folSemi);
+
+  // Test monthly presentation
+  updatePaydaySchedule(state, {
+    frequency: "monthly",
+    anchorDate: "2026-10-01",
+    dayOfMonth: 1,
+    weekendRule: "exact",
+  });
+  const nextMo = getCurrentPayday(state, simulatedToday);
+  const folMo = getFollowingPayday(state, simulatedToday);
+  assert.equal(nextMo, "2026-11-01");
+  assert.equal(folMo, "2026-12-01");
+  assert.ok(nextMo < folMo);
+});
+
+test("Test 3A.3.7 — Manual schedules with missing dates", () => {
+  const state: State = blank();
+
+  // Manual schedule with only first payday in past and no upcoming dates
+  state.paydaySchedule = {
+    frequency: "manual",
+    anchorDate: "2026-09-01", // in past
+    manualFollowingPayday: undefined,
+    weekendRule: "exact",
+    overrides: [],
+  };
+
+  // Evaluate as of 2026-10-16:
+  // Before first configured payday, engine never invents occurrences.
+  // And with manualFollowingPayday undefined, the engine projects based on 14-day default interval forward:
+  // 2026-09-01 + 14 = 2026-09-15 + 14 = 2026-09-29 + 14 = 2026-10-13 + 14 = 2026-10-27
+  const upcoming = getUpcomingPaydays(state.paydaySchedule, "2026-10-16", 2);
+  assert.equal(upcoming[0], "2026-10-27");
+
+  // Now test true empty state: if anchorDate is evaluated before anchorDate
+  // e.g. evaluation as of August 2026 when first payday is Sept 1, 2026:
+  const beforeAnchor = getUpcomingPaydays(state.paydaySchedule, "2026-08-01", 3);
+  assert.equal(beforeAnchor[0], "2026-09-01", "Must not invent occurrences prior to configured anchorDate");
+
+  // Incomplete manual schedule: missing or invalid anchorDate
+  const incompleteSchedule: PaydaySchedule = {
+    frequency: "manual",
+    anchorDate: "",
+    weekendRule: "exact",
+    overrides: [],
+  };
+  const validation = validatePaydaySchedule(incompleteSchedule);
+  assert.equal(validation.valid, false, "Incomplete manual schedule rejected by validation");
+  assert.ok(validation.errors.anchorDate);
+});
+
+test("Test 3A.3.8 — Settings persistence across serialization and reload", () => {
+  const originalState: State = blank();
+  originalState.opening = 850000;
+  originalState.paydaySchedule = {
+    frequency: "semimonthly",
+    anchorDate: "2026-10-01",
+    firstDay: 10,
+    secondDay: 25,
+    weekendRule: "preceding_friday",
+    overrides: [
+      {
+        id: "ov-persist-1",
+        scheduledDate: "2026-12-25",
+        overrideDate: "2026-12-24",
+        note: "Christmas Eve early pay",
+        createdAt: "2026-10-16T10:00:00.000Z",
+      },
+    ],
+  };
+  originalState.payday = getCurrentPayday(originalState, "2026-10-16");
+  originalState.followingPayday = getFollowingPayday(originalState, "2026-10-16");
+
+  // JSON round-trip serialization
+  const serialized = JSON.stringify(originalState, null, 2);
+  const parsed = JSON.parse(serialized);
+  const reloaded = migrateState(parsed, "2026-10-16");
+
+  assert.equal(reloaded.paydaySchedule.frequency, "semimonthly");
+  assert.equal(reloaded.paydaySchedule.firstDay, 10);
+  assert.equal(reloaded.paydaySchedule.secondDay, 25);
+  assert.equal(reloaded.paydaySchedule.weekendRule, "preceding_friday");
+  assert.equal(reloaded.paydaySchedule.overrides.length, 1);
+  assert.equal(reloaded.paydaySchedule.overrides[0]!.scheduledDate, "2026-12-25");
+  assert.equal(reloaded.paydaySchedule.overrides[0]!.overrideDate, "2026-12-24");
+  assert.equal(reloaded.paydaySchedule.overrides[0]!.note, "Christmas Eve early pay");
+  assert.equal(getCurrentPayday(reloaded, "2026-10-16"), getCurrentPayday(originalState, "2026-10-16"));
+  assert.equal(getFollowingPayday(reloaded, "2026-10-16"), getFollowingPayday(originalState, "2026-10-16"));
+});
+
+test("Test 3A.3.9 — Unchanged Safe to Spend and Covered Credit calculations for equivalent financial states", () => {
+  const simulatedToday = "2026-10-16";
+
+  // Build state A: Manual schedule with paydays 2026-10-23 and 2026-11-06
+  const stateA: State = blank();
+  stateA.opening = 450000; // $4,500.00 checking
+  stateA.payday = "2026-10-23";
+  stateA.followingPayday = "2026-11-06";
+  stateA.paydaySchedule = {
+    frequency: "manual",
+    anchorDate: "2026-10-23",
+    manualFollowingPayday: "2026-11-06",
+    weekendRule: "exact",
+    overrides: [],
+  };
+
+  // Add credit card account with covered purchase
+  const card: Account = {
+    id: "card-1",
+    name: "Visa Card",
+    type: "credit",
+    opening: 0,
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    archived: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+    coveredCreditBaselineAt: "2026-10-01",
+  };
+  stateA.accounts.push(card);
+
+  // Budget for Groceries ($500)
+  stateA.budgets.push({
+    id: "b-groc",
+    category: "Groceries",
+    limit: 50000,
+    color: "#277c78",
+  });
+
+  // Credit card purchase of $80 for Groceries (covered by budget)
+  stateA.transactions.push({
+    id: "tx-groc-card",
+    name: "Supermarket",
+    amount: -8000,
+    category: "Groceries",
+    date: "2026-10-10",
+    status: "posted",
+    accountId: "card-1",
+    kind: "standard",
+  });
+
+  // Recurring bill due Oct 20 ($120) - due before payday
+  const billElectric: Bill = {
+    id: "bill-elec",
+    name: "Electricity",
+    amount: 12000,
+    day: 20,
+    trackingStartDate: "2026-10-01",
+  };
+  stateA.bills.push(billElectric);
+
+  // Recurring bill due Nov 01 ($1,000) - protected following cycle bill
+  const billRent: Bill = {
+    id: "bill-rent",
+    name: "Apartment Rent",
+    amount: 100000,
+    day: 1,
+    protected: true,
+    trackingStartDate: "2026-10-01",
+  };
+  stateA.bills.push(billRent);
+
+  // Calculate totals under State A (manual)
+  const totalsA = totals(stateA, simulatedToday);
+  const covA = getCreditCardCoverage(card, stateA, simulatedToday);
+
+  // Build state B: Identical financial state, but configured with automatic Biweekly schedule
+  // anchorDate 2026-10-09 yields exact next payday 2026-10-23 and following 2026-11-06
+  const stateB: State = JSON.parse(JSON.stringify(stateA));
+  const updateRes = updatePaydaySchedule(stateB, {
+    frequency: "biweekly",
+    anchorDate: "2026-10-09",
+    weekendRule: "exact",
+  });
+  assert.equal(updateRes.success, true);
+  assert.equal(getCurrentPayday(stateB, simulatedToday), "2026-10-23");
+  assert.equal(getFollowingPayday(stateB, simulatedToday), "2026-11-06");
+
+  // Calculate totals under State B (biweekly)
+  const totalsB = totals(stateB, simulatedToday);
+  const covB = getCreditCardCoverage(card, stateB, simulatedToday);
+
+  // Assert exact cent-for-cent parity
+  assert.equal(totalsA.balance, totalsB.balance, "Balances must be identical");
+  assert.equal(totalsA.currentCycleBills, totalsB.currentCycleBills, "Current cycle bills must match ($120)");
+  assert.equal(totalsA.protectedCycleBills, totalsB.protectedCycleBills, "Protected cycle bills must match ($1,000)");
+  assert.equal(totalsA.totalReadyToPay, totalsB.totalReadyToPay, "Ready to pay must match ($80)");
+  assert.equal(totalsA.rawSafe, totalsB.rawSafe, "rawSafe must match exactly");
+  assert.equal(totalsA.safe, totalsB.safe, "Safe to spend must match exactly");
+  assert.equal(totalsA.shortfall, totalsB.shortfall, "Shortfall must match exactly");
+  assert.equal(covA.readyToPay, covB.readyToPay, "Card Ready to Pay must match exactly");
+  assert.equal(covA.uncoveredDebt, covB.uncoveredDebt, "Card Uncovered Debt must match exactly");
+});
+
 
 
 
