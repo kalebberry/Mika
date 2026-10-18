@@ -134,6 +134,7 @@ const category = ref("All");
 const accountFilter = ref("All");
 const sort = ref("Latest");
 const statusFilter = ref<"All" | "Scheduled" | "Pending" | "Cleared">("All");
+const targetedTransactionId = ref<string | null>(null);
 
 const sum = computed(() => totals(state.value));
 const month = computed(() => today().slice(0, 7));
@@ -833,6 +834,15 @@ export function useBudget() {
     }
   }
 
+  function navigateToTransaction(txId: string) {
+    targetedTransactionId.value = txId;
+    category.value = "All";
+    accountFilter.value = "All";
+    statusFilter.value = "All";
+    search.value = "";
+    page.value = "Transactions";
+  }
+
   return {
     state,
     storageBlocked,
@@ -843,6 +853,8 @@ export function useBudget() {
     accountFilter,
     sort,
     statusFilter,
+    targetedTransactionId,
+    navigateToTransaction,
     sum,
     month,
     monthly,

@@ -12275,7 +12275,7 @@ test("Test 4B.9 — Future-dated transactions: auto-scheduling and cleared preve
 });
 
 test("Test 4B.10 — Transaction-specific confirmations and navigation callback", () => {
-  const { state, page, search } = useBudget();
+  const { state, page, search, targetedTransactionId } = useBudget();
   const { notice, toastAction } = useToast();
   const { form, open, submit } = useModal();
 
@@ -12299,10 +12299,11 @@ test("Test 4B.10 — Transaction-specific confirmations and navigation callback"
   assert.ok(toastAction.value !== null, "Toast action must be defined");
   assert.equal(toastAction.value?.label, "View transaction");
 
-  // Running the action navigates to Transactions view and filters by transaction name
+  // Running the action navigates to Transactions view and identifies exact transaction
   toastAction.value?.run();
   assert.equal(page.value, "Transactions", "Navigates to Transactions view");
-  assert.equal(search.value, "Sushi Bar", "Sets search filter to transaction name");
+  assert.ok(targetedTransactionId.value, "Captures exact saved transaction ID");
+  assert.equal(search.value, "", "Clears search filter so exact transaction is identified without name collision");
 });
 
 test("Test 4B.11 — Financial invariants preserved across Phase 4B operations", () => {
@@ -12367,6 +12368,421 @@ test("Test 4B.11 — Financial invariants preserved across Phase 4B operations",
   // Invariant 3: Checking ledger balance is conserved
   const checkingBal = getAccountBalance(state.accounts[0]!, state);
   assert.equal(checkingBal, 300000, "Checking cash is untouched until card is paid");
+});
+
+test("Test 4B.12 — Credit preview: Full statement credit absorption accounts for every dollar", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  const card: Account = {
+    id: "card-preview-full-credit",
+    name: "Apple Card",
+    type: "credit",
+    opening: -10000, // $100.00 statement credit
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [card];
+
+  const impact = previewCreditCardExpenseImpact(
+    state,
+    card,
+    "General",
+    6000,
+    simulatedToday,
+  );
+
+  assert.equal(impact.totalAmount, 6000);
+  assert.equal(impact.statementCreditAbsorbed, 6000);
+  assert.equal(impact.coveredAmount, 0);
+  assert.equal(impact.uncoveredAmount, 0);
+  assert.equal(
+    impact.totalAmount,
+    impact.statementCreditAbsorbed + impact.coveredAmount + impact.uncoveredAmount,
+    "Every dollar must be accounted for",
+  );
+  assert.equal(impact.status, "fully_covered");
+  assert.ok(
+    impact.explanation.includes("$60.00"),
+    "Description specifies exact absorbed amount",
+  );
+  assert.ok(
+    impact.explanation.includes("statement credit"),
+    "Description specifies statement credit absorption",
+  );
+});
+
+test("Test 4B.13 — Credit preview: Partial statement credit absorption with remainder fully covered by budget", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  const card: Account = {
+    id: "card-preview-part-credit-cov",
+    name: "Chase Sapphire",
+    type: "credit",
+    opening: -3000, // $30.00 statement credit
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [card];
+  state.budgets = [
+    {
+      id: "b-groceries-pc",
+      category: "Groceries",
+      limit: 10000, // $100.00 budget
+      color: "#277c78",
+    },
+  ];
+
+  // $50 purchase: $30 absorbed by credit, remaining $20 covered by Groceries budget
+  const impact = previewCreditCardExpenseImpact(
+    state,
+    card,
+    "Groceries",
+    5000,
+    simulatedToday,
+  );
+
+  assert.equal(impact.totalAmount, 5000);
+  assert.equal(impact.statementCreditAbsorbed, 3000);
+  assert.equal(impact.coveredAmount, 2000);
+  assert.equal(impact.uncoveredAmount, 0);
+  assert.equal(
+    impact.totalAmount,
+    impact.statementCreditAbsorbed + impact.coveredAmount + impact.uncoveredAmount,
+    "Every dollar accounted for: 3000 + 2000 + 0 = 5000",
+  );
+  assert.equal(impact.status, "fully_covered");
+  assert.ok(impact.explanation.includes("$30.00 absorbed by statement credit"));
+  assert.ok(impact.explanation.includes("$20.00 backed by cash in Ready to Pay"));
+});
+
+test("Test 4B.14 — Credit preview: Partial statement credit absorption with remainder uncovered debt", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  const card: Account = {
+    id: "card-preview-part-credit-uncov",
+    name: "Chase Sapphire",
+    type: "credit",
+    opening: -3000, // $30.00 statement credit
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [card];
+  // No budget for Dining Out
+
+  // $50 purchase: $30 absorbed by credit, remaining $20 is uncovered debt
+  const impact = previewCreditCardExpenseImpact(
+    state,
+    card,
+    "Dining Out",
+    5000,
+    simulatedToday,
+  );
+
+  assert.equal(impact.totalAmount, 5000);
+  assert.equal(impact.statementCreditAbsorbed, 3000);
+  assert.equal(impact.coveredAmount, 0);
+  assert.equal(impact.uncoveredAmount, 2000);
+  assert.equal(
+    impact.totalAmount,
+    impact.statementCreditAbsorbed + impact.coveredAmount + impact.uncoveredAmount,
+    "Every dollar accounted for: 3000 + 0 + 2000 = 5000",
+  );
+  assert.equal(impact.status, "partially_covered");
+  assert.ok(impact.explanation.includes("$30.00 absorbed by statement credit"));
+  assert.ok(impact.explanation.includes("$20.00 creates Uncovered Debt"));
+});
+
+test("Test 4B.15 — Credit preview: Partial credit absorption + partial budget coverage + partial uncovered debt", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  const card: Account = {
+    id: "card-preview-3way-split",
+    name: "Chase Freedom",
+    type: "credit",
+    opening: -3000, // $30.00 statement credit
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [card];
+  state.budgets = [
+    {
+      id: "b-groceries-3way",
+      category: "Groceries",
+      limit: 1000, // only $10.00 budget available
+      color: "#277c78",
+    },
+  ];
+
+  // $50 purchase: $30 absorbed by credit, $10 covered by budget, $10 uncovered debt
+  const impact = previewCreditCardExpenseImpact(
+    state,
+    card,
+    "Groceries",
+    5000,
+    simulatedToday,
+  );
+
+  assert.equal(impact.totalAmount, 5000);
+  assert.equal(impact.statementCreditAbsorbed, 3000);
+  assert.equal(impact.coveredAmount, 1000);
+  assert.equal(impact.uncoveredAmount, 1000);
+  assert.equal(
+    impact.totalAmount,
+    impact.statementCreditAbsorbed + impact.coveredAmount + impact.uncoveredAmount,
+    "Every single cent accounted for: 3000 + 1000 + 1000 = 5000",
+  );
+  assert.equal(impact.status, "partially_covered");
+  assert.ok(impact.explanation.includes("$30.00 absorbed by statement credit"));
+  assert.ok(impact.explanation.includes("$10.00 backed in Ready to Pay"));
+  assert.ok(impact.explanation.includes("$10.00 creates Uncovered Debt"));
+});
+
+test("Test 4B.16 — Credit preview: Existing card debt with partial budget coverage", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  const card: Account = {
+    id: "card-preview-existing-debt",
+    name: "Capital One",
+    type: "credit",
+    opening: 20000, // $200.00 existing debt
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [card];
+  state.budgets = [
+    {
+      id: "b-dining-ed",
+      category: "Dining Out",
+      limit: 4000, // $40.00 budget
+      color: "#b45309",
+    },
+  ];
+
+  // $60 purchase: $0 statement credit, $40 covered by budget, $20 uncovered debt
+  const impact = previewCreditCardExpenseImpact(
+    state,
+    card,
+    "Dining Out",
+    6000,
+    simulatedToday,
+  );
+
+  assert.equal(impact.totalAmount, 6000);
+  assert.equal(impact.statementCreditAbsorbed, 0);
+  assert.equal(impact.coveredAmount, 4000);
+  assert.equal(impact.uncoveredAmount, 2000);
+  assert.equal(
+    impact.totalAmount,
+    impact.statementCreditAbsorbed + impact.coveredAmount + impact.uncoveredAmount,
+    "Every cent accounted for: 0 + 4000 + 2000 = 6000",
+  );
+  assert.equal(impact.status, "partially_covered");
+  assert.ok(impact.explanation.includes("$40.00 backed in Ready to Pay"));
+  assert.ok(impact.explanation.includes("$20.00 exceeds budget and creates Uncovered Debt"));
+});
+
+test("Test 4B.17 — Credit preview: Scheduled credit card expense handling", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  const card: Account = {
+    id: "card-preview-sched",
+    name: "Venture Card",
+    type: "credit",
+    opening: 0,
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [card];
+  state.budgets = [
+    {
+      id: "b-groceries-sched",
+      category: "Groceries",
+      limit: 10000,
+      color: "#277c78",
+    },
+  ];
+
+  const impact = previewCreditCardExpenseImpact(
+    state,
+    card,
+    "Groceries",
+    5000,
+    "2026-10-28", // Future date
+    { status: "scheduled" },
+  );
+
+  assert.equal(impact.isScheduled, true);
+  assert.equal(impact.totalAmount, 5000);
+  assert.equal(impact.coveredAmount, 5000);
+  assert.equal(impact.uncoveredAmount, 0);
+  assert.equal(impact.status, "fully_covered");
+  assert.ok(
+    impact.explanation.startsWith("Scheduled purchase: Will not affect card balance or Ready to Pay until confirmed."),
+    "Must explicitly state that scheduled purchases do not affect balances until confirmed",
+  );
+  assert.ok(
+    impact.explanation.includes("When posted, all $50.00 will be backed by cash in Ready to Pay"),
+    "Explains projected coverage when posted",
+  );
+});
+
+test("Test 4B.18 — Credit preview: Transaction editing with replacement simulation", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  const card: Account = {
+    id: "card-preview-edit",
+    name: "Gold Card",
+    type: "credit",
+    opening: 0,
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [card];
+  state.budgets = [
+    {
+      id: "b-groceries-edit",
+      category: "Groceries",
+      limit: 6000, // $60.00 budget
+      color: "#277c78",
+    },
+  ];
+
+  // Existing $50 transaction already recorded in the ledger
+  state.transactions = [
+    {
+      id: "tx-edit-target",
+      name: "Supermarket",
+      amount: -5000,
+      category: "Groceries",
+      date: simulatedToday,
+      accountId: card.id,
+      status: "posted",
+    },
+  ];
+
+  // If we edit tx-edit-target from $50 to $70:
+  // With existingTxId passed, the simulation replaces the original transaction rather than adding $70 on top of $50
+  const impact = previewCreditCardExpenseImpact(
+    state,
+    card,
+    "Groceries",
+    7000,
+    simulatedToday,
+    { existingTxId: "tx-edit-target" },
+  );
+
+  // Budget has $60 limit. When old $50 is replaced by $70, $60 is covered, $10 is uncovered
+  assert.equal(impact.totalAmount, 7000);
+  assert.equal(impact.coveredAmount, 6000);
+  assert.equal(impact.uncoveredAmount, 1000);
+  assert.equal(impact.status, "partially_covered");
+  assert.ok(impact.explanation.includes("$60.00 backed in Ready to Pay"));
+  assert.ok(impact.explanation.includes("$10.00 exceeds budget and creates Uncovered Debt"));
+});
+
+test("Test 4B.19 — Exact saved transaction navigation handles duplicate payee names and edit mode", () => {
+  const b = useBudget();
+  const m = useModal();
+  const { notice, toastAction } = useToast();
+
+  const state: State = blank();
+  state.opening = 500000;
+  state.payday = "2026-10-31";
+  state.accounts = [
+    {
+      id: "acc-default-checking",
+      name: "Primary Checking",
+      type: "checking",
+      opening: 500000,
+      includeInSafeToSpend: true,
+      createdAt: "2026-10-01",
+      updatedAt: "2026-10-01",
+    },
+  ];
+
+  // Pre-existing transaction with identical name "Trader Joe's"
+  state.transactions = [
+    {
+      id: "tx-duplicate-1",
+      name: "Trader Joe's",
+      amount: -3000,
+      category: "Groceries",
+      date: "2026-10-10",
+      accountId: "acc-default-checking",
+      status: "posted",
+    },
+  ];
+  b.state.value = state;
+
+  // 1. Add new transaction with identical name
+  m.open("Add transaction", "", "Groceries");
+  m.form.value.name = "Trader Joe's";
+  m.form.value.amount = "42.50";
+  m.form.value.category = "Groceries";
+  m.submit();
+
+  // Find newly created transaction
+  const newlyAdded = b.state.value.transactions.find((t) => t.id !== "tx-duplicate-1");
+  assert.ok(newlyAdded, "New transaction created");
+  assert.equal(newlyAdded?.amount, -4250);
+
+  // Trigger toast action
+  assert.ok(toastAction.value !== null);
+  toastAction.value?.run();
+
+  // Navigation targets exact new ID, not the old duplicate
+  assert.equal(b.page.value, "Transactions");
+  assert.equal(b.targetedTransactionId.value, newlyAdded?.id);
+  assert.notEqual(b.targetedTransactionId.value, "tx-duplicate-1");
+  assert.equal(b.search.value, "", "Search is cleared to prevent collision filtering");
+
+  // 2. Edit existing transaction
+  m.open("Edit transaction", "tx-duplicate-1");
+  m.form.value.amount = "35.00";
+  m.submit();
+
+  toastAction.value?.run();
+  assert.equal(b.targetedTransactionId.value, "tx-duplicate-1", "Editing targets exact edited record ID");
+});
+
+test("Test 4B.20 — Pure read-only and side-effect-free invariant for credit impact preview", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  const card: Account = {
+    id: "card-invariant-check",
+    name: "Invariant Card",
+    type: "credit",
+    opening: 5000,
+    creditLimit: 200000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [card];
+  state.budgets = [{ id: "b1", category: "General", limit: 10000, color: "#277c78" }];
+
+  const stateBefore = JSON.stringify(state);
+
+  previewCreditCardExpenseImpact(state, card, "General", 8000, simulatedToday);
+  previewCreditCardExpenseImpact(state, card, "General", 15000, simulatedToday);
+  previewCreditCardExpenseImpact(state, card, "General", 0, simulatedToday);
+
+  const stateAfter = JSON.stringify(state);
+  assert.equal(stateAfter, stateBefore, "State must remain 100% immutable across all preview calculations");
 });
 
 

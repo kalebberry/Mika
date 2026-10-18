@@ -304,6 +304,10 @@ const creditImpactPreview = computed(() => {
     cat,
     amtCents,
     form.value.date || today(),
+    {
+      status: form.value.status,
+      existingTxId: mode.value === "Edit transaction" ? selected.value : undefined,
+    },
   );
 });
 
@@ -990,11 +994,19 @@ function onDateInput() {
               <div class="impact-header">
                 <span class="badge" :class="creditImpactPreview.status">
                   {{
-                    creditImpactPreview.status === 'fully_covered'
-                      ? '🛡️ Fully Covered'
-                      : creditImpactPreview.status === 'partially_covered'
-                        ? '⚡ Partially Covered'
-                        : '⚠️ Uncovered Debt'
+                    creditImpactPreview.isScheduled
+                      ? (creditImpactPreview.status === 'fully_covered'
+                          ? '🗓️ Scheduled (Fully Covered)'
+                          : creditImpactPreview.status === 'partially_covered'
+                            ? '🗓️ Scheduled (Partially Covered)'
+                            : '🗓️ Scheduled (Uncovered)')
+                      : (creditImpactPreview.status === 'fully_covered'
+                          ? (creditImpactPreview.statementCreditAbsorbed === creditImpactPreview.totalAmount
+                              ? '🛡️ Absorbed by Credit'
+                              : '🛡️ Fully Covered')
+                          : creditImpactPreview.status === 'partially_covered'
+                            ? '⚡ Partially Covered'
+                            : '⚠️ Uncovered Debt')
                   }}
                 </span>
                 <span v-if="creditImpactPreview.hasBudget" class="muted small">
@@ -1002,6 +1014,24 @@ function onDateInput() {
                 </span>
                 <span v-else class="muted small text-warning">
                   No budget for {{ creditImpactPreview.category }}
+                </span>
+              </div>
+              <div
+                v-if="
+                  creditImpactPreview.totalAmount > 0 &&
+                  (creditImpactPreview.statementCreditAbsorbed > 0 ||
+                    (creditImpactPreview.coveredAmount > 0 && creditImpactPreview.uncoveredAmount > 0))
+                "
+                class="impact-breakdown-row"
+              >
+                <span v-if="creditImpactPreview.statementCreditAbsorbed > 0" class="breakdown-pill credit-pill">
+                  Statement Credit: {{ money(creditImpactPreview.statementCreditAbsorbed) }}
+                </span>
+                <span v-if="creditImpactPreview.coveredAmount > 0" class="breakdown-pill ready-pill">
+                  Ready to Pay: {{ money(creditImpactPreview.coveredAmount) }}
+                </span>
+                <span v-if="creditImpactPreview.uncoveredAmount > 0" class="breakdown-pill uncovered-pill">
+                  Uncovered Debt: {{ money(creditImpactPreview.uncoveredAmount) }}
                 </span>
               </div>
               <p class="impact-explanation">{{ creditImpactPreview.explanation }}</p>
@@ -1459,6 +1489,36 @@ function onDateInput() {
   font-size: 0.8125rem;
   line-height: 1.45;
   color: var(--color-text, #201f24);
+}
+
+.impact-breakdown-row {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  margin-top: 0.2rem;
+  margin-bottom: 0.15rem;
+}
+
+.breakdown-pill {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+}
+
+.breakdown-pill.credit-pill {
+  background: rgba(38, 85, 166, 0.12);
+  color: #2655a6;
+}
+
+.breakdown-pill.ready-pill {
+  background: rgba(39, 124, 120, 0.15);
+  color: var(--color-teal, #277c78);
+}
+
+.breakdown-pill.uncovered-pill {
+  background: rgba(201, 71, 54, 0.12);
+  color: var(--color-danger, #c94736);
 }
 
 .future-date-callout {

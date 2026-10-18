@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { watch, onMounted, nextTick } from "vue";
 import { colors, today } from "../../model";
 import { money, date } from "../../utils/format";
 import { useBudget } from "../../composables/useBudget";
@@ -16,6 +17,7 @@ const {
   list,
   sum,
   postTransaction,
+  targetedTransactionId,
 } = useBudget();
 const { open } = useModal();
 
@@ -28,6 +30,25 @@ function getAccountName(id?: string): string {
   if (!acc) return "Account";
   return acc.archived ? `${acc.name} (Archived)` : acc.name;
 }
+
+function scrollToTargeted() {
+  if (targetedTransactionId.value) {
+    nextTick(() => {
+      const el = document.getElementById(`tx-row-${targetedTransactionId.value}`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    });
+  }
+}
+
+onMounted(() => {
+  scrollToTargeted();
+});
+
+watch(targetedTransactionId, () => {
+  scrollToTargeted();
+});
 </script>
 
 <template>
@@ -102,7 +123,14 @@ function getAccountName(id?: string): string {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="t in list" :key="t.id">
+          <tr
+            v-for="t in list"
+            :key="t.id"
+            :id="'tx-row-' + t.id"
+            :class="{
+              'targeted-transaction': t.id === targetedTransactionId,
+            }"
+          >
             <td>
               <div class="person">
                 <span
@@ -123,6 +151,12 @@ function getAccountName(id?: string): string {
                 <div>
                   <div style="display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap;">
                     <strong>{{ t.name }}</strong>
+                    <span
+                      v-if="t.id === targetedTransactionId"
+                      class="badge targeted-badge"
+                    >
+                      ✓ Selected
+                    </span>
                     <span
                       class="badge"
                       :class="{
@@ -233,3 +267,20 @@ function getAccountName(id?: string): string {
     </div>
   </section>
 </template>
+
+<style scoped>
+tr.targeted-transaction {
+  background-color: rgba(39, 124, 120, 0.12) !important;
+  outline: 2px solid var(--color-teal, #277c78);
+  outline-offset: -2px;
+}
+
+.targeted-badge {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  background: var(--color-teal, #277c78);
+  color: #fff;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+}
+</style>

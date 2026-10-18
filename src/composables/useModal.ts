@@ -112,6 +112,7 @@ export function useModal() {
     statusFilter,
     sort,
     search,
+    navigateToTransaction,
   } = useBudget();
   const { toast } = useToast();
   const { showCompanion } = useCompanion();
@@ -707,6 +708,7 @@ export function useModal() {
       }
     }
 
+    let savedTxId: string | undefined = undefined;
     let savedTxName = "";
     let savedTxType = "";
     let savedTxCategory = "";
@@ -776,8 +778,11 @@ export function useModal() {
           }
         }
 
+        const newTxId = uid();
+        savedTxId = newTxId;
+
         state.value.transactions.unshift({
-          id: uid(),
+          id: newTxId,
           name: txName,
           amount: txAmount,
           category: txCategory,
@@ -793,6 +798,7 @@ export function useModal() {
           createdAt: new Date().toISOString(),
         });
       } else if (mode.value === "Edit transaction") {
+        savedTxId = selected.value;
         const existing = state.value.transactions.find(
           (t) => t.id === selected.value,
         );
@@ -1046,13 +1052,16 @@ export function useModal() {
               (a) => a.type === "checking" && !a.archived,
             )?.id || "acc-default-checking";
 
-          recordBillPayment(state.value, b.id, {
+          const billTx = recordBillPayment(state.value, b.id, {
             amount: paymentAmount,
             date: form.value.date,
             dueDate: targetDue,
             accountId: form.value.accountId || defaultChecking,
             status: chosenStatus,
           });
+          if (billTx) {
+            savedTxId = billTx.id;
+          }
 
           const postStatus = getBillOccurrenceStatus(state.value, b, targetDue);
           if (chosenStatus === "scheduled") {
@@ -1093,17 +1102,15 @@ export function useModal() {
         confirmationMessage = `${verb} ${formattedAmt} · Payment · ${accName} → ${dest?.name || "Credit Card"}`;
       }
 
-      toastActionItem = {
-        label: "View transaction",
-        run: () => {
-          category.value = "All";
-          accountFilter.value = "All";
-          statusFilter.value = "All";
-          sort.value = "Latest";
-          search.value = savedTxName;
-          page.value = "Transactions";
-        },
-      };
+      if (savedTxId) {
+        const targetId = savedTxId;
+        toastActionItem = {
+          label: "View transaction",
+          run: () => {
+            navigateToTransaction(targetId);
+          },
+        };
+      }
     } else if (currentMode === "Pay bill") {
       if (currentMethod === "settled") {
         confirmationMessage = "Marked settled before setup without deducting cash.";
@@ -1114,17 +1121,15 @@ export function useModal() {
         const verb = isSched ? "Scheduled" : "Paid";
         const amt = cents(Number(form.value.amount || 0));
         confirmationMessage = `${verb} ${money(amt)} · ${form.value.name} · ${payAccName}`;
-        toastActionItem = {
-          label: "View transaction",
-          run: () => {
-            category.value = "All";
-            accountFilter.value = "All";
-            statusFilter.value = "All";
-            sort.value = "Latest";
-            search.value = form.value.name;
-            page.value = "Transactions";
-          },
-        };
+        if (savedTxId) {
+          const targetId = savedTxId;
+          toastActionItem = {
+            label: "View transaction",
+            run: () => {
+              navigateToTransaction(targetId);
+            },
+          };
+        }
       }
     } else if (currentMode === "Start fresh") {
       confirmationMessage = "Ready for your numbers. Set your balance to begin.";

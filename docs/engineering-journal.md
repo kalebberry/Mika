@@ -1652,7 +1652,106 @@ Production build check (`npm run build`):
 
 1. **Session Memory Scope**: Remembered category and account preferences are maintained in-memory only (`ref()`) for the duration of the current tab/session. They do not persist to `localStorage` across page reloads. This is an intentional design decision to prevent stale preferences from persisting indefinitely.
 2. **Credit Preview Informational Nature**: The credit card expense impact preview evaluates the user's budget state at the moment the dialog is filled. It does not reserve or mutate money until the user explicitly saves the transaction.
-3. **Toast Navigation Search Matching**: The "View transaction" toast action navigates to the Transactions view and filters by transaction payee name. If multiple transactions share the exact same name, the view displays all matching records with the most recent at the top.
+3. **Exact Saved Transaction Navigation**: The "View transaction" action navigates directly to the exact saved transaction record by ID, visibly highlighting it and scrolling it into view without relying on payee-name filters.
+
+---
+
+## Phase 4B Review Corrections — Credit Impact Preview & Exact Transaction Navigation
+
+**Branch**: `phase/4b-quick-actions`  
+**Date**: 2026-10-17  
+**Status**: Review Corrections Implemented & Verified
+
+### 1. Summary of Corrections
+
+Following independent review of commit `b1cbe5a7396a86e7ad7c7c973fecea33a6e080d2`, two core areas were refined to uphold Mika's strict standards of financial accuracy and user experience:
+
+1. **Credit Impact Preview Engine (`previewCreditCardExpenseImpact`)**:
+   - Guaranteed the conservation of purchase dollars: every single dollar of a proposed purchase is accounted for across statement-credit absorption, Ready to Pay cash reservation, and Uncovered Debt.
+   - Explicitly distinguished statement-credit absorption from budget coverage.
+   - Eliminated the faulty assumption that $\Delta\text{ReadyToPay} = 0 \land \Delta\text{UncoveredDebt} = 0$ implies full budget coverage.
+   - Added robust handling for partial statement credit absorption where the remainder is split between budget coverage and uncovered debt.
+   - Clarified preview explanations and badge presentations so descriptions agree with displayed dollar amounts and breakdowns.
+   - Explicitly handled scheduled credit card purchases: marked with `isScheduled: true` and calm explanatory text clarifying that balances and cash reserves will not change until posted.
+   - For transaction editing, simulated replacing the original transaction by excluding `existingTxId` from the baseline simulation, accurately presenting the true net impact of the edit.
+   - Guaranteed pure, read-only, and side-effect-free preview evaluation.
+
+2. **Exact Saved Transaction Navigation (`useModal`, `useBudget`, `TransactionsView`)**:
+   - Replaced search/payee-name filtering with exact transaction ID capture (`savedTxId`).
+   - Captured the exact ID for new transactions (`newTxId`), edited transactions (`selected`), and bill payments (`billTx.id`).
+   - Added `targetedTransactionId` and `navigateToTransaction(txId)` to `useBudget`.
+   - Cleared search and status filters on navigation to guarantee visibility of the saved record.
+   - Visibly identified the target record in `TransactionsView.vue` with `.targeted-transaction` styling, distinct focus outline, and an accessible `✓ Selected` badge.
+   - Automatically scrolled the targeted transaction smoothly into view via `nextTick` and `scrollIntoView`.
+   - Guaranteed correct navigation and zero collisions when multiple transactions share identical payee names.
+   - Preserved the compact Overview layout with zero layout shifts or permanent banners.
+
+---
+
+### 2. Detailed Technical Changes
+
+#### Credit Impact Preview Engine (`src/model.ts` & `ActionDialog.vue`)
+- **Mathematical Dollar Accounting Identity**:
+  $$\text{totalAmount} = \text{statementCreditAbsorbed} + \text{coveredAmount} + \text{uncoveredAmount}$$
+- **Statement Credit Absorption Rules**:
+  - Let $\text{creditAvailable} = \text{covBefore.statementCredit}$.
+  - If $\text{creditAvailable} > 0$:
+    - $\text{statementCreditAbsorbed} = \min(\text{validAmount}, \text{creditAvailable})$.
+    - $\text{remainder} = \text{validAmount} - \text{statementCreditAbsorbed}$.
+  - The remainder is then evaluated against category budget:
+    - $\text{coveredAmount} = \max(0, \text{covAfter.readyToPay} - \text{covBefore.readyToPay})$.
+    - $\text{uncoveredAmount} = \max(0, \text{covAfter.uncoveredDebt} - \text{covBefore.uncoveredDebt})$.
+  - If $\text{statementCreditAbsorbed} = \text{validAmount}$, status is `fully_covered` with explanation specifying exact absorbed amount.
+  - If $\text{statementCreditAbsorbed} > 0 \land \text{remainder} > 0$, status is `fully_covered` (if uncovered is 0) or `partially_covered` (if uncovered > 0), with explicit itemized breakdowns.
+- **Breakdown Pill Display in Dialog**:
+  - `ActionDialog.vue` now renders an `.impact-breakdown-row` displaying individual pills for:
+    - `Statement Credit: $XX.XX` (when $\text{statementCreditAbsorbed} > 0$)
+    - `Ready to Pay: $XX.XX` (when $\text{coveredAmount} > 0$)
+    - `Uncovered Debt: $XX.XX` (when $\text{uncoveredAmount} > 0$)
+- **Scheduled Purchase Handling**:
+  - Accepts `options?: { status?: TransactionStatus; existingTxId?: string }`.
+  - When `status === "scheduled"`, sets `isScheduled = true`.
+  - Simulates the impact as if posted to compute hypothetical coverage, but qualifies the badge (`🗓️ Scheduled (Fully Covered)`, etc.) and prepends: *"Scheduled purchase: Will not affect card balance or Ready to Pay until confirmed."*
+- **Transaction Edit Mode Simulation**:
+  - When `existingTxId` is provided, filters `s.transactions.filter(t => t.id !== existingTxId)` before applying the simulated transaction.
+  - Accurately models the replacement delta rather than double-counting the transaction on top of itself.
+
+#### Exact Saved Transaction Navigation
+- **`useBudget.ts`**:
+  - Added `targetedTransactionId = ref<string | null>(null)`.
+  - Implemented `navigateToTransaction(txId: string)`:
+    - Resets `category = "All"`, `accountFilter = "All"`, `statusFilter = "All"`, `search = ""`.
+    - Sets `targetedTransactionId.value = txId`.
+    - Navigates to `page.value = "Transactions"`.
+- **`useModal.ts`**:
+  - Captured actual IDs:
+    - Add transaction: generates `newTxId = uid()`, sets on transaction, passes to `navigateToTransaction(newTxId)`.
+    - Edit transaction: passes `selected.value` (the edited transaction ID) to `navigateToTransaction(savedTxId)`.
+    - Pay bill: passes `billTx.id` to `navigateToTransaction(savedTxId)`.
+- **`TransactionsView.vue`**:
+  - Added `:id="'tx-row-' + t.id"` and `:class="{ 'targeted-transaction': t.id === targetedTransactionId }"`.
+  - Displays `<span class="targeted-badge">✓ Selected</span>` beside transaction name.
+  - Watches `targetedTransactionId` and invokes `scrollToTargeted()` on mount / change via `nextTick()`.
+  - Added targeted row styling: subtle primary background tint, prominent border outline, and accessible badge.
+
+---
+
+### 3. Verification & Test Suite
+
+All **225 tests passing** (`npm test`), with 0 failures and 0 skips:
+
+- **Test 4B.12**: Credit preview: Full statement credit absorption accounts for every dollar.
+- **Test 4B.13**: Credit preview: Partial statement credit absorption with remainder fully covered by budget.
+- **Test 4B.14**: Credit preview: Partial statement credit absorption with remainder uncovered debt.
+- **Test 4B.15**: Credit preview: Partial credit absorption + partial budget coverage + partial uncovered debt.
+- **Test 4B.16**: Credit preview: Existing card debt with partial budget coverage.
+- **Test 4B.17**: Credit preview: Scheduled credit card expense handling.
+- **Test 4B.18**: Credit preview: Transaction editing with replacement simulation.
+- **Test 4B.19**: Exact saved transaction navigation handles duplicate payee names and edit mode.
+- **Test 4B.20**: Pure read-only and side-effect-free invariant for credit impact preview.
+
+Production build check (`npm run build`):
+- `vue-tsc -b && vite build` completed cleanly in 2.11s with 0 errors.
 
 
 

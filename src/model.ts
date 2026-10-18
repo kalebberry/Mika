@@ -1451,8 +1451,10 @@ export function getCreditCardCoverage(
 export type CreditExpenseCoverageImpact = {
   status: "fully_covered" | "partially_covered" | "uncovered";
   totalAmount: number; // integer cents
-  coveredAmount: number; // integer cents
-  uncoveredAmount: number; // integer cents
+  coveredAmount: number; // integer cents (backed by budget in Ready to Pay)
+  uncoveredAmount: number; // integer cents (creates Uncovered Debt)
+  statementCreditAbsorbed: number; // integer cents (absorbed by existing statement credit)
+  isScheduled: boolean;
   category: string;
   hasBudget: boolean;
   budgetLimit: number; // integer cents
@@ -1474,35 +1476,53 @@ export function previewCreditCardExpenseImpact(
   category: string,
   amountCents: number,
   date = today(),
+  options?: {
+    status?: TransactionStatus;
+    existingTxId?: string;
+  },
 ): CreditExpenseCoverageImpact {
   const cardName = account.name;
   const month = date.slice(0, 7);
   const cat = (category === "__custom__" ? "General" : category) || "General";
-  const budget = (s.budgets || []).find(
+  const isScheduled =
+    options?.status === "scheduled" || (!options?.status && date > today());
+
+  // For transaction editing, simulate replacing the original transaction by evaluating against
+  // a baseline state with existingTxId removed, preserving timeline accuracy without double-counting.
+  const baseTransactions = options?.existingTxId
+    ? (s.transactions || []).filter((t) => t.id !== options.existingTxId)
+    : s.transactions || [];
+  const baseState: State = { ...s, transactions: baseTransactions };
+
+  const budget = (baseState.budgets || []).find(
     (b) => b.category.toLowerCase() === cat.toLowerCase(),
   );
 
   const budgetLimit = budget ? budget.limit : 0;
-  const currentSpent = budget ? spent(s, budget.category, month) : 0;
+  const currentSpent = budget ? spent(baseState, budget.category, month) : 0;
   const budgetRemaining = budget ? Math.max(0, budgetLimit - currentSpent) : 0;
 
   if (account.type !== "credit") {
-    const validAmount = Number.isFinite(amountCents) && amountCents > 0 ? amountCents : 0;
+    const validAmount = Number.isFinite(amountCents) && amountCents > 0 ? Math.round(amountCents) : 0;
     return {
       status: "fully_covered",
       totalAmount: validAmount,
       coveredAmount: validAmount,
       uncoveredAmount: 0,
+      statementCreditAbsorbed: 0,
+      isScheduled,
       category: cat,
       hasBudget: Boolean(budget),
       budgetLimit,
       budgetRemaining,
       cardName,
-      explanation: "Cash account charges directly decrease cash balance without creating debt.",
+      explanation: isScheduled
+        ? "Scheduled purchase: Will directly decrease cash balance upon confirmation."
+        : "Cash account charges directly decrease cash balance without creating debt.",
     };
   }
 
-  const validAmount = Number.isFinite(amountCents) && amountCents > 0 ? amountCents : 0;
+  const validAmount = Number.isFinite(amountCents) && amountCents > 0 ? Math.round(amountCents) : 0;
 
   if (validAmount === 0) {
     if (!budget) {
@@ -1511,6 +1531,8 @@ export function previewCreditCardExpenseImpact(
         totalAmount: 0,
         coveredAmount: 0,
         uncoveredAmount: 0,
+        statementCreditAbsorbed: 0,
+        isScheduled,
         category: cat,
         hasBudget: false,
         budgetLimit: 0,
@@ -1525,6 +1547,8 @@ export function previewCreditCardExpenseImpact(
         totalAmount: 0,
         coveredAmount: 0,
         uncoveredAmount: 0,
+        statementCreditAbsorbed: 0,
+        isScheduled,
         category: cat,
         hasBudget: true,
         budgetLimit,
@@ -1538,6 +1562,8 @@ export function previewCreditCardExpenseImpact(
       totalAmount: 0,
       coveredAmount: 0,
       uncoveredAmount: 0,
+      statementCreditAbsorbed: 0,
+      isScheduled,
       category: cat,
       hasBudget: true,
       budgetLimit,
@@ -1547,6 +1573,8 @@ export function previewCreditCardExpenseImpact(
     };
   }
 
+  // Simulate adding this purchase to the timeline to evaluate financial engine impact.
+  // We simulate with status "posted" to determine its mathematical coverage capacity.
   const simTx: Transaction = {
     id: "__preview_sim__",
     name: "Preview",
@@ -1559,43 +1587,83 @@ export function previewCreditCardExpenseImpact(
     createdAt: `${date}T12:00:00.000Z`,
   };
 
-  const covBefore = getCreditCardCoverage(account, s, date);
+  const covBefore = getCreditCardCoverage(account, baseState, date);
   const covAfter = getCreditCardCoverage(
     account,
-    { ...s, transactions: [simTx, ...(s.transactions || [])] },
+    { ...baseState, transactions: [simTx, ...baseTransactions] },
     date,
   );
 
+  // Exact partition of every single cent:
+  // 1. Statement credit absorption (reduces negative card balance without creating debt)
+  const statementCreditAbsorbed = Math.max(
+    0,
+    covBefore.statementCredit - covAfter.statementCredit,
+  );
+
+  // 2. New Ready to Pay coverage (cash in checking earmarked for card repayment)
   const deltaReady = Math.max(0, covAfter.readyToPay - covBefore.readyToPay);
-  const deltaUncovered = Math.max(0, covAfter.uncoveredDebt - covBefore.uncoveredDebt);
+  const coveredAmount = deltaReady;
+
+  // 3. New Uncovered Debt (card balance increase exceeding coverage and statement credit)
+  const uncoveredAmount = Math.max(
+    0,
+    validAmount - statementCreditAbsorbed - coveredAmount,
+  );
 
   let status: "fully_covered" | "partially_covered" | "uncovered";
-  let explanation = "";
-
-  if (deltaUncovered === 0 && deltaReady > 0) {
+  if (uncoveredAmount === 0) {
     status = "fully_covered";
-    explanation = `Fully covered: All ${formatPreviewCurrency(validAmount)} will be backed by cash in Ready to Pay. Safe to Spend is preserved.`;
-  } else if (deltaReady > 0 && deltaUncovered > 0) {
-    status = "partially_covered";
-    explanation = `Partially covered: ${formatPreviewCurrency(deltaReady)} backed in Ready to Pay, but ${formatPreviewCurrency(deltaUncovered)} exceeds budget and creates Uncovered Debt (reduces Safe to Spend).`;
-  } else if (deltaUncovered > 0 && deltaReady === 0) {
+  } else if (uncoveredAmount === validAmount) {
     status = "uncovered";
-    explanation = `Uncovered: Full ${formatPreviewCurrency(validAmount)} creates Uncovered Debt because ${cat} has no remaining budget. This will reduce Safe to Spend.`;
   } else {
-    if (covBefore.statementCredit > 0) {
-      status = "fully_covered";
-      explanation = `Absorbed by statement credit (${formatPreviewCurrency(covBefore.statementCredit)} available on card). Does not create debt.`;
+    status = "partially_covered";
+  }
+
+  let explanation = "";
+  if (isScheduled) {
+    const schedPrefix =
+      "Scheduled purchase: Will not affect card balance or Ready to Pay until confirmed. ";
+    if (statementCreditAbsorbed === validAmount) {
+      explanation = `${schedPrefix}When posted, all ${formatPreviewCurrency(validAmount)} will be absorbed by statement credit (${formatPreviewCurrency(covBefore.statementCredit)} available on card). Does not create debt.`;
+    } else if (statementCreditAbsorbed > 0 && coveredAmount > 0 && uncoveredAmount === 0) {
+      explanation = `${schedPrefix}When posted, ${formatPreviewCurrency(statementCreditAbsorbed)} will be absorbed by statement credit, and ${formatPreviewCurrency(coveredAmount)} will be backed by cash in Ready to Pay.`;
+    } else if (statementCreditAbsorbed > 0 && coveredAmount === 0 && uncoveredAmount > 0) {
+      explanation = `${schedPrefix}When posted, ${formatPreviewCurrency(statementCreditAbsorbed)} will be absorbed by statement credit, and ${formatPreviewCurrency(uncoveredAmount)} will create Uncovered Debt (${cat} has no remaining budget).`;
+    } else if (statementCreditAbsorbed > 0 && coveredAmount > 0 && uncoveredAmount > 0) {
+      explanation = `${schedPrefix}When posted, ${formatPreviewCurrency(statementCreditAbsorbed)} will be absorbed by statement credit, ${formatPreviewCurrency(coveredAmount)} will be backed in Ready to Pay, and ${formatPreviewCurrency(uncoveredAmount)} will create Uncovered Debt.`;
+    } else if (coveredAmount === validAmount) {
+      explanation = `${schedPrefix}When posted, all ${formatPreviewCurrency(validAmount)} will be backed by cash in Ready to Pay.`;
+    } else if (coveredAmount > 0 && uncoveredAmount > 0) {
+      explanation = `${schedPrefix}When posted, ${formatPreviewCurrency(coveredAmount)} will be backed in Ready to Pay, and ${formatPreviewCurrency(uncoveredAmount)} will create Uncovered Debt.`;
     } else {
-      status = "fully_covered";
-      explanation = `Fully covered: Backed by cash in Ready to Pay.`;
+      explanation = `${schedPrefix}When posted, full ${formatPreviewCurrency(validAmount)} will create Uncovered Debt because ${cat} has no remaining budget.`;
+    }
+  } else {
+    if (statementCreditAbsorbed === validAmount) {
+      explanation = `All ${formatPreviewCurrency(validAmount)} absorbed by statement credit (${formatPreviewCurrency(covBefore.statementCredit)} available on card). Does not create debt or reserve cash.`;
+    } else if (statementCreditAbsorbed > 0 && coveredAmount > 0 && uncoveredAmount === 0) {
+      explanation = `Fully covered: ${formatPreviewCurrency(statementCreditAbsorbed)} absorbed by statement credit, and ${formatPreviewCurrency(coveredAmount)} backed by cash in Ready to Pay. Safe to Spend is preserved.`;
+    } else if (statementCreditAbsorbed > 0 && coveredAmount === 0 && uncoveredAmount > 0) {
+      explanation = `Partially covered: ${formatPreviewCurrency(statementCreditAbsorbed)} absorbed by statement credit, but ${formatPreviewCurrency(uncoveredAmount)} creates Uncovered Debt (${cat} has no remaining budget).`;
+    } else if (statementCreditAbsorbed > 0 && coveredAmount > 0 && uncoveredAmount > 0) {
+      explanation = `Partially covered: ${formatPreviewCurrency(statementCreditAbsorbed)} absorbed by statement credit, ${formatPreviewCurrency(coveredAmount)} backed in Ready to Pay, and ${formatPreviewCurrency(uncoveredAmount)} creates Uncovered Debt.`;
+    } else if (coveredAmount === validAmount) {
+      explanation = `Fully covered: All ${formatPreviewCurrency(validAmount)} will be backed by cash in Ready to Pay. Safe to Spend is preserved.`;
+    } else if (coveredAmount > 0 && uncoveredAmount > 0) {
+      explanation = `Partially covered: ${formatPreviewCurrency(coveredAmount)} backed in Ready to Pay, but ${formatPreviewCurrency(uncoveredAmount)} exceeds budget and creates Uncovered Debt (reduces Safe to Spend).`;
+    } else {
+      explanation = `Uncovered: Full ${formatPreviewCurrency(validAmount)} creates Uncovered Debt because ${cat} has no remaining budget. This will reduce Safe to Spend.`;
     }
   }
 
   return {
     status,
     totalAmount: validAmount,
-    coveredAmount: deltaReady,
-    uncoveredAmount: deltaUncovered,
+    coveredAmount,
+    uncoveredAmount,
+    statementCreditAbsorbed,
+    isScheduled,
     category: cat,
     hasBudget: Boolean(budget),
     budgetLimit,
