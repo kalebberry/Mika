@@ -17,7 +17,7 @@ import {
   type TransactionKind,
 } from "../model.ts";
 import { useBudget } from "./useBudget.ts";
-import { useToast } from "./useToast.ts";
+import { useToast, type ToastAction } from "./useToast.ts";
 import { useCompanion } from "./useCompanion.ts";
 import { money } from "../utils/format.ts";
 
@@ -56,6 +56,14 @@ const resetChoice = ref<"keep" | "all">("keep");
 const resetConfirmed = ref(false);
 const focusBefore = ref<HTMLElement | null>(null);
 const payMethod = ref<"transaction" | "settled">("transaction");
+
+export const lastUsedExpenseCategory = ref<string>("");
+export const lastUsedSpendingAccountId = ref<string>("");
+
+export function resetSessionPreferences() {
+  lastUsedExpenseCategory.value = "";
+  lastUsedSpendingAccountId.value = "";
+}
 
 const form = ref<ModalFormState>({
   name: "",
@@ -98,6 +106,12 @@ export function useModal() {
     assignCardPaymentReserve,
     releaseCardPaymentReserve,
     getCreditCardCoverage,
+    categories,
+    category,
+    accountFilter,
+    statusFilter,
+    sort,
+    search,
   } = useBudget();
   const { toast } = useToast();
   const { showCompanion } = useCompanion();
@@ -145,10 +159,42 @@ export function useModal() {
       ) || (state.value.accounts || []).find((a) => !a.archived);
     const defaultAccountId = defaultAcc ? defaultAcc.id : "acc-default-checking";
 
+    let resolvedAccountId = defaultAccountId;
+    if (lastUsedSpendingAccountId.value) {
+      const rememberedAcc = (state.value.accounts || []).find(
+        (a) => a.id === lastUsedSpendingAccountId.value && !a.archived,
+      );
+      if (rememberedAcc) {
+        resolvedAccountId = rememberedAcc.id;
+      }
+    }
+
+    let resolvedCategory = defaultCategory || "Groceries";
+    const isGenericExpense =
+      m === "Add transaction" &&
+      (!defaultCategory ||
+        defaultCategory.toLowerCase() === "expense" ||
+        id?.toLowerCase() === "expense");
+
+    if (isGenericExpense) {
+      if (lastUsedExpenseCategory.value) {
+        const isKnownCategory =
+          (categories.value || []).some(
+            (c) => c.toLowerCase() === lastUsedExpenseCategory.value.toLowerCase(),
+          ) ||
+          (state.value.budgets || []).some(
+            (b) => b.category.toLowerCase() === lastUsedExpenseCategory.value.toLowerCase(),
+          );
+        resolvedCategory = isKnownCategory ? lastUsedExpenseCategory.value : "Groceries";
+      } else {
+        resolvedCategory = "Groceries";
+      }
+    }
+
     form.value = {
       name: "",
       amount: "",
-      category: defaultCategory || "Groceries",
+      category: resolvedCategory,
       date: today(),
       type: "Expense",
       target: "",
@@ -160,7 +206,7 @@ export function useModal() {
       status: "cleared",
       customCategory: "",
       customColor: initialColor,
-      accountId: defaultAccountId,
+      accountId: resolvedAccountId,
       targetAccountId: "",
       billId: undefined,
       billDueDate: undefined,
@@ -295,10 +341,14 @@ export function useModal() {
       m === "Add transaction" &&
       (defaultCategory?.toLowerCase() === "income" || id?.toLowerCase() === "income")
     ) {
+      const incomeAcc = (state.value.accounts || []).find(
+        (a) => a.id === resolvedAccountId && (a.type === "checking" || a.type === "savings") && !a.archived,
+      );
       form.value = {
         ...form.value,
         type: "Income",
         category: "Income",
+        accountId: incomeAcc ? incomeAcc.id : defaultAccountId,
       };
     } else if (
       m === "Add transaction" &&
@@ -307,6 +357,8 @@ export function useModal() {
       form.value = {
         ...form.value,
         type: "Expense",
+        category: resolvedCategory,
+        accountId: resolvedAccountId,
       };
     } else if (
       m === "Add transaction" &&
@@ -360,7 +412,7 @@ export function useModal() {
           date: today(),
           billId: b.id,
           billDueDate: targetDue,
-          accountId: defaultAccountId,
+          accountId: resolvedAccountId,
           status: "posted",
         };
       }
@@ -644,10 +696,6 @@ export function useModal() {
           error.value = "Select an account.";
           return;
         }
-        if (!name) {
-          error.value = "Enter a name or payee.";
-          return;
-        }
         if (
           f.type === "Expense" &&
           f.category === "__custom__" &&
@@ -658,6 +706,14 @@ export function useModal() {
         }
       }
     }
+
+    let savedTxName = "";
+    let savedTxType = "";
+    let savedTxCategory = "";
+    let savedTxAmount = 0;
+    let savedTxAccountId: string | undefined = "";
+    let savedTxTargetAccountId: string | undefined = "";
+    let savedTxStatus: TransactionStatus | undefined = undefined;
 
     if (mode.value === "Add transaction" || mode.value === "Edit transaction") {
       const isFuture = f.date > today();
@@ -690,10 +746,26 @@ export function useModal() {
         txCategory = "Payment";
         txAmount = -amount;
       } else if (f.type === "Income") {
-        txName = name;
+        txName = name || "Income";
         txCategory = "Income";
         txAmount = amount;
+      } else if (f.type === "Expense") {
+        txName = name || resolvedCategory || "Expense";
+        txCategory = resolvedCategory || "General";
+        txAmount = -amount;
+        if (mode.value === "Add transaction") {
+          lastUsedSpendingAccountId.value = f.accountId || "";
+          lastUsedExpenseCategory.value = resolvedCategory;
+        }
       }
+
+      savedTxName = txName;
+      savedTxType = f.type;
+      savedTxCategory = txCategory;
+      savedTxAmount = amount;
+      savedTxAccountId = f.accountId;
+      savedTxTargetAccountId = f.targetAccountId;
+      savedTxStatus = status;
 
       if (mode.value === "Add transaction") {
         let explicitBillDueDate = f.billDueDate;
@@ -999,19 +1071,72 @@ export function useModal() {
     const currentMethod = payMethod.value;
     close();
 
-    toast(
-      currentMode === "Start fresh"
-        ? "Ready for your numbers. Set your balance to begin."
-        : currentMode === "Add transaction" && form.value.date > today()
-          ? "Scheduled transaction saved. It will not affect balance until confirmed."
-          : currentMode === "Settle bill" || (currentMode === "Pay bill" && currentMethod === "settled")
-            ? "Marked settled before setup without deducting cash."
-            : currentMode === "Pay bill"
-              ? billToastMessage
-              : currentMode === "Add transaction" && showCompanion.value
-                ? "Mika: Logged. One less thing to remember."
-                : "Saved. You’re up to date.",
-    );
+    let confirmationMessage = "Saved. You’re up to date.";
+    let toastActionItem: ToastAction | undefined;
+
+    if (currentMode === "Add transaction" || currentMode === "Edit transaction") {
+      const acc = (state.value.accounts || []).find((a) => a.id === savedTxAccountId);
+      const accName = acc ? acc.name : "Primary Checking";
+      const formattedAmt = money(savedTxAmount);
+      const isSched = savedTxStatus === "scheduled";
+      const verb = isSched ? "Scheduled" : "Saved";
+
+      if (savedTxType === "Expense") {
+        confirmationMessage = `${verb} ${formattedAmt} · ${savedTxCategory} · ${accName}`;
+      } else if (savedTxType === "Income") {
+        confirmationMessage = `${verb} ${formattedAmt} · Income · ${accName}`;
+      } else if (savedTxType === "Transfer") {
+        const dest = (state.value.accounts || []).find((a) => a.id === savedTxTargetAccountId);
+        confirmationMessage = `${verb} ${formattedAmt} · Transfer · ${accName} → ${dest?.name || "Account"}`;
+      } else if (savedTxType === "Credit Card Payment") {
+        const dest = (state.value.accounts || []).find((a) => a.id === savedTxTargetAccountId);
+        confirmationMessage = `${verb} ${formattedAmt} · Payment · ${accName} → ${dest?.name || "Credit Card"}`;
+      }
+
+      toastActionItem = {
+        label: "View transaction",
+        run: () => {
+          category.value = "All";
+          accountFilter.value = "All";
+          statusFilter.value = "All";
+          sort.value = "Latest";
+          search.value = savedTxName;
+          page.value = "Transactions";
+        },
+      };
+    } else if (currentMode === "Pay bill") {
+      if (currentMethod === "settled") {
+        confirmationMessage = "Marked settled before setup without deducting cash.";
+      } else {
+        const payAcc = (state.value.accounts || []).find((a) => a.id === form.value.accountId);
+        const payAccName = payAcc ? payAcc.name : "Primary Checking";
+        const isSched = form.value.status === "scheduled";
+        const verb = isSched ? "Scheduled" : "Paid";
+        const amt = cents(Number(form.value.amount || 0));
+        confirmationMessage = `${verb} ${money(amt)} · ${form.value.name} · ${payAccName}`;
+        toastActionItem = {
+          label: "View transaction",
+          run: () => {
+            category.value = "All";
+            accountFilter.value = "All";
+            statusFilter.value = "All";
+            sort.value = "Latest";
+            search.value = form.value.name;
+            page.value = "Transactions";
+          },
+        };
+      }
+    } else if (currentMode === "Start fresh") {
+      confirmationMessage = "Ready for your numbers. Set your balance to begin.";
+    } else if (currentMode === "Settle bill") {
+      confirmationMessage = "Marked settled before setup without deducting cash.";
+    }
+
+    if (showCompanion.value && currentMode === "Add transaction") {
+      confirmationMessage = `Mika: ${confirmationMessage}`;
+    }
+
+    toast(confirmationMessage, toastActionItem);
   }
 
   return {
@@ -1023,6 +1148,9 @@ export function useModal() {
     resetConfirmed,
     payMethod,
     form,
+    lastUsedExpenseCategory,
+    lastUsedSpendingAccountId,
+    resetSessionPreferences,
     open,
     close,
     submit,

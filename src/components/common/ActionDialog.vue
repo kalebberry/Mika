@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import {
   colors,
   themeColors,
@@ -7,6 +7,7 @@ import {
   cents,
   getBillOccurrenceStatus,
   nextUnpaidDueDate,
+  previewCreditCardExpenseImpact,
 } from "../../model";
 import { money } from "../../utils/format";
 import { useBudget } from "../../composables/useBudget";
@@ -274,8 +275,40 @@ function onColorSelectChange() {
   }
 }
 
+const showCycleOverride = ref(false);
+
+watch(
+  () => mode.value,
+  () => {
+    showCycleOverride.value = false;
+  },
+);
+
+const creditImpactPreview = computed(() => {
+  if (
+    (mode.value !== "Add transaction" && mode.value !== "Edit transaction") ||
+    form.value.type !== "Expense" ||
+    !isCreditCardSelected.value ||
+    !selectedAccount.value
+  ) {
+    return null;
+  }
+  const amtCents = cents(Number(form.value.amount || 0));
+  const cat =
+    form.value.category === "__custom__"
+      ? (form.value.customCategory || "General").trim()
+      : form.value.category || "General";
+  return previewCreditCardExpenseImpact(
+    state.value,
+    selectedAccount.value,
+    cat,
+    amtCents,
+    form.value.date || today(),
+  );
+});
+
 function onDateInput() {
-  if (form.value.date > today() && form.value.status === "cleared") {
+  if (form.value.date > today()) {
     form.value.status = "scheduled";
   }
 }
@@ -434,7 +467,16 @@ function onDateInput() {
           <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem;">
             <div>
               <strong style="font-size: 1.05rem; display: block;">{{ currentBill.name }}</strong>
-              <span class="muted small">Target Occurrence: {{ currentBillTargetDueDate }}</span>
+              <div class="occurrence-cycle-row">
+                <span class="cycle-pill">Target cycle due: <strong>{{ currentBillTargetDueDate }}</strong></span>
+                <button
+                  type="button"
+                  class="text-link small"
+                  @click="showCycleOverride = !showCycleOverride"
+                >
+                  {{ showCycleOverride ? "Done" : "Change cycle" }}
+                </button>
+              </div>
             </div>
             <span
               class="badge"
@@ -451,6 +493,11 @@ function onDateInput() {
               }}
             </span>
           </div>
+
+          <label v-if="showCycleOverride" class="cycle-override-box">
+            <span class="muted small" style="display: block; margin-bottom: 0.25rem;">Change occurrence due date:</span>
+            <input type="date" v-model="form.billDueDate" style="margin-bottom: 0;" />
+          </label>
 
           <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; background: var(--color-surface, #fff); padding: 0.75rem; border-radius: 6px; border: 1px solid var(--color-border, #ededf2); text-align: center;">
             <div>
@@ -470,30 +517,19 @@ function onDateInput() {
           </div>
         </div>
 
-        <p class="muted">
-          Choose payment method:
-        </p>
-        <fieldset class="reset-options" style="margin: 0.75rem 0;">
-          <legend class="sr-only">Payment method</legend>
-          <label class="reset-option" :class="{ 'is-selected': payMethod === 'transaction' }">
-            <input type="radio" v-model="payMethod" value="transaction" />
-            <span>
-              <strong>Record expense payment</strong>
-              <small>
-                Deducts payment from your account ledger and credits this bill occurrence.
-              </small>
-            </span>
-          </label>
-          <label class="reset-option" :class="{ 'is-selected': payMethod === 'settled' }">
-            <input type="radio" v-model="payMethod" value="settled" />
-            <span>
-              <strong>Already paid before setup</strong>
-              <small>
-                Advances this bill to the next cycle without deducting money or creating a ledger transaction.
-              </small>
-            </span>
-          </label>
-        </fieldset>
+        <div v-if="payMethod === 'settled'" class="bill-settled-info-box">
+          <p style="margin: 0; font-size: 0.85rem; line-height: 1.45;">
+            <strong>Already paid before setup:</strong> This will advance {{ currentBill?.name || 'this bill' }} to the next cycle without deducting money from your cash balance or creating an expense transaction.
+          </p>
+          <button
+            type="button"
+            class="text-link small"
+            style="margin-top: 0.5rem; display: inline-block;"
+            @click="payMethod = 'transaction'"
+          >
+            ← Back to cash payment
+          </button>
+        </div>
       </template>
 
       <template v-if="mode === 'Settle bill'">
@@ -948,9 +984,32 @@ function onDateInput() {
           <small v-if="mode === 'Pay bill'">
             Select the source checking, savings, or credit card account paying this bill.
           </small>
-          <small v-else-if="isCreditCardSelected && form.type === 'Expense'" style="color: #a63223; font-weight: 500; display: block;">
-            💳 Charges on this credit card increase the balance owed and reduce available credit. They do NOT decrease your cash balance.
-          </small>
+          <template v-else-if="isCreditCardSelected && form.type === 'Expense'">
+            <!-- Credit Card Expense Impact Preview -->
+            <div v-if="creditImpactPreview" class="credit-impact-card" :class="creditImpactPreview.status">
+              <div class="impact-header">
+                <span class="badge" :class="creditImpactPreview.status">
+                  {{
+                    creditImpactPreview.status === 'fully_covered'
+                      ? '🛡️ Fully Covered'
+                      : creditImpactPreview.status === 'partially_covered'
+                        ? '⚡ Partially Covered'
+                        : '⚠️ Uncovered Debt'
+                  }}
+                </span>
+                <span v-if="creditImpactPreview.hasBudget" class="muted small">
+                  Budget available: {{ money(creditImpactPreview.budgetRemaining) }}
+                </span>
+                <span v-else class="muted small text-warning">
+                  No budget for {{ creditImpactPreview.category }}
+                </span>
+              </div>
+              <p class="impact-explanation">{{ creditImpactPreview.explanation }}</p>
+            </div>
+            <small v-else style="color: #a63223; font-weight: 500; display: block;">
+              💳 Charges on this credit card increase the balance owed and reduce available credit. They do NOT decrease your cash balance.
+            </small>
+          </template>
           <small v-else-if="isCreditCardSelected && form.type === 'Income'" style="color: #1b5e4f; font-weight: 500; display: block;">
             💳 Statement credits or refunds reduce the balance owed on this card and restore available credit.
           </small>
@@ -1005,21 +1064,25 @@ function onDateInput() {
         </small>
       </label>
 
-      <!-- Target Bill Occurrence Due Date (Pay bill only) -->
-      <label v-if="mode === 'Pay bill' && payMethod === 'transaction'">
-        Target Bill Due Date
-        <input type="date" v-model="form.billDueDate" required />
-        <small>The specific recurring bill occurrence this payment applies to.</small>
-      </label>
-
       <!-- Date -->
       <label v-if="mode === 'Add transaction' || mode === 'Edit transaction' || (mode === 'Pay bill' && payMethod === 'transaction')">
         {{ mode === 'Pay bill' ? 'Payment Date' : 'Date' }}
         <input type="date" v-model="form.date" @input="onDateInput" required />
-        <small v-if="form.date > today()">
-          Transactions dated in the future should be scheduled until they occur.
-        </small>
       </label>
+
+      <!-- Future date callout -->
+      <div
+        v-if="(mode === 'Add transaction' || mode === 'Edit transaction' || mode === 'Pay bill') && form.date > today()"
+        class="future-date-callout"
+      >
+        <span class="callout-icon" aria-hidden="true">ℹ️</span>
+        <small v-if="form.type === 'Income'">
+          Scheduled income is planned for the future and is not yet available in your spendable cash or Safe to Spend.
+        </small>
+        <small v-else>
+          Scheduled transactions are held in planning and will not deduct from your cash balance until confirmed.
+        </small>
+      </div>
 
       <!-- Payee or Description (Name) -->
       <label
@@ -1037,7 +1100,11 @@ function onDateInput() {
       >
         {{
           (mode === 'Add transaction' || mode === 'Edit transaction')
-            ? (form.type === 'Transfer' || form.type === 'Credit Card Payment' ? 'Description (Optional)' : form.type === 'Income' ? 'Payer / Description' : 'Payee / Description')
+            ? (form.type === 'Transfer' || form.type === 'Credit Card Payment'
+                ? 'Description (Optional)'
+                : form.type === 'Income'
+                  ? 'Payer / Description (Optional)'
+                  : 'Payee / Description (Optional)')
             : mode.includes('budget')
               ? 'Name'
               : 'Name'
@@ -1045,16 +1112,20 @@ function onDateInput() {
         <input
           v-model="form.name"
           :required="
-            !['Add budget', 'Edit budget'].includes(mode) &&
-            !(
-              (mode === 'Add transaction' || mode === 'Edit transaction') &&
-              (form.type === 'Transfer' || form.type === 'Credit Card Payment')
-            )
+            ['Add pot', 'Add bill', 'Edit bill'].includes(mode)
           "
           maxlength="80"
           :placeholder="
             (mode === 'Add transaction' || mode === 'Edit transaction')
-              ? (form.type === 'Transfer' ? 'e.g. Transfer to Savings' : form.type === 'Credit Card Payment' ? 'e.g. April Card Payment' : form.type === 'Income' ? 'e.g. Paycheck' : 'e.g. Weekly groceries')
+              ? (form.type === 'Transfer'
+                  ? 'e.g. Transfer to Savings (Optional)'
+                  : form.type === 'Credit Card Payment'
+                    ? 'e.g. Card Payment (Optional)'
+                    : form.type === 'Income'
+                      ? 'e.g. Paycheck (Optional — defaults to Income)'
+                      : (form.category && form.category !== '__custom__'
+                          ? `e.g. Merchant (Optional — defaults to ${form.category})`
+                          : 'e.g. Weekly groceries (Optional)'))
               : mode.includes('budget')
                 ? 'e.g. Work Lunches or Groceries'
                 : mode.includes('bill')
@@ -1230,6 +1301,17 @@ function onDateInput() {
 
       <p class="form-error" v-if="error" role="alert">{{ error }}</p>
 
+      <!-- Secondary settlement option for bill payment -->
+      <div v-if="mode === 'Pay bill' && payMethod === 'transaction'" class="bill-settle-alt">
+        <button
+          type="button"
+          class="text-link muted small"
+          @click="payMethod = 'settled'"
+        >
+          Already paid this bill before setup? Mark settled without cash deduction →
+        </button>
+      </div>
+
       <template v-if="mode === 'Delete account' && currentAccountBlockReason">
         <button
           class="primary full"
@@ -1285,6 +1367,112 @@ function onDateInput() {
 
 .reserve-target-card-box strong {
   font-size: 1.125rem;
+  color: var(--color-text, #201f24);
+}
+
+.occurrence-cycle-row {
+  margin-top: 0.35rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.cycle-pill {
+  font-size: 0.8125rem;
+  color: var(--color-muted);
+}
+
+.cycle-override-box {
+  background: var(--color-surface, #fff);
+  border: 1px dashed var(--color-border, #ededf2);
+  border-radius: var(--radius-sm, 6px);
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.bill-settled-info-box {
+  background: var(--color-surface-subtle, #f8f8fa);
+  border: 1px solid var(--color-border, #ededf2);
+  border-radius: var(--radius-sm, 6px);
+  padding: 0.75rem 1rem;
+  margin: 0.75rem 0;
+}
+
+.bill-settle-alt {
+  margin: 0.5rem 0 0.875rem;
+  text-align: center;
+}
+
+.credit-impact-card {
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--color-border, #ededf2);
+  background: var(--color-surface-subtle, #f8f8fa);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.credit-impact-card.fully_covered {
+  background: rgba(39, 124, 120, 0.06);
+  border-color: rgba(39, 124, 120, 0.25);
+}
+
+.credit-impact-card.partially_covered {
+  background: rgba(180, 83, 9, 0.06);
+  border-color: rgba(180, 83, 9, 0.25);
+}
+
+.credit-impact-card.uncovered {
+  background: rgba(201, 71, 54, 0.06);
+  border-color: rgba(201, 71, 54, 0.25);
+}
+
+.impact-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.impact-header .badge.fully_covered {
+  background: rgba(39, 124, 120, 0.15);
+  color: var(--color-teal, #277c78);
+}
+
+.impact-header .badge.partially_covered {
+  background: rgba(180, 83, 9, 0.15);
+  color: #b45309;
+}
+
+.impact-header .badge.uncovered {
+  background: rgba(201, 71, 54, 0.15);
+  color: var(--color-danger, #c94736);
+}
+
+.impact-explanation {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--color-text, #201f24);
+}
+
+.future-date-callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: 0.5rem 0.75rem;
+  background: #eef6f5;
+  border-left: 3px solid var(--color-teal, #277c78);
+  border-radius: 4px;
+  margin-top: -0.25rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.8125rem;
+  line-height: 1.4;
   color: var(--color-text, #201f24);
 }
 

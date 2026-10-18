@@ -21,3 +21,42 @@
   font-size: 1.3rem;
   line-height: 1;
 }
+
+.toast-message {
+  line-height: 1.4;
+}
+
+.toast-action-btn {
+  background: rgba(255, 255, 255, 0.16) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.3) !important;
+  border-radius: var(--radius-sm, 6px);
+  padding: 0.35rem 0.65rem !important;
+  font-size: 0.8125rem !important;
+  font-weight: 600 !important;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.toast-action-btn:hover,
+.toast-action-btn:focus-visible {
+  background: rgba(255, 255, 255, 0.28) !important;
+  border-color: rgba(255, 255, 255, 0.6) !important;
+  color: #ffffff !important;
+}
+
+.toast-dismiss-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  font-size: 1.3rem;
+  color: #b3b3b3;
+}
+
+.toast-dismiss-btn:hover,
+.toast-dismiss-btn:focus-visible {
+  color: #ffffff;
+}
+

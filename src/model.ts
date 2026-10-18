@@ -1448,6 +1448,163 @@ export function getCreditCardCoverage(
   };
 }
 
+export type CreditExpenseCoverageImpact = {
+  status: "fully_covered" | "partially_covered" | "uncovered";
+  totalAmount: number; // integer cents
+  coveredAmount: number; // integer cents
+  uncoveredAmount: number; // integer cents
+  category: string;
+  hasBudget: boolean;
+  budgetLimit: number; // integer cents
+  budgetRemaining: number; // integer cents
+  cardName: string;
+  explanation: string;
+};
+
+const formatPreviewCurrency = (c: number): string => {
+  const normalized = Math.round(c);
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
+    (normalized === 0 ? 0 : normalized) / 100,
+  );
+};
+
+export function previewCreditCardExpenseImpact(
+  s: State,
+  account: Account,
+  category: string,
+  amountCents: number,
+  date = today(),
+): CreditExpenseCoverageImpact {
+  const cardName = account.name;
+  const month = date.slice(0, 7);
+  const cat = (category === "__custom__" ? "General" : category) || "General";
+  const budget = (s.budgets || []).find(
+    (b) => b.category.toLowerCase() === cat.toLowerCase(),
+  );
+
+  const budgetLimit = budget ? budget.limit : 0;
+  const currentSpent = budget ? spent(s, budget.category, month) : 0;
+  const budgetRemaining = budget ? Math.max(0, budgetLimit - currentSpent) : 0;
+
+  if (account.type !== "credit") {
+    const validAmount = Number.isFinite(amountCents) && amountCents > 0 ? amountCents : 0;
+    return {
+      status: "fully_covered",
+      totalAmount: validAmount,
+      coveredAmount: validAmount,
+      uncoveredAmount: 0,
+      category: cat,
+      hasBudget: Boolean(budget),
+      budgetLimit,
+      budgetRemaining,
+      cardName,
+      explanation: "Cash account charges directly decrease cash balance without creating debt.",
+    };
+  }
+
+  const validAmount = Number.isFinite(amountCents) && amountCents > 0 ? amountCents : 0;
+
+  if (validAmount === 0) {
+    if (!budget) {
+      return {
+        status: "uncovered",
+        totalAmount: 0,
+        coveredAmount: 0,
+        uncoveredAmount: 0,
+        category: cat,
+        hasBudget: false,
+        budgetLimit: 0,
+        budgetRemaining: 0,
+        cardName,
+        explanation: `No budget for ${cat}. Any purchases on this card will create Uncovered Debt.`,
+      };
+    }
+    if (budgetRemaining === 0) {
+      return {
+        status: "uncovered",
+        totalAmount: 0,
+        coveredAmount: 0,
+        uncoveredAmount: 0,
+        category: cat,
+        hasBudget: true,
+        budgetLimit,
+        budgetRemaining: 0,
+        cardName,
+        explanation: `${cat} budget is exhausted ($0.00 remaining). Any purchases will create Uncovered Debt.`,
+      };
+    }
+    return {
+      status: "fully_covered",
+      totalAmount: 0,
+      coveredAmount: 0,
+      uncoveredAmount: 0,
+      category: cat,
+      hasBudget: true,
+      budgetLimit,
+      budgetRemaining,
+      cardName,
+      explanation: `${cat} budget has ${formatPreviewCurrency(budgetRemaining)} available. Purchases up to this amount will be backed by cash in Ready to Pay.`,
+    };
+  }
+
+  const simTx: Transaction = {
+    id: "__preview_sim__",
+    name: "Preview",
+    amount: -validAmount,
+    category: cat,
+    date,
+    accountId: account.id,
+    status: "posted",
+    kind: "standard",
+    createdAt: `${date}T12:00:00.000Z`,
+  };
+
+  const covBefore = getCreditCardCoverage(account, s, date);
+  const covAfter = getCreditCardCoverage(
+    account,
+    { ...s, transactions: [simTx, ...(s.transactions || [])] },
+    date,
+  );
+
+  const deltaReady = Math.max(0, covAfter.readyToPay - covBefore.readyToPay);
+  const deltaUncovered = Math.max(0, covAfter.uncoveredDebt - covBefore.uncoveredDebt);
+
+  let status: "fully_covered" | "partially_covered" | "uncovered";
+  let explanation = "";
+
+  if (deltaUncovered === 0 && deltaReady > 0) {
+    status = "fully_covered";
+    explanation = `Fully covered: All ${formatPreviewCurrency(validAmount)} will be backed by cash in Ready to Pay. Safe to Spend is preserved.`;
+  } else if (deltaReady > 0 && deltaUncovered > 0) {
+    status = "partially_covered";
+    explanation = `Partially covered: ${formatPreviewCurrency(deltaReady)} backed in Ready to Pay, but ${formatPreviewCurrency(deltaUncovered)} exceeds budget and creates Uncovered Debt (reduces Safe to Spend).`;
+  } else if (deltaUncovered > 0 && deltaReady === 0) {
+    status = "uncovered";
+    explanation = `Uncovered: Full ${formatPreviewCurrency(validAmount)} creates Uncovered Debt because ${cat} has no remaining budget. This will reduce Safe to Spend.`;
+  } else {
+    if (covBefore.statementCredit > 0) {
+      status = "fully_covered";
+      explanation = `Absorbed by statement credit (${formatPreviewCurrency(covBefore.statementCredit)} available on card). Does not create debt.`;
+    } else {
+      status = "fully_covered";
+      explanation = `Fully covered: Backed by cash in Ready to Pay.`;
+    }
+  }
+
+  return {
+    status,
+    totalAmount: validAmount,
+    coveredAmount: deltaReady,
+    uncoveredAmount: deltaUncovered,
+    category: cat,
+    hasBudget: Boolean(budget),
+    budgetLimit,
+    budgetRemaining,
+    cardName,
+    explanation,
+  };
+}
+
 export function assignCardPaymentReserve(
   account: Account,
   amount: number,

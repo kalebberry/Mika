@@ -87,13 +87,21 @@ import {
   getDailyPaydayPresentation,
   isCreditCardMinimumDueSoon,
   getCreditMinimumCoverageNote,
+  previewCreditCardExpenseImpact,
+  type CreditExpenseCoverageImpact,
   type DailyAttentionItem,
   type DailyAttentionSummary,
   type DailySuggestedAction,
   type DailyPaydayPresentation,
 } from "../src/model.ts";
 import { useBudget } from "../src/composables/useBudget.ts";
-import { useModal } from "../src/composables/useModal.ts";
+import {
+  useModal,
+  lastUsedExpenseCategory,
+  lastUsedSpendingAccountId,
+  resetSessionPreferences,
+} from "../src/composables/useModal.ts";
+import { useToast } from "../src/composables/useToast.ts";
 import { money } from "../src/utils/format.ts";
 
 test("Test A — Future paycheck: income remains scheduled until confirmed/posted", () => {
@@ -11870,4 +11878,495 @@ test("Test 4A.21 — Concise payday and quick actions presentation models", () =
     "Contains clean View bills action",
   );
 });
+
+test("Test 4B.1 — Optional payee fallback: uses category for expense and 'Income' for income, preserves explicit names", () => {
+  const { state } = useBudget();
+  const { form, open, submit, error } = useModal();
+
+  // 1. Expense with blank payee falls back to category name
+  open("Add transaction", "", "Dining Out");
+  form.value.amount = "24.50";
+  form.value.name = "   "; // blank whitespace
+  form.value.category = "Dining Out";
+  submit();
+  assert.equal(error.value, "", "Should not error on blank payee");
+  const createdExpense = state.value.transactions[0]!;
+  assert.equal(createdExpense.name, "Dining Out", "Expense with blank payee defaults to category name");
+  assert.equal(createdExpense.amount, -2450);
+
+  // 2. Income with blank payee falls back to 'Income'
+  open("Add transaction", "", "Income");
+  form.value.amount = "1500.00";
+  form.value.name = "";
+  submit();
+  assert.equal(error.value, "", "Should not error on blank income payee");
+  const createdIncome = state.value.transactions[0]!;
+  assert.equal(createdIncome.name, "Income", "Income with blank payee defaults to 'Income'");
+  assert.equal(createdIncome.amount, 150000);
+
+  // 3. Explicit payee is preserved
+  open("Add transaction", "", "Groceries");
+  form.value.name = "Trader Joe's";
+  form.value.amount = "42.00";
+  submit();
+  const explicitTx = state.value.transactions[0]!;
+  assert.equal(explicitTx.name, "Trader Joe's", "Explicitly entered payee must be preserved");
+});
+
+test("Test 4B.2 — Category and spending account session memory in useModal", () => {
+  resetSessionPreferences();
+  const { state } = useBudget();
+  const { form, open, submit } = useModal();
+
+  const card: Account = {
+    id: "card-points-1",
+    name: "Points Card",
+    type: "credit",
+    opening: 0,
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.value.accounts.push(card);
+
+  // Submit an expense using the Points Card and Transport category
+  open("Add transaction", "", "Transport");
+  form.value.accountId = card.id;
+  form.value.category = "Transport";
+  form.value.amount = "15.00";
+  form.value.name = "Train Ticket";
+  submit();
+
+  assert.equal(lastUsedSpendingAccountId.value, card.id, "Remembers last used spending account");
+  assert.equal(lastUsedExpenseCategory.value, "Transport", "Remembers last used expense category");
+
+  // Opening a new generic expense should restore both selections
+  open("Add transaction", "", "Expense");
+  assert.equal(form.value.accountId, card.id, "Pre-selects remembered spending account");
+  assert.equal(form.value.category, "Transport", "Pre-selects remembered expense category");
+
+  // User can freely change them
+  form.value.category = "Entertainment";
+  assert.equal(form.value.category, "Entertainment", "User can change remembered category");
+
+  resetSessionPreferences();
+});
+
+test("Test 4B.3 — Graceful fallback on invalid, archived, or removed remembered selections", () => {
+  resetSessionPreferences();
+  const { state } = useBudget();
+  const { form, open } = useModal();
+
+  // Set remembered values to non-existent / invalid IDs
+  lastUsedSpendingAccountId.value = "acc-deleted-or-archived-999";
+  lastUsedExpenseCategory.value = "DeletedOrObsoleteCategoryXYZ";
+
+  open("Add transaction", "", "Expense");
+
+  // Spending account must fall back to default checking
+  const defaultChecking = (state.value.accounts || []).find(
+    (a) => !a.archived && a.id === "acc-default-checking",
+  )?.id || (state.value.accounts || []).find((a) => !a.archived)?.id;
+  assert.equal(
+    form.value.accountId,
+    defaultChecking,
+    "Falls back to active default checking when remembered account is invalid",
+  );
+
+  // Category must fall back to Groceries
+  assert.equal(
+    form.value.category,
+    "Groceries",
+    "Falls back to Groceries when remembered category is invalid",
+  );
+
+  // If an account is archived, it must not be used
+  const archivedCard: Account = {
+    id: "card-archived-1",
+    name: "Old Closed Card",
+    type: "credit",
+    opening: 0,
+    includeInSafeToSpend: false,
+    archived: true,
+    createdAt: "2026-01-01",
+    updatedAt: "2026-01-01",
+  };
+  state.value.accounts.push(archivedCard);
+  lastUsedSpendingAccountId.value = archivedCard.id;
+
+  open("Add transaction", "", "Expense");
+  assert.notEqual(
+    form.value.accountId,
+    archivedCard.id,
+    "Must never select an archived account from session memory",
+  );
+
+  resetSessionPreferences();
+});
+
+test("Test 4B.4 — Credit card purchase preview: fully covered purchases", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  state.opening = 500000; // $5,000 cash
+
+  const card: Account = {
+    id: "card-preview-1",
+    name: "Chase Sapphire",
+    type: "credit",
+    opening: 0,
+    creditLimit: 1000000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [
+    {
+      id: "acc-default-checking",
+      name: "Primary Checking",
+      type: "checking",
+      opening: 500000,
+      includeInSafeToSpend: true,
+      createdAt: "2026-10-01",
+      updatedAt: "2026-10-01",
+    },
+    card,
+  ];
+
+  state.budgets = [
+    {
+      id: "b-groceries",
+      category: "Groceries",
+      limit: 20000, // $200.00
+      color: "#277c78",
+    },
+  ];
+
+  // Purchase $50 on Groceries with $200 budget remaining
+  const impact = previewCreditCardExpenseImpact(
+    state,
+    card,
+    "Groceries",
+    5000, // $50.00
+    simulatedToday,
+  );
+
+  assert.equal(impact.status, "fully_covered");
+  assert.equal(impact.totalAmount, 5000);
+  assert.equal(impact.coveredAmount, 5000);
+  assert.equal(impact.uncoveredAmount, 0);
+  assert.equal(impact.budgetRemaining, 20000);
+  assert.ok(
+    impact.explanation.includes("backed by cash in Ready to Pay"),
+    "Explains that cash will back the credit card debt in Ready to Pay",
+  );
+  assert.ok(
+    impact.explanation.includes("Safe to Spend is preserved"),
+    "Confirms Safe to Spend is not reduced because it was already budgeted",
+  );
+});
+
+test("Test 4B.5 — Credit card purchase preview: partially covered purchases", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  state.opening = 500000;
+
+  const card: Account = {
+    id: "card-preview-2",
+    name: "Amex Blue",
+    type: "credit",
+    opening: 0,
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [
+    {
+      id: "acc-default-checking",
+      name: "Primary Checking",
+      type: "checking",
+      opening: 500000,
+      includeInSafeToSpend: true,
+      createdAt: "2026-10-01",
+      updatedAt: "2026-10-01",
+    },
+    card,
+  ];
+
+  state.budgets = [
+    {
+      id: "b-dining",
+      category: "Dining Out",
+      limit: 10000, // $100.00
+      color: "#b45309",
+    },
+  ];
+
+  // User already spent $60 on Dining Out earlier this month
+  state.transactions.push({
+    id: "tx-prior-dining",
+    name: "Lunch",
+    amount: -6000,
+    category: "Dining Out",
+    date: "2026-10-05",
+    accountId: card.id,
+    status: "posted",
+  });
+
+  // Now buying $90 dinner on Dining Out (only $40 remaining in budget)
+  const impact = previewCreditCardExpenseImpact(
+    state,
+    card,
+    "Dining Out",
+    9000, // $90.00
+    simulatedToday,
+  );
+
+  assert.equal(impact.status, "partially_covered");
+  assert.equal(impact.totalAmount, 9000);
+  assert.equal(impact.coveredAmount, 4000, "Only $40 is covered by remaining budget");
+  assert.equal(impact.uncoveredAmount, 5000, "The $50 excess creates uncovered debt");
+  assert.equal(impact.budgetRemaining, 4000);
+  assert.ok(
+    impact.explanation.includes("backed in Ready to Pay"),
+    "Explains covered portion",
+  );
+  assert.ok(
+    impact.explanation.includes("creates Uncovered Debt"),
+    "Explains uncovered debt portion",
+  );
+});
+
+test("Test 4B.6 — Credit card purchase preview: uncovered purchases", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  const card: Account = {
+    id: "card-preview-3",
+    name: "Citi Card",
+    type: "credit",
+    opening: 0,
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [card];
+  state.budgets = []; // No budgets set
+
+  // Buying $75 on an unbudgeted category
+  const impact = previewCreditCardExpenseImpact(
+    state,
+    card,
+    "General",
+    7500, // $75.00
+    simulatedToday,
+  );
+
+  assert.equal(impact.status, "uncovered");
+  assert.equal(impact.totalAmount, 7500);
+  assert.equal(impact.coveredAmount, 0);
+  assert.equal(impact.uncoveredAmount, 7500);
+  assert.equal(impact.hasBudget, false);
+  assert.ok(
+    impact.explanation.includes("creates Uncovered Debt"),
+    "Warns user that purchase will create Uncovered Debt",
+  );
+  assert.ok(
+    impact.explanation.includes("reduce Safe to Spend"),
+    "Warns that Safe to Spend will drop",
+  );
+});
+
+test("Test 4B.7 — Credit card purchase preview: statement credit absorption", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  const card: Account = {
+    id: "card-preview-4",
+    name: "Apple Card",
+    type: "credit",
+    opening: -5000, // Negative balance = $50 statement credit from refund
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [card];
+
+  // Purchase of $30 is completely absorbed by the $50 statement credit
+  const impact = previewCreditCardExpenseImpact(
+    state,
+    card,
+    "Hardware",
+    3000,
+    simulatedToday,
+  );
+
+  assert.equal(impact.status, "fully_covered");
+  assert.ok(
+    impact.explanation.includes("statement credit"),
+    "Identifies absorption by statement credit",
+  );
+});
+
+test("Test 4B.8 — Bill occurrence presentation, explicit cycle override, and partial payment", () => {
+  const { state } = useBudget();
+  const { form, open, submit } = useModal();
+
+  const bill: Bill = {
+    id: "bill-internet-4b",
+    name: "Fiber Internet",
+    amount: 10000, // $100.00
+    day: 20,
+    trackingStartDate: "2026-10-01",
+  };
+  state.value.bills.push(bill);
+
+  // Routine pay bill opens with target occurrence date pre-filled
+  open("Pay bill", bill.id, "2026-10-20");
+  assert.equal(form.value.billDueDate, "2026-10-20");
+  assert.equal(form.value.amount, "100");
+
+  // Record a partial payment of $40
+  form.value.amount = "40.00";
+  submit();
+
+  // Occurrence status now reflects partial payment
+  const occStatus = getBillOccurrenceStatus(state.value, bill, "2026-10-20");
+  assert.equal(occStatus.status, "partially_paid");
+  assert.equal(occStatus.paidAmount, 4000);
+  assert.equal(occStatus.remainingAmount, 6000);
+
+  // Paying the bill again pre-fills the remaining $60
+  open("Pay bill", bill.id, "2026-10-20");
+  assert.equal(form.value.amount, "60");
+
+  // Explicit cycle override allows targeting a different occurrence
+  form.value.billDueDate = "2026-11-20";
+  form.value.amount = "100.00";
+  submit();
+
+  // November occurrence is recorded without disturbing October's remaining balance
+  const octStatus = getBillOccurrenceStatus(state.value, bill, "2026-10-20");
+  const novStatus = getBillOccurrenceStatus(state.value, bill, "2026-11-20");
+  assert.equal(octStatus.remainingAmount, 6000, "October partial status is preserved");
+  assert.equal(novStatus.remainingAmount, 0, "November occurrence is paid in full");
+});
+
+test("Test 4B.9 — Future-dated transactions: auto-scheduling and cleared prevention", () => {
+  const { form, open, submit, error } = useModal();
+
+  open("Add transaction", "", "Income");
+  form.value.date = "2026-12-01"; // Future date
+  form.value.amount = "2500.00";
+
+  // Attempting to submit as 'cleared' on a future date must fail
+  form.value.status = "cleared";
+  submit();
+  assert.ok(
+    error.value.includes("Future-dated transactions cannot be marked as Cleared"),
+    "Prevents cleared status on future-dated transactions",
+  );
+
+  // Submitting as scheduled succeeds
+  form.value.status = "scheduled";
+  submit();
+  assert.equal(error.value, "", "Scheduled future transaction saves successfully");
+});
+
+test("Test 4B.10 — Transaction-specific confirmations and navigation callback", () => {
+  const { state, page, search } = useBudget();
+  const { notice, toastAction } = useToast();
+  const { form, open, submit } = useModal();
+
+  open("Add transaction", "", "Dining Out");
+  form.value.name = "Sushi Bar";
+  form.value.amount = "45.00";
+  form.value.category = "Dining Out";
+  submit();
+
+  // Verify toast contains exact formatted amount, category, and account
+  assert.ok(
+    notice.value.includes("$45.00"),
+    "Confirmation message must include formatted amount",
+  );
+  assert.ok(
+    notice.value.includes("Dining Out"),
+    "Confirmation message must include category",
+  );
+
+  // Verify toast action is present and functional
+  assert.ok(toastAction.value !== null, "Toast action must be defined");
+  assert.equal(toastAction.value?.label, "View transaction");
+
+  // Running the action navigates to Transactions view and filters by transaction name
+  toastAction.value?.run();
+  assert.equal(page.value, "Transactions", "Navigates to Transactions view");
+  assert.equal(search.value, "Sushi Bar", "Sets search filter to transaction name");
+});
+
+test("Test 4B.11 — Financial invariants preserved across Phase 4B operations", () => {
+  const state: State = blank();
+  state.opening = 300000; // $3,000 cash in checking
+  state.payday = "2026-10-25";
+
+  const card: Account = {
+    id: "card-invariants-1",
+    name: "Cash Back Card",
+    type: "credit",
+    opening: 0,
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [
+    {
+      id: "acc-default-checking",
+      name: "Primary Checking",
+      type: "checking",
+      opening: 300000,
+      includeInSafeToSpend: true,
+      createdAt: "2026-10-01",
+      updatedAt: "2026-10-01",
+    },
+    card,
+  ];
+  state.budgets = [
+    {
+      id: "b-groceries-inv",
+      category: "Groceries",
+      limit: 50000, // $500.00
+      color: "#277c78",
+    },
+  ];
+
+  const initialTotals = totals(state, "2026-10-15");
+  assert.equal(initialTotals.safe, 250000); // $3000 - $500 Groceries budget = $2500 Safe to Spend
+
+  // Simulate spending $100 on Groceries using credit card
+  state.transactions.push({
+    id: "tx-inv-1",
+    name: "Groceries", // Defaulted category name
+    amount: -10000,
+    category: "Groceries",
+    date: "2026-10-15",
+    accountId: card.id,
+    status: "posted",
+  });
+
+  const postTotals = totals(state, "2026-10-15");
+  // Invariant 1: Budgeted credit card spending does NOT double-deduct from Safe to Spend
+  assert.equal(postTotals.safe, 250000, "Safe to Spend is invariant on budgeted credit spending");
+
+  // Invariant 2: Covered Credit allocates exactly $100 to Ready to Pay
+  const cov = getCreditCardCoverage(card, state, "2026-10-15");
+  assert.equal(cov.readyToPay, 10000, "Allocates $100 cash to Ready to Pay");
+  assert.equal(cov.uncoveredDebt, 0, "No uncovered debt created");
+
+  // Invariant 3: Checking ledger balance is conserved
+  const checkingBal = getAccountBalance(state.accounts[0]!, state);
+  assert.equal(checkingBal, 300000, "Checking cash is untouched until card is paid");
+});
+
 

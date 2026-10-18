@@ -1519,5 +1519,141 @@ All 205 tests passing (`npm test`):
 Production build check (`npm run build`):
 - `vue-tsc -b && vite build` completed with 0 errors.
 
+---
+
+## Phase 4B — Quick Actions & ADHD Workflow Friction Reductions (Completed)
+
+**Date**: October 17, 2026  
+**Branch**: `phase/4b-quick-actions`  
+**Status**: Completed, verified with full regression suite.
+
+### 1. Objective & Philosophy
+
+The objective of Phase 4B is to make everyday budgeting faster, simpler, and more ADHD-friendly without sacrificing financial accuracy or compromising Mika's local-first manual budgeting invariants.
+
+Budgeting with ADHD often falters on friction: excessive mandatory fields (such as forced payee names for routine purchases), repetitive selections (re-selecting the same card or category multiple times a day), confusing decisions during bill payments, and uncertain feedback after saving. Phase 4B removes repetitive friction, provides transparent feedback, and protects financial integrity:
+
+- **Reduces cognitive drag**: Payee/description is optional with intuitive fallbacks; session memory retains recent context.
+- **Prevents confusing decisions**: Bill occurrence due dates are locked to routine payment cycles with an explicit override mechanism; credit purchases display real-time read-only coverage previews.
+- **Provides confident feedback**: Transaction-specific save confirmations with a direct "View transaction" jump action confirm exactly what happened without cluttering the screen.
+- **Zero financial compromise**: Pure calculation functions, zero synthetic state, zero schema migrations, and full preservation of Safe to Spend, Covered Credit, and Ready to Pay.
+
+---
+
+### 2. Architectural Design & Implementation
+
+#### 1. Faster Transaction Entry & Session Memory
+- **Optional Payee Fallback**:
+  - In [`useModal.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/composables/useModal.ts), when creating a new expense, leaving the payee field blank defaults the transaction name to the selected category (e.g. `"Groceries"`, `"Dining Out"`).
+  - Leaving an income description blank defaults the transaction name to `"Income"`.
+  - Explicitly typed names are preserved unchanged.
+  - HTML `:required` attribute removed from the payee input in [`ActionDialog.vue`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/components/common/ActionDialog.vue), and placeholder clearly signals the fallback behavior (`"e.g. Trader Joe's (optional — defaults to category)"`).
+- **Session Memory**:
+  - Introduced in-memory session refs: `lastUsedExpenseCategory` and `lastUsedSpendingAccountId`.
+  - Memory operates strictly in the current browser session (`ref()`), with zero persistent storage changes.
+  - When opening a new expense modal, pre-fills the remembered category and spending account.
+  - Validates that remembered selections still exist, are active (not archived), and are valid spending accounts (checking or credit).
+  - If a remembered account or category was archived or deleted, gracefully falls back to the default checking account and the first available category.
+  - Never automatically submits or creates transactions without explicit user confirmation.
+
+#### 2. Clearer Credit Card Purchases (Read-Only Coverage Preview)
+- **Pure Evaluation Engine**:
+  - Implemented pure function `previewCreditCardExpenseImpact(s, account, category, amountCents, date)` in [`src/model.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/model.ts).
+  - Simulates the expense against a cloned financial state using Mika's existing `getCreditCardCoverage()` engine without mutating application state.
+  - Accurately classifies impact:
+    - `fully_covered`: Category has sufficient available budget to absorb the full purchase, increasing Ready to Pay reserves in checking dollar-for-dollar.
+    - `partially_covered`: Category budget only covers part of the purchase; calculates exact covered amount (`readyToPayDelta`) and exact uncovered amount (`uncoveredDebtDelta`).
+    - `uncovered`: Unbudgeted purchase or category budget exhausted; adds to Uncovered Debt and does not reserve checking cash.
+    - `statement_credit_absorption`: If the card has existing statement credit, the purchase absorbs the statement credit first.
+- **Contextual UI Preview Card**:
+  - In [`ActionDialog.vue`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/components/common/ActionDialog.vue), whenever an Expense selects a credit card with an entered amount > $0, renders a dedicated, read-only `.credit-impact-preview` card.
+  - Displays color-coded badges (`.badge-success`, `.badge-warning`, `.badge-danger`) and human-readable explanations:
+    - Fully covered: *"✓ Fully covered by budget · Increases Ready to Pay by $XX.XX"*.
+    - Partially covered: *"⚠ Partially covered · $XX.XX Ready to Pay / $YY.YY Uncovered Debt"*.
+    - Uncovered: *"⚠ Unbudgeted purchase · Adds $XX.XX to Uncovered Debt"*.
+  - Strictly read-only: does not modify state, budgets, or cash reserves from the preview itself.
+
+#### 3. Simpler Recurring Bill Payments
+- **Prominent Occurrence Due Date**:
+  - During routine bill payment in [`ActionDialog.vue`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/components/common/ActionDialog.vue), the target due date is prominently displayed with badge indicators.
+  - To prevent accidental misattribution of payments, the target due date input is read-only by default during routine payment.
+- **Explicit Cycle Correction**:
+  - Added an explicit `[Change cycle]` action button. Clicking it reveals the date input (`showCycleOverride`), allowing users to correct or override the cycle occurrence if needed.
+- **Editable Payment Date**:
+  - The actual transaction Payment Date (when cash left the bank) remains prominent and directly editable.
+- **Historical Occurrence Assignment & Partial Payments**:
+  - Preserves exact occurrence linking (`billId`, `billDueDate`) and partial payment tracking (`paidAmount`, `remainingAmount`).
+- **Secondary "Already Paid Before Setup"**:
+  - Replaced ambiguous choices with a secondary, clearly labeled link (`"Already paid before tracking setup?"`) that cleanly handles pre-setup history without cash deductions.
+  - Never marks bills paid silently.
+
+#### 4. Future-Dated Transactions
+- **Automatic Scheduling**:
+  - In [`ActionDialog.vue`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/components/common/ActionDialog.vue), selecting a transaction date in the future (`isFutureDate = computed(() => form.date > today())`) automatically switches the status to `"scheduled"`.
+  - Disables the `"cleared"` status option for future dates, preventing logically impossible future cleared transactions while keeping `"pending"` and `"scheduled"` available.
+- **Educational Context Callout**:
+  - When a future date is selected, renders a calm, informative callout (`.future-date-callout`):
+    - For income: *"Scheduled income is tracked for planning and is not available to spend until confirmed."*
+    - For expenses: *"Scheduled expenses will not deduct from your cash balance until confirmed."*
+- **Financial Balance Preservation**:
+  - Retains Phase 3C scheduled transaction invariants: scheduled transactions do not affect posted ledger balances, monthly actual spending totals, or unearned cash.
+
+#### 5. Better Save Confirmations & Actionable Navigation
+- **Transaction-Specific Toast Confirmations**:
+  - Extended [`useToast.ts`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/composables/useToast.ts) to support optional actionable toast callbacks (`ToastAction: { label: string; run: () => void }`).
+  - Styled with accessible `.toast-action-btn` and keyboard focus ring in [`_toast.css`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/styles/components/_toast.css) and [`ToastNotification.vue`](file:///c:/Users/kaleb/Documents/Github/Mika-Budget/src/components/layout/ToastNotification.vue).
+  - Replaced generic `"Transaction recorded"` toasts with concise, descriptive confirmations:
+    - E.g.: `"Saved $24.50 · Dining Out · Chase Freedom"`
+    - E.g.: `"Saved $1,250.00 · Income · Checking"`
+    - E.g.: `"Saved bill payment $85.00 · Electric · Checking"`
+- **Direct "View Transaction" Navigation**:
+  - Attaches a working `"View transaction"` action button to the confirmation toast.
+  - Clicking it smoothly navigates to the Transactions view (`view.value = "transactions"`), resets status/type filters to ensure the transaction is visible, and pre-populates search with the transaction name.
+- **Preserves Overview Context**:
+  - User remains on Overview (or their current view) after saving unless they explicitly click "View transaction", avoiding unwanted screen hopping.
+  - Zero permanent banner cards or clutter added to the dashboard.
+
+#### 6. Error Recovery & Financial Safety
+- **Form State Preservation**:
+  - When form validation fails, entered values are completely preserved. The dialog remains open and highlights specific field-level validation errors close to the input.
+- **Preserved Confirmations**:
+  - Delete confirmations for transactions, accounts, pots, and bills are preserved.
+  - Transaction deletion undo was not introduced in this phase to prevent state inconsistencies.
+- **Preserved Financial Invariants**:
+  - Safe to Spend calculations (`totals(s, now)`) are untouched and authoritative.
+  - Covered Credit, Ready to Pay, and Uncovered Debt calculations operate with mathematical rigor.
+  - Bill occurrences, payday protection, and credit card minimum safeguards remain fully intact.
+  - No storage schema modifications: data remains 100% compatible with existing local storage and migration schemas.
+
+---
+
+### 3. Verification & Test Suite
+
+All **216 tests passing** (`npm test`), with 0 failures and 0 skips:
+
+- **Test 4B.1**: Optional payee fallback: uses category for expense and 'Income' for income, preserves explicit names.
+- **Test 4B.2**: Category and spending account session memory in `useModal`.
+- **Test 4B.3**: Graceful fallback on invalid, archived, or removed remembered selections.
+- **Test 4B.4**: Credit card purchase preview: fully covered purchases.
+- **Test 4B.5**: Credit card purchase preview: partially covered purchases.
+- **Test 4B.6**: Credit card purchase preview: uncovered purchases.
+- **Test 4B.7**: Credit card purchase preview: statement credit absorption.
+- **Test 4B.8**: Bill occurrence presentation, explicit cycle override, and partial payment.
+- **Test 4B.9**: Future-dated transactions: auto-scheduling and cleared prevention.
+- **Test 4B.10**: Transaction-specific confirmations and navigation callback.
+- **Test 4B.11**: Financial invariants preserved across Phase 4B operations.
+
+Production build check (`npm run build`):
+- `vue-tsc -b && vite build` completed cleanly in 4.38s with 0 errors.
+
+---
+
+### 4. Known Limitations
+
+1. **Session Memory Scope**: Remembered category and account preferences are maintained in-memory only (`ref()`) for the duration of the current tab/session. They do not persist to `localStorage` across page reloads. This is an intentional design decision to prevent stale preferences from persisting indefinitely.
+2. **Credit Preview Informational Nature**: The credit card expense impact preview evaluates the user's budget state at the moment the dialog is filled. It does not reserve or mutate money until the user explicitly saves the transaction.
+3. **Toast Navigation Search Matching**: The "View transaction" toast action navigates to the Transactions view and filters by transaction payee name. If multiple transactions share the exact same name, the view displays all matching records with the most recent at the top.
+
+
 
 
