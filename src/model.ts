@@ -1449,7 +1449,7 @@ export function getCreditCardCoverage(
 }
 
 export type CreditExpenseCoverageImpact = {
-  status: "fully_covered" | "partially_covered" | "uncovered";
+  status: "fully_covered" | "partially_covered" | "uncovered" | "neutral";
   totalAmount: number; // integer cents
   coveredAmount: number; // integer cents (backed by budget in Ready to Pay)
   uncoveredAmount: number; // integer cents (creates Uncovered Debt)
@@ -1505,7 +1505,7 @@ export function previewCreditCardExpenseImpact(
   if (account.type !== "credit") {
     const validAmount = Number.isFinite(amountCents) && amountCents > 0 ? Math.round(amountCents) : 0;
     return {
-      status: "fully_covered",
+      status: validAmount === 0 ? "neutral" : "fully_covered",
       totalAmount: validAmount,
       coveredAmount: validAmount,
       uncoveredAmount: 0,
@@ -1516,60 +1516,37 @@ export function previewCreditCardExpenseImpact(
       budgetLimit,
       budgetRemaining,
       cardName,
-      explanation: isScheduled
-        ? "Scheduled purchase: Will directly decrease cash balance upon confirmation."
-        : "Cash account charges directly decrease cash balance without creating debt.",
+      explanation: validAmount === 0
+        ? "Enter an amount to see how this expense affects your cash balance."
+        : (isScheduled
+            ? "Scheduled purchase: Will directly decrease cash balance upon confirmation."
+            : "Cash account charges directly decrease cash balance without creating debt."),
     };
   }
 
   const validAmount = Number.isFinite(amountCents) && amountCents > 0 ? Math.round(amountCents) : 0;
 
   if (validAmount === 0) {
-    if (!budget) {
-      return {
-        status: "uncovered",
-        totalAmount: 0,
-        coveredAmount: 0,
-        uncoveredAmount: 0,
-        statementCreditAbsorbed: 0,
-        isScheduled,
-        category: cat,
-        hasBudget: false,
-        budgetLimit: 0,
-        budgetRemaining: 0,
-        cardName,
-        explanation: `No budget for ${cat}. Any purchases on this card will create Uncovered Debt.`,
-      };
-    }
-    if (budgetRemaining === 0) {
-      return {
-        status: "uncovered",
-        totalAmount: 0,
-        coveredAmount: 0,
-        uncoveredAmount: 0,
-        statementCreditAbsorbed: 0,
-        isScheduled,
-        category: cat,
-        hasBudget: true,
-        budgetLimit,
-        budgetRemaining: 0,
-        cardName,
-        explanation: `${cat} budget is exhausted ($0.00 remaining). Any purchases will create Uncovered Debt.`,
-      };
+    const covBefore = getCreditCardCoverage(account, baseState, date);
+    let explanation = "Enter an amount to see how this purchase would affect your card.";
+    if (covBefore.statementCredit > 0) {
+      explanation = `Enter an amount to see how this purchase would affect your card. This card currently has ${formatPreviewCurrency(covBefore.statementCredit)} in statement credit available to absorb purchases.`;
+    } else if (budget && budgetRemaining > 0) {
+      explanation = `Enter an amount to see how this purchase would affect your card. ${cat} budget has ${formatPreviewCurrency(budgetRemaining)} available.`;
     }
     return {
-      status: "fully_covered",
+      status: "neutral",
       totalAmount: 0,
       coveredAmount: 0,
       uncoveredAmount: 0,
       statementCreditAbsorbed: 0,
       isScheduled,
       category: cat,
-      hasBudget: true,
+      hasBudget: Boolean(budget),
       budgetLimit,
       budgetRemaining,
       cardName,
-      explanation: `${cat} budget has ${formatPreviewCurrency(budgetRemaining)} available. Purchases up to this amount will be backed by cash in Ready to Pay.`,
+      explanation,
     };
   }
 
@@ -1594,7 +1571,7 @@ export function previewCreditCardExpenseImpact(
     date,
   );
 
-  // Exact partition of every single cent:
+  // Exact partition of every single cent directly from the authoritative financial engine:
   // 1. Statement credit absorption (reduces negative card balance without creating debt)
   const statementCreditAbsorbed = Math.max(
     0,
@@ -1602,13 +1579,12 @@ export function previewCreditCardExpenseImpact(
   );
 
   // 2. New Ready to Pay coverage (cash in checking earmarked for card repayment)
-  const deltaReady = Math.max(0, covAfter.readyToPay - covBefore.readyToPay);
-  const coveredAmount = deltaReady;
+  const coveredAmount = Math.max(0, covAfter.readyToPay - covBefore.readyToPay);
 
   // 3. New Uncovered Debt (card balance increase exceeding coverage and statement credit)
   const uncoveredAmount = Math.max(
     0,
-    validAmount - statementCreditAbsorbed - coveredAmount,
+    covAfter.uncoveredDebt - covBefore.uncoveredDebt,
   );
 
   let status: "fully_covered" | "partially_covered" | "uncovered";

@@ -994,25 +994,27 @@ function onDateInput() {
               <div class="impact-header">
                 <span class="badge" :class="creditImpactPreview.status">
                   {{
-                    creditImpactPreview.isScheduled
-                      ? (creditImpactPreview.status === 'fully_covered'
-                          ? '🗓️ Scheduled (Fully Covered)'
-                          : creditImpactPreview.status === 'partially_covered'
-                            ? '🗓️ Scheduled (Partially Covered)'
-                            : '🗓️ Scheduled (Uncovered)')
-                      : (creditImpactPreview.status === 'fully_covered'
-                          ? (creditImpactPreview.statementCreditAbsorbed === creditImpactPreview.totalAmount
-                              ? '🛡️ Absorbed by Credit'
-                              : '🛡️ Fully Covered')
-                          : creditImpactPreview.status === 'partially_covered'
-                            ? '⚡ Partially Covered'
-                            : '⚠️ Uncovered Debt')
+                    creditImpactPreview.status === 'neutral'
+                      ? 'ℹ️ Card Impact'
+                      : creditImpactPreview.isScheduled
+                        ? (creditImpactPreview.status === 'fully_covered'
+                            ? '🗓️ Scheduled (Fully Covered)'
+                            : creditImpactPreview.status === 'partially_covered'
+                              ? '🗓️ Scheduled (Partially Covered)'
+                              : '🗓️ Scheduled (Uncovered)')
+                        : (creditImpactPreview.status === 'fully_covered'
+                            ? (creditImpactPreview.statementCreditAbsorbed === creditImpactPreview.totalAmount
+                                ? '🛡️ Absorbed by Credit'
+                                : '🛡️ Fully Covered')
+                            : creditImpactPreview.status === 'partially_covered'
+                              ? '⚡ Partially Covered'
+                              : '⚠️ Uncovered Debt')
                   }}
                 </span>
                 <span v-if="creditImpactPreview.hasBudget" class="muted small">
                   Budget available: {{ money(creditImpactPreview.budgetRemaining) }}
                 </span>
-                <span v-else class="muted small text-warning">
+                <span v-else class="muted small" :class="{ 'text-warning': creditImpactPreview.status !== 'neutral' }">
                   No budget for {{ creditImpactPreview.category }}
                 </span>
               </div>
@@ -1461,12 +1463,22 @@ function onDateInput() {
   border-color: rgba(201, 71, 54, 0.25);
 }
 
+.credit-impact-card.neutral {
+  background: var(--color-surface, #f9fafb);
+  border-color: var(--color-border, #e5e7eb);
+}
+
 .impact-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
+}
+
+.impact-header .badge.neutral {
+  background: #f1f5f9;
+  color: #475569;
 }
 
 .impact-header .badge.fully_covered {

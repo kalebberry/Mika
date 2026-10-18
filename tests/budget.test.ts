@@ -12785,4 +12785,441 @@ test("Test 4B.20 — Pure read-only and side-effect-free invariant for credit im
   assert.equal(stateAfter, stateBefore, "State must remain 100% immutable across all preview calculations");
 });
 
+test("Test 4B.21 — Zero-amount preview wording: neutral guidance, statement credit awareness, and no premature debt assertion", () => {
+  const simulatedToday = "2026-10-15";
+
+  // Scenario A: Card with statement credit, zero amount entered, no category budget
+  const stateA: State = blank();
+  const cardA: Account = {
+    id: "card-zero-stmt-credit",
+    name: "Apple Card",
+    type: "credit",
+    opening: -10000, // $100.00 statement credit
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  stateA.accounts = [cardA];
+
+  const impactA = previewCreditCardExpenseImpact(stateA, cardA, "Unbudgeted Cat", 0, simulatedToday);
+  assert.equal(impactA.status, "neutral", "Zero-amount preview must have neutral status");
+  assert.equal(impactA.totalAmount, 0);
+  assert.equal(impactA.coveredAmount, 0);
+  assert.equal(impactA.uncoveredAmount, 0);
+  assert.equal(impactA.statementCreditAbsorbed, 0);
+  assert.ok(
+    impactA.explanation.includes("Enter an amount to see how this purchase would affect your card."),
+    "Must offer neutral guidance to enter an amount",
+  );
+  assert.ok(
+    impactA.explanation.includes("$100.00 in statement credit available"),
+    "Must account for available statement credit",
+  );
+  assert.ok(
+    !impactA.explanation.includes("will create Uncovered Debt"),
+    "Must not assert that unbudgeted purchases will create Uncovered Debt when statement credit exists",
+  );
+
+  // Scenario B: Card with 0 balance, zero amount entered, category has available budget
+  const stateB: State = blank();
+  const cardB: Account = {
+    id: "card-zero-budgeted",
+    name: "Chase Sapphire",
+    type: "credit",
+    opening: 0,
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  stateB.accounts = [cardB];
+  stateB.budgets = [{ id: "b-groc", category: "Groceries", limit: 15000, color: "#277c78" }];
+
+  const impactB = previewCreditCardExpenseImpact(stateB, cardB, "Groceries", 0, simulatedToday);
+  assert.equal(impactB.status, "neutral", "Zero-amount preview must have neutral status");
+  assert.ok(
+    impactB.explanation.includes("Enter an amount to see how this purchase would affect your card."),
+    "Must offer neutral guidance to enter an amount",
+  );
+  assert.ok(
+    impactB.explanation.includes("Groceries budget has $150.00 available"),
+    "Must mention available budget without asserting definitive coverage before amount entry",
+  );
+
+  // Scenario C: Card with 0 balance, zero amount entered, category has NO budget
+  const stateC: State = blank();
+  const cardC: Account = {
+    id: "card-zero-nobudget",
+    name: "Capital One",
+    type: "credit",
+    opening: 0,
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  stateC.accounts = [cardC];
+
+  const impactC = previewCreditCardExpenseImpact(stateC, cardC, "General", 0, simulatedToday);
+  assert.equal(impactC.status, "neutral", "Zero-amount preview must have neutral status");
+  assert.ok(
+    impactC.explanation.includes("Enter an amount to see how this purchase would affect your card."),
+    "Must offer neutral guidance",
+  );
+  assert.ok(
+    !impactC.explanation.includes("will create Uncovered Debt"),
+    "Must not prematurely assert that purchases will create Uncovered Debt",
+  );
+});
+
+test("Test 4B.22 — Verification against actual financial effects: Changes to Ready to Pay", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  const card: Account = {
+    id: "card-verify-rtp",
+    name: "Amex Cash",
+    type: "credit",
+    opening: 0,
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  const checking: Account = {
+    id: "acc-default-checking",
+    name: "Checking",
+    type: "checking",
+    opening: 500000,
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [checking, card];
+  state.budgets = [{ id: "b1", category: "Groceries", limit: 20000, color: "#277c78" }];
+
+  const purchaseCents = 7500; // $75.00
+  const preview = previewCreditCardExpenseImpact(state, card, "Groceries", purchaseCents, simulatedToday);
+
+  // Financial engine simulation: post the identical purchase
+  const preCov = getCreditCardCoverage(card, state, simulatedToday);
+  const postedTx: Transaction = {
+    id: "tx-posted-rtp",
+    name: "Groceries",
+    amount: -purchaseCents,
+    category: "Groceries",
+    date: simulatedToday,
+    accountId: card.id,
+    status: "posted",
+    kind: "standard",
+    createdAt: `${simulatedToday}T12:00:00.000Z`,
+  };
+  const stateWithPosted: State = { ...state, transactions: [postedTx, ...state.transactions] };
+  const postCov = getCreditCardCoverage(card, stateWithPosted, simulatedToday);
+
+  const actualDeltaReady = postCov.readyToPay - preCov.readyToPay;
+  const actualDeltaUncovered = postCov.uncoveredDebt - preCov.uncoveredDebt;
+  const actualCreditAbsorbed = preCov.statementCredit - postCov.statementCredit;
+
+  assert.equal(actualDeltaReady, 7500, "Financial engine increases Ready to Pay by $75.00");
+  assert.equal(actualDeltaUncovered, 0, "Financial engine creates $0 Uncovered Debt");
+  assert.equal(actualCreditAbsorbed, 0, "Financial engine absorbs $0 statement credit");
+
+  // Preview must match actual financial effects exactly
+  assert.equal(preview.coveredAmount, actualDeltaReady, "Preview coveredAmount must match actual Ready to Pay change");
+  assert.equal(preview.uncoveredAmount, actualDeltaUncovered, "Preview uncoveredAmount must match actual Uncovered Debt change");
+  assert.equal(preview.statementCreditAbsorbed, actualCreditAbsorbed, "Preview statementCreditAbsorbed must match actual credit absorption");
+  assert.equal(
+    preview.totalAmount,
+    preview.statementCreditAbsorbed + preview.coveredAmount + preview.uncoveredAmount,
+    "Displayed amounts sum to total purchase",
+  );
+  assert.equal(preview.status, "fully_covered");
+});
+
+test("Test 4B.23 — Verification against actual financial effects: Changes to Uncovered Debt", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  const card: Account = {
+    id: "card-verify-uncov",
+    name: "Chase Freedom",
+    type: "credit",
+    opening: 0,
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [card];
+  state.budgets = []; // No budgets configured
+
+  const purchaseCents = 12000; // $120.00
+  const preview = previewCreditCardExpenseImpact(state, card, "Electronics", purchaseCents, simulatedToday);
+
+  // Financial engine simulation
+  const preCov = getCreditCardCoverage(card, state, simulatedToday);
+  const postedTx: Transaction = {
+    id: "tx-posted-uncov",
+    name: "Best Buy",
+    amount: -purchaseCents,
+    category: "Electronics",
+    date: simulatedToday,
+    accountId: card.id,
+    status: "posted",
+    kind: "standard",
+    createdAt: `${simulatedToday}T12:00:00.000Z`,
+  };
+  const stateWithPosted: State = { ...state, transactions: [postedTx, ...state.transactions] };
+  const postCov = getCreditCardCoverage(card, stateWithPosted, simulatedToday);
+
+  const actualDeltaReady = postCov.readyToPay - preCov.readyToPay;
+  const actualDeltaUncovered = postCov.uncoveredDebt - preCov.uncoveredDebt;
+  const actualCreditAbsorbed = preCov.statementCredit - postCov.statementCredit;
+
+  assert.equal(actualDeltaReady, 0, "Financial engine sets Ready to Pay delta to 0");
+  assert.equal(actualDeltaUncovered, 12000, "Financial engine increases Uncovered Debt by full $120.00");
+  assert.equal(actualCreditAbsorbed, 0, "Financial engine absorbs $0 statement credit");
+
+  assert.equal(preview.coveredAmount, actualDeltaReady);
+  assert.equal(preview.uncoveredAmount, actualDeltaUncovered);
+  assert.equal(preview.statementCreditAbsorbed, actualCreditAbsorbed);
+  assert.equal(preview.status, "uncovered");
+});
+
+test("Test 4B.24 — Verification against actual financial effects: Statement-credit absorption", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  const card: Account = {
+    id: "card-verify-stmt",
+    name: "Apple Card",
+    type: "credit",
+    opening: -20000, // $200.00 statement credit
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [card];
+
+  const purchaseCents = 8500; // $85.00
+  const preview = previewCreditCardExpenseImpact(state, card, "General", purchaseCents, simulatedToday);
+
+  const preCov = getCreditCardCoverage(card, state, simulatedToday);
+  const postedTx: Transaction = {
+    id: "tx-posted-stmt",
+    name: "Hardware Store",
+    amount: -purchaseCents,
+    category: "General",
+    date: simulatedToday,
+    accountId: card.id,
+    status: "posted",
+    kind: "standard",
+    createdAt: `${simulatedToday}T12:00:00.000Z`,
+  };
+  const stateWithPosted: State = { ...state, transactions: [postedTx, ...state.transactions] };
+  const postCov = getCreditCardCoverage(card, stateWithPosted, simulatedToday);
+
+  const actualDeltaReady = postCov.readyToPay - preCov.readyToPay;
+  const actualDeltaUncovered = postCov.uncoveredDebt - preCov.uncoveredDebt;
+  const actualCreditAbsorbed = preCov.statementCredit - postCov.statementCredit;
+
+  assert.equal(actualCreditAbsorbed, 8500, "Financial engine absorbs $85.00 of statement credit");
+  assert.equal(actualDeltaReady, 0, "Financial engine reserves $0 in Ready to Pay");
+  assert.equal(actualDeltaUncovered, 0, "Financial engine creates $0 Uncovered Debt");
+
+  assert.equal(preview.statementCreditAbsorbed, actualCreditAbsorbed);
+  assert.equal(preview.coveredAmount, actualDeltaReady);
+  assert.equal(preview.uncoveredAmount, actualDeltaUncovered);
+  assert.equal(preview.status, "fully_covered");
+});
+
+test("Test 4B.25 — Verification against actual financial effects: Existing uncovered balances with partial coverage", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  const card: Account = {
+    id: "card-verify-existing-debt",
+    name: "Barclays Card",
+    type: "credit",
+    opening: 40000, // $400.00 existing debt
+    assignedPaymentReserve: 10000, // $100.00 assigned reserve -> $300.00 uncovered debt
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [card];
+  state.budgets = [{ id: "b1", category: "Groceries", limit: 5000, color: "#277c78" }]; // $50.00 budget
+
+  const preCov = getCreditCardCoverage(card, state, simulatedToday);
+  assert.equal(preCov.readyToPay, 10000, "Pre-condition: $100.00 ready to pay");
+  assert.equal(preCov.uncoveredDebt, 30000, "Pre-condition: $300.00 uncovered debt");
+
+  const purchaseCents = 8000; // $80.00 ($50 covered by budget, $30 uncovered)
+  const preview = previewCreditCardExpenseImpact(state, card, "Groceries", purchaseCents, simulatedToday);
+
+  const postedTx: Transaction = {
+    id: "tx-posted-existing-debt",
+    name: "Supermarket",
+    amount: -purchaseCents,
+    category: "Groceries",
+    date: simulatedToday,
+    accountId: card.id,
+    status: "posted",
+    kind: "standard",
+    createdAt: `${simulatedToday}T12:00:00.000Z`,
+  };
+  const stateWithPosted: State = { ...state, transactions: [postedTx, ...state.transactions] };
+  const postCov = getCreditCardCoverage(card, stateWithPosted, simulatedToday);
+
+  const actualDeltaReady = postCov.readyToPay - preCov.readyToPay;
+  const actualDeltaUncovered = postCov.uncoveredDebt - preCov.uncoveredDebt;
+  const actualCreditAbsorbed = preCov.statementCredit - postCov.statementCredit;
+
+  assert.equal(actualDeltaReady, 5000, "Financial engine increases Ready to Pay by $50.00");
+  assert.equal(actualDeltaUncovered, 3000, "Financial engine increases Uncovered Debt by $30.00");
+  assert.equal(actualCreditAbsorbed, 0);
+
+  assert.equal(preview.coveredAmount, actualDeltaReady);
+  assert.equal(preview.uncoveredAmount, actualDeltaUncovered);
+  assert.equal(preview.statementCreditAbsorbed, actualCreditAbsorbed);
+  assert.equal(preview.status, "partially_covered");
+  assert.equal(postCov.uncoveredDebt, preCov.uncoveredDebt + 3000, "Existing uncovered debt preserved plus delta");
+});
+
+test("Test 4B.26 — Verification against actual financial effects: Partial credit absorption + partial budget coverage + partial uncovered debt", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  const card: Account = {
+    id: "card-verify-three-way",
+    name: "Discover IT",
+    type: "credit",
+    opening: -3000, // $30.00 statement credit
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [card];
+  state.budgets = [{ id: "b1", category: "Dining Out", limit: 4000, color: "#277c78" }]; // $40.00 budget
+
+  const purchaseCents = 10000; // $100.00: $30 credit absorbed, $40 budget covered, $30 uncovered debt
+  const preview = previewCreditCardExpenseImpact(state, card, "Dining Out", purchaseCents, simulatedToday);
+
+  const preCov = getCreditCardCoverage(card, state, simulatedToday);
+  const postedTx: Transaction = {
+    id: "tx-posted-three-way",
+    name: "Steakhouse",
+    amount: -purchaseCents,
+    category: "Dining Out",
+    date: simulatedToday,
+    accountId: card.id,
+    status: "posted",
+    kind: "standard",
+    createdAt: `${simulatedToday}T12:00:00.000Z`,
+  };
+  const stateWithPosted: State = { ...state, transactions: [postedTx, ...state.transactions] };
+  const postCov = getCreditCardCoverage(card, stateWithPosted, simulatedToday);
+
+  const actualDeltaReady = postCov.readyToPay - preCov.readyToPay;
+  const actualDeltaUncovered = postCov.uncoveredDebt - preCov.uncoveredDebt;
+  const actualCreditAbsorbed = preCov.statementCredit - postCov.statementCredit;
+
+  assert.equal(actualCreditAbsorbed, 3000, "Financial engine absorbs $30.00 statement credit");
+  assert.equal(actualDeltaReady, 4000, "Financial engine adds $40.00 to Ready to Pay");
+  assert.equal(actualDeltaUncovered, 3000, "Financial engine adds $30.00 to Uncovered Debt");
+
+  assert.equal(preview.statementCreditAbsorbed, actualCreditAbsorbed);
+  assert.equal(preview.coveredAmount, actualDeltaReady);
+  assert.equal(preview.uncoveredAmount, actualDeltaUncovered);
+  assert.equal(
+    preview.totalAmount,
+    preview.statementCreditAbsorbed + preview.coveredAmount + preview.uncoveredAmount,
+  );
+  assert.equal(preview.status, "partially_covered");
+});
+
+test("Test 4B.27 — Verification against actual financial effects: Editing an existing purchase", () => {
+  const simulatedToday = "2026-10-15";
+  const state: State = blank();
+  const card: Account = {
+    id: "card-verify-edit",
+    name: "Citi Double Cash",
+    type: "credit",
+    opening: 0,
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts = [card];
+  state.budgets = [{ id: "b1", category: "Home Improvement", limit: 10000, color: "#277c78" }]; // $100.00 budget
+
+  // Existing transaction: $40.00 purchase already in state
+  const existingTx: Transaction = {
+    id: "tx-existing-edit-1",
+    name: "Home Depot",
+    amount: -4000,
+    category: "Home Improvement",
+    date: simulatedToday,
+    accountId: card.id,
+    status: "posted",
+    kind: "standard",
+    createdAt: `${simulatedToday}T10:00:00.000Z`,
+  };
+  state.transactions = [existingTx];
+
+  const preEditCov = getCreditCardCoverage(card, state, simulatedToday);
+  assert.equal(preEditCov.readyToPay, 4000, "Before edit: $40.00 backed in Ready to Pay");
+  assert.equal(preEditCov.uncoveredDebt, 0, "Before edit: $0 Uncovered Debt");
+
+  // User proposes editing tx-existing-edit-1 to $130.00 ($100 budget cap + $30 uncovered debt)
+  const newAmountCents = 13000;
+  const preview = previewCreditCardExpenseImpact(
+    state,
+    card,
+    "Home Improvement",
+    newAmountCents,
+    simulatedToday,
+    { existingTxId: existingTx.id },
+  );
+
+  // Financial engine simulation: replace existingTx with edited transaction
+  const stateWithSavedEdit: State = {
+    ...state,
+    transactions: state.transactions.map((t) =>
+      t.id === existingTx.id ? { ...t, amount: -newAmountCents } : t,
+    ),
+  };
+  const savedCov = getCreditCardCoverage(card, stateWithSavedEdit, simulatedToday);
+
+  // Baseline without the existing transaction:
+  const baseState: State = {
+    ...state,
+    transactions: state.transactions.filter((t) => t.id !== existingTx.id),
+  };
+  const baseCov = getCreditCardCoverage(card, baseState, simulatedToday);
+
+  const actualReplacementReady = savedCov.readyToPay - baseCov.readyToPay;
+  const actualReplacementUncovered = savedCov.uncoveredDebt - baseCov.uncoveredDebt;
+  const actualCreditAbsorbed = baseCov.statementCredit - savedCov.statementCredit;
+
+  assert.equal(actualReplacementReady, 10000, "Financial engine backs $100.00 in Ready to Pay (capped by budget)");
+  assert.equal(actualReplacementUncovered, 3000, "Financial engine creates $30.00 Uncovered Debt");
+  assert.equal(actualCreditAbsorbed, 0);
+
+  // Preview must match actual replacement effects in the engine
+  assert.equal(preview.totalAmount, newAmountCents);
+  assert.equal(preview.coveredAmount, actualReplacementReady);
+  assert.equal(preview.uncoveredAmount, actualReplacementUncovered);
+  assert.equal(preview.statementCreditAbsorbed, actualCreditAbsorbed);
+  assert.equal(
+    preview.totalAmount,
+    preview.statementCreditAbsorbed + preview.coveredAmount + preview.uncoveredAmount,
+  );
+  assert.equal(preview.status, "partially_covered");
+  assert.equal(savedCov.readyToPay, 10000);
+  assert.equal(savedCov.uncoveredDebt, 3000);
+});
+
+
 

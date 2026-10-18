@@ -1753,6 +1753,57 @@ All **225 tests passing** (`npm test`), with 0 failures and 0 skips:
 Production build check (`npm run build`):
 - `vue-tsc -b && vite build` completed cleanly in 2.11s with 0 errors.
 
+---
+
+## Phase 4B Final Review Corrections — Zero-Amount Neutral Preview & Financial Engine Verification
+
+**Branch**: `phase/4b-quick-actions`  
+**Date**: 2026-10-17  
+**Status**: Final Review Corrections Implemented & Verified
+
+### 1. Zero-Amount Preview Wording & UI Neutrality
+- **Neutral Status**: When no positive amount has been entered (`amountCents === 0` or invalid), `previewCreditCardExpenseImpact()` returns `status: "neutral"`.
+- **Statement Credit Awareness**: Inspects `covBefore.statementCredit` and mentions available statement credit when present (`"This card currently has $X.XX in statement credit available to absorb purchases."`).
+- **No Premature Debt Assertions**: Does not assert that an unbudgeted purchase or exhausted budget will necessarily create Uncovered Debt when no purchase has been made.
+- **Neutral Guidance**: Provides calm, non-judgmental guidance: `"Enter an amount to see how this purchase would affect your card."`
+- **Visible UI Neutrality**:
+  - In `ActionDialog.vue`, when `creditImpactPreview.status === 'neutral'`, renders a calm `ℹ️ Card Impact` badge styled with `.badge.neutral` (subtle grey background, zero warning or danger colors).
+  - Suppresses red/warning color for missing budget in neutral state.
+  - Never labels a zero-amount preview as definitively covered or uncovered.
+
+### 2. Direct Verification Against Actual Financial Effects
+- **Direct Engine Delta Computation**:
+  Instead of calculating `uncoveredAmount = validAmount - statementCreditAbsorbed - coveredAmount`, `uncoveredAmount` is now evaluated directly from the financial engine's delta in `uncoveredDebt`:
+  $$\text{statementCreditAbsorbed} = \max(0, \text{covBefore.statementCredit} - \text{covAfter.statementCredit})$$
+  $$\text{coveredAmount} = \max(0, \text{covAfter.readyToPay} - \text{covBefore.readyToPay})$$
+  $$\text{uncoveredAmount} = \max(0, \text{covAfter.uncoveredDebt} - \text{covBefore.uncoveredDebt})$$
+- **Mathematical Invariant**:
+  Because in `getCreditCardCoverage`:
+  $$\text{runningLiability} = \text{readyToPay} + \text{uncoveredDebt} - \text{statementCredit}$$
+  and adding a purchase of amount $P$ increases $\text{runningLiability}$ by exactly $P$, we have:
+  $$P = \Delta\text{readyToPay} + \Delta\text{uncoveredDebt} + \text{statementCreditAbsorbed}$$
+  The three metrics are derived directly from the financial engine's authoritative output and sum to $P$ mathematically.
+- **Tested Scenarios**:
+  - **Ready to Pay changes**: Verified against posted purchase simulation.
+  - **Uncovered Debt changes**: Verified against posted unbudgeted purchase simulation.
+  - **Statement-credit absorption**: Verified against posted purchase with credit balance.
+  - **Existing uncovered balances**: Verified with existing card debt and partial budget coverage.
+  - **Partial coverage**: Verified three-way partition across credit absorption, Ready to Pay, and Uncovered Debt.
+  - **Editing an existing purchase**: Verified against replacement simulation in `stateWithSavedEdit`.
+
+### 3. Verification & Test Suite
+All **232 tests passing** (`npm test`), with 0 failures and 0 skips:
+- **Test 4B.21**: Zero-amount preview wording: neutral guidance, statement credit awareness, and no premature debt assertion.
+- **Test 4B.22**: Verification against actual financial effects: Changes to Ready to Pay.
+- **Test 4B.23**: Verification against actual financial effects: Changes to Uncovered Debt.
+- **Test 4B.24**: Verification against actual financial effects: Statement-credit absorption.
+- **Test 4B.25**: Verification against actual financial effects: Existing uncovered balances with partial coverage.
+- **Test 4B.26**: Verification against actual financial effects: Partial credit absorption + partial budget coverage + partial uncovered debt.
+- **Test 4B.27**: Verification against actual financial effects: Editing an existing purchase.
+
+Production build check (`npm run build`):
+- `vue-tsc -b && vite build` completed cleanly in 932ms with 0 errors.
+
 
 
 
