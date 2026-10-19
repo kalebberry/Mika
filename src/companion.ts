@@ -34,7 +34,8 @@ export function companionMessage(s: State, now = today()): CompanionMessage {
       action: "Update payday",
       destination: "Settings",
     };
-  if (totals(s, now).safe < 0)
+  const tot = totals(s, now);
+  if (tot.shortfall > 0 || tot.rawSafe < 0)
     return {
       expression: "concerned",
       title: "Let’s make a little room.",

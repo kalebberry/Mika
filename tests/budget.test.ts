@@ -103,6 +103,16 @@ import {
 } from "../src/composables/useModal.ts";
 import { useToast } from "../src/composables/useToast.ts";
 import { money } from "../src/utils/format.ts";
+import {
+  getMikaPortrait,
+  getMikaAnimationConfig,
+  mikaDialoguePortraits,
+} from "../src/utils/mikaExpressions.ts";
+import { useCompanionState } from "../src/composables/useCompanionState.ts";
+import { useTypewriter } from "../src/composables/useTypewriter.ts";
+import { useCompanionDialogue } from "../src/composables/useCompanionDialogue.ts";
+import { useCompanion } from "../src/composables/useCompanion.ts";
+import { companionMessage } from "../src/companion.ts";
 
 test("Test A — Future paycheck: income remains scheduled until confirmed/posted", () => {
   const simulatedToday = "2026-10-13";
@@ -13220,6 +13230,185 @@ test("Test 4B.27 — Verification against actual financial effects: Editing an e
   assert.equal(savedCov.readyToPay, 10000);
   assert.equal(savedCov.uncoveredDebt, 3000);
 });
+
+test("Test 4C.1 — Mika expression resolution & portrait fallback", () => {
+  assert.equal(getMikaPortrait("calm"), "/images/mika/dialogue/calm.png");
+  assert.equal(getMikaPortrait("celebrating"), "/images/mika/dialogue/celebrating.png");
+  assert.equal(getMikaPortrait("concerned"), "/images/mika/dialogue/concerned.png");
+  assert.equal(getMikaPortrait("focused"), "/images/mika/dialogue/focused.png");
+  // Playful and welcome map to calm fallback in Phase 4C MVP
+  assert.equal(getMikaPortrait("playful"), "/images/mika/dialogue/calm.png");
+  assert.equal(getMikaPortrait("welcome"), "/images/mika/dialogue/calm.png");
+  // Empty or invalid expression falls back to calm
+  assert.equal(getMikaPortrait(""), "/images/mika/dialogue/calm.png");
+  assert.equal(getMikaPortrait(null), "/images/mika/dialogue/calm.png");
+  assert.equal(getMikaPortrait("nonexistent_expression"), "/images/mika/dialogue/calm.png");
+
+  // Extensibility hook: static portrait in Phase 4C
+  const animConfig = getMikaAnimationConfig("calm");
+  assert.equal(animConfig.isAnimated, false, "Phase 4C MVP uses static portraits");
+});
+
+test("Test 4C.2 — Companion session greeting frequency and route independence", () => {
+  const companionState = useCompanionState();
+  companionState.resetSessionGreeting();
+
+  assert.equal(companionState.hasGreetedThisSession.value, false, "Should start ungreeted on fresh session");
+  assert.equal(companionState.isDialogueOpen.value, true, "Dialogue opens for session greeting");
+  assert.equal(companionState.isGreeting.value, true, "Should be in greeting mode");
+
+  // Check and trigger greeting
+  companionState.checkAndTriggerGreeting();
+  assert.equal(companionState.hasGreetedThisSession.value, true, "Marks session as greeted");
+
+  // User dismisses/minimizes greeting
+  companionState.minimizeDialogue();
+  assert.equal(companionState.isDialogueOpen.value, false, "Dialogue closes on minimize");
+  assert.equal(companionState.isMinimized.value, true, "Mika is in minimized portrait mode");
+  assert.equal(companionState.isGreeting.value, false, "Exits greeting mode");
+
+  // Simulate route change (calling checkAndTriggerGreeting again as mounted in another view)
+  companionState.checkAndTriggerGreeting();
+  assert.equal(companionState.isDialogueOpen.value, false, "Dialogue must NOT re-open on route change");
+  assert.equal(companionState.isMinimized.value, true, "Mika remains minimized");
+});
+
+test("Test 4C.3 — Companion minimizing, dismissing, and reopening", () => {
+  const companionState = useCompanionState();
+
+  // Open dialogue
+  companionState.openDialogue();
+  assert.equal(companionState.isDialogueOpen.value, true);
+  assert.equal(companionState.isMinimized.value, false);
+
+  // Minimize
+  companionState.minimizeDialogue();
+  assert.equal(companionState.isDialogueOpen.value, false);
+  assert.equal(companionState.isMinimized.value, true);
+
+  // Dismiss (alias of minimize)
+  companionState.openDialogue();
+  companionState.dismissDialogue();
+  assert.equal(companionState.isDialogueOpen.value, false);
+  assert.equal(companionState.isMinimized.value, true);
+
+  // Toggle
+  companionState.toggleDialogue();
+  assert.equal(companionState.isDialogueOpen.value, true);
+  companionState.toggleDialogue();
+  assert.equal(companionState.isDialogueOpen.value, false);
+});
+
+test("Test 4C.4 — Typewriter progressive text, skip on click/tap, and completion", () => {
+  const typewriter = useTypewriter({ speedMs: 50 });
+
+  // Starting empty text completes immediately
+  typewriter.start("");
+  assert.equal(typewriter.displayedText.value, "");
+  assert.equal(typewriter.isTyping.value, false);
+  assert.equal(typewriter.isFinished.value, true);
+
+  // Start with full text
+  const message = "Hi! I am Mika your budgeting companion.";
+  typewriter.start(message);
+  assert.equal(typewriter.isTyping.value, true);
+  assert.equal(typewriter.isFinished.value, false);
+
+  // User clicks / taps to skip typewriter
+  typewriter.skip();
+  assert.equal(typewriter.displayedText.value, message, "Skip immediately reveals the full text");
+  assert.equal(typewriter.isTyping.value, false, "Typing is no longer in progress");
+  assert.equal(typewriter.isFinished.value, true, "Typewriter is finished");
+
+  typewriter.stopTimer();
+});
+
+test("Test 4C.5 — Typewriter reduced motion preference respect", () => {
+  // Mock window.matchMedia for prefers-reduced-motion
+  const originalMatchMedia = (globalThis as any).window?.matchMedia;
+  if (!(globalThis as any).window) {
+    (globalThis as any).window = {};
+  }
+  (globalThis as any).window.matchMedia = (query: string) => ({
+    matches: query.includes("prefers-reduced-motion"),
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  });
+
+  const typewriter = useTypewriter();
+  const text = "Reduced motion text should appear instantly without character ticking.";
+  typewriter.start(text);
+
+  assert.equal(typewriter.displayedText.value, text, "Displays complete text immediately");
+  assert.equal(typewriter.isTyping.value, false, "Does not initiate progressive typing");
+  assert.equal(typewriter.isFinished.value, true, "Immediately finished");
+
+  // Restore original matchMedia
+  if (originalMatchMedia) {
+    (globalThis as any).window.matchMedia = originalMatchMedia;
+  } else {
+    delete (globalThis as any).window.matchMedia;
+  }
+});
+
+test("Test 4C.6 — Contextual financial guidance dialogue selection without fabricated data", () => {
+  const { state } = useBudget();
+  const companionState = useCompanionState();
+  const { currentDialogue } = useCompanionDialogue();
+
+  // Switch out of greeting mode into active financial dialogue
+  companionState.openDialogue();
+  assert.equal(companionState.isGreeting.value, false);
+
+  // Case 1: Shortfall scenario (reserves exceed balance)
+  state.value = blank();
+  state.value.opening = 10000;
+  state.value.payday = "2099-01-01";
+  state.value.budgets = [{ id: "b1", category: "Dining", limit: 50000, color: "#277c78" }]; // reserves exceed cash
+
+  const msg = companionMessage(state.value);
+  assert.equal(msg.expression, "concerned");
+  assert.equal(msg.destination, "Budgets");
+
+  const dialogue = currentDialogue.value;
+  assert.equal(dialogue.expression, "concerned");
+  assert.equal(dialogue.actionDestination, "Budgets");
+  assert.ok(dialogue.text.includes("reserves are above your balance"));
+
+  // Case 2: Goal pot reached
+  state.value = blank();
+  state.value.opening = 200000;
+  state.value.payday = "2099-01-01";
+  state.value.pots = [{ id: "p1", name: "Emergency Fund", target: 100000, saved: 100000, color: "#277c78" }];
+  const goalMsg = companionMessage(state.value);
+  assert.equal(goalMsg.expression, "celebrating");
+  assert.equal(goalMsg.destination, "Pots");
+  assert.ok(goalMsg.text.includes("Emergency Fund"));
+});
+
+test("Test 4C.7 — Companion preference disabled in settings leaves application intact", () => {
+  const { showCompanion } = useCompanion();
+  const originalPref = showCompanion.value;
+
+  showCompanion.value = false;
+  assert.equal(showCompanion.value, false, "Companion can be disabled in settings");
+
+  // Verify financial model totals remain pure and functional
+  const state: State = blank();
+  state.opening = 100000;
+  const t = totals(state);
+  assert.equal(t.balance, 100000);
+  assert.equal(t.safe, 100000);
+
+  // Restore
+  showCompanion.value = originalPref;
+});
+
 
 
 

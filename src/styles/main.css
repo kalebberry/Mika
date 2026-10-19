@@ -28,6 +28,7 @@
 @import "./components/_badges.css";
 @import "./components/_progress.css";
 @import "./components/_toast.css";
+@import "./components/_companion-dialogue.css";
 
 /* 6. Pages */
 @import "./pages/_overview.css";

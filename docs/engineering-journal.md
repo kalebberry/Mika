@@ -1804,6 +1804,76 @@ All **232 tests passing** (`npm test`), with 0 failures and 0 skips:
 Production build check (`npm run build`):
 - `vue-tsc -b && vite build` completed cleanly in 932ms with 0 errors.
 
+---
+
+## Phase 4C — Mika's Companion Experience (MVP)
+
+**Branch**: `phase/4c-companion-mvp`  
+**Date**: 2026-10-19  
+**Status**: Implemented & Verified (Awaiting Review)
+
+### 1. Objective & Design Philosophy
+
+Phase 4C introduces Mika as an interactive, visual-novel-inspired budgeting companion across the entire application while strictly preserving the compact-first dashboard and all authoritative financial mechanics established in Phases 1–4B.
+
+Rather than obscuring budgeting controls or trapping users behind modal screens, Mika operates as a non-blocking, ambient companion that offers warm, ADHD-friendly guidance, greets the user once per session, and docks into a compact floating portrait when minimized.
+
+---
+
+### 2. Architecture & Modular Structure
+
+The companion experience is cleanly decomposed into five dedicated modules separating presentation, state, text animation, and financial guidance:
+
+1. **Artwork & Expression Resolution (`src/utils/mikaExpressions.ts`)**:
+   - Primary asset placed at `public/images/mika/dialogue/calm.png`.
+   - All existing legacy artwork in `public/images/` remains 100% untouched.
+   - `getMikaPortrait(expression)` provides safe fallback resolution to `calm.png`.
+   - `getMikaAnimationConfig()` provides an architectural extension hook for future frame-based animations and spritesheets without introducing unrequested animation complexity in this MVP phase.
+
+2. **Companion Visibility & Session State (`src/composables/useCompanionState.ts`)**:
+   - Manages dialogue expansion and minimization via singleton reactive state.
+   - Greet once per app session using `sessionStorage` (`mika_companion_session_greeted`) with in-memory fallback for private browsing and test environments.
+   - Route/view changes (e.g. Overview to Transactions) never restart or re-open the greeting dialogue.
+   - Supports manual minimizing (`—`), dismissal (`✕`), and reopening from the minimized portrait.
+
+3. **Progressive Typewriter Engine (`src/composables/useTypewriter.ts`)**:
+   - Reveals dialogue text character-by-character at a comfortable cadence (~22ms/char).
+   - Click, tap, Space, or Enter triggers instant `skip()`, displaying the complete text immediately.
+   - Automatic reduced-motion detection: queries `window.matchMedia('(prefers-reduced-motion: reduce)')` and bypasses the timer entirely to display the full text instantly.
+   - Guarantees clean timer cleanup on unmount or text updates.
+
+4. **Dialogue Prioritization & Financial Guidance (`src/composables/useCompanionDialogue.ts`)**:
+   - Reuses authoritative financial guidance from `companionMessage(state.value)` in `src/companion.ts`.
+   - Distinguishes initial session greeting from ongoing financial guidance.
+   - Never duplicates financial calculations or fabricates balances.
+   - Connects suggested actions to real application navigation (e.g. opening the "Add transaction" dialog or switching to "Budgets").
+   - Fixed shortfall detection in `companion.ts` to check `tot.shortfall > 0 || tot.rawSafe < 0`, properly surfacing reserve pressure.
+
+5. **Visual-Novel Component (`src/components/companion/MikaCompanion.vue`) & Styles (`src/styles/components/_companion-dialogue.css`)**:
+   - Mounted globally in `src/App.vue`.
+   - **Minimized State**: A circular floating button (3.5rem) docked at the bottom-right corner with Mika's portrait, subtle status indicator, accessible focus outline, and tooltip.
+   - **Expanded Visual-Novel Window**: JRPG-inspired dialogue box with Mika's portrait positioned beside the dialogue card, uppercase nameplate with "Budget Companion" badge, title, progressive text with pulsing advance chevron (`▼`), and action row.
+   - Non-blocking layout: `pointer-events: none` on outer overlay ensures all background buttons and dashboard metrics remain directly clickable.
+   - Responsive styling: scales down comfortably on mobile screens (`max-width: 640px`) without viewport clipping.
+
+---
+
+### 3. Verification & Test Suite
+
+All **239 tests passing** (`npm test`), with 0 failures and 0 skips:
+
+- **Test 4C.1**: Mika expression resolution & portrait fallback.
+- **Test 4C.2**: Companion session greeting frequency and route independence.
+- **Test 4C.3**: Companion minimizing, dismissing, and reopening.
+- **Test 4C.4**: Typewriter progressive text, skip on click/tap, and completion.
+- **Test 4C.5**: Typewriter reduced motion preference respect.
+- **Test 4C.6**: Contextual financial guidance dialogue selection without fabricated data.
+- **Test 4C.7**: Companion preference disabled in settings leaves application intact.
+
+Production build check (`npm run build`):
+- `vue-tsc -b && vite build` built cleanly in 2.57s with 0 errors.
+
+
 
 
 

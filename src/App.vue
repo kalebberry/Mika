@@ -9,6 +9,7 @@ import AppFooter from "./components/layout/AppFooter.vue";
 import ToastNotification from "./components/layout/ToastNotification.vue";
 import DemoBanner from "./components/common/DemoBanner.vue";
 import ActionDialog from "./components/common/ActionDialog.vue";
+import MikaCompanion from "./components/companion/MikaCompanion.vue";
 
 import OverviewView from "./components/views/OverviewView.vue";
 import AccountsView from "./components/views/AccountsView.vue";
@@ -47,5 +48,6 @@ onMounted(() => {
 
     <ActionDialog />
     <ToastNotification />
+    <MikaCompanion />
   </div>
 </template>
