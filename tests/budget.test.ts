@@ -13409,6 +13409,56 @@ test("Test 4C.7 — Companion preference disabled in settings leaves application
   showCompanion.value = originalPref;
 });
 
+test("Test 4C.8 — Mobile companion bottom navigation clearance tokens & responsive spacing", async () => {
+  // Read and parse _companion-dialogue.css to ensure responsive clearance tokens exist
+  const fs = await import("fs");
+  const path = await import("path");
+  const cssPath = path.resolve(process.cwd(), "src/styles/components/_companion-dialogue.css");
+  const css = fs.readFileSync(cssPath, "utf-8");
+
+  // 1. Must define dynamic bottom clearance tokens
+  assert.ok(css.includes("--bottom-nav-height"), "Defines --bottom-nav-height token");
+  assert.ok(css.includes("--companion-bottom-spacing"), "Defines --companion-bottom-spacing token");
+  assert.ok(css.includes("env(safe-area-inset-bottom"), "Accounts for mobile safe-area insets");
+
+  // 2. Container must position above bottom navigation
+  assert.ok(
+    css.includes("bottom: calc(var(--bottom-nav-height"),
+    "mika-companion-root calculates bottom above bottom navigation"
+  );
+
+  // 3. Must cover 50rem (768px), 37.5rem (390px/375px), and 23.75rem (320px)
+  assert.ok(css.includes("@media (max-width: 50rem)"), "Covers 50rem tablet portrait breakpoint");
+  assert.ok(css.includes("@media (max-width: 37.5rem)"), "Covers 37.5rem mobile breakpoint");
+  assert.ok(css.includes("@media (max-width: 23.75rem)"), "Covers 23.75rem compact mobile breakpoint");
+
+  // 4. Must keep pointer-events: none on root to allow full click-through
+  assert.ok(css.includes("pointer-events: none"), "Preserves click-through behavior on root");
+});
+
+test("Test 4C.9 — Mobile dialogue window sizing respects viewport boundaries without horizontal overflow", async () => {
+  const fs = await import("fs");
+  const path = await import("path");
+  const cssPath = path.resolve(process.cwd(), "src/styles/components/_companion-dialogue.css");
+  const css = fs.readFileSync(cssPath, "utf-8");
+
+  // 1. Dialogue window must constrain max-width to viewport width minus side spacing
+  assert.ok(
+    css.includes("max-width: calc(100vw - 2 * var(--companion-side-spacing"),
+    "Dialogue window enforces horizontal boundaries using side spacing"
+  );
+
+  // 2. Dialogue window must constrain max-height to avoid off-screen overflow
+  assert.ok(
+    css.includes("max-height: calc(100vh - var(--bottom-nav-height"),
+    "Dialogue window enforces vertical boundaries above bottom nav and safe-area"
+  );
+
+  // 3. Compact mobile styles for 320px screen width
+  assert.ok(css.includes("width: 3rem"), "Compact minimized avatar sizing on ultra-narrow viewports");
+});
+
+
 
 
 

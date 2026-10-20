@@ -1873,6 +1873,48 @@ All **239 tests passing** (`npm test`), with 0 failures and 0 skips:
 Production build check (`npm run build`):
 - `vue-tsc -b && vite build` built cleanly in 2.57s with 0 errors.
 
+---
+
+## Phase 4C — Mobile Companion Positioning & Bottom Navigation Clearance Fix
+
+### 1. Problem Description
+On mobile and tablet viewports where the sidebar transitions into a fixed bottom navigation bar (`@media (max-width: 50rem)` / 800px), Mika's minimized companion avatar and expanded dialogue box were anchored at `bottom: 0.75rem` (or desktop `bottom: 1.5rem`), causing direct overlap with the bottom navigation items ("Overview", "Settings", etc.) and blocking user interaction with the primary mobile navigation.
+
+### 2. Implementation & Architectural Solution
+1. **Dynamic Navigation Clearance Tokens**:
+   - Introduced CSS custom properties on `:root`:
+     - `--bottom-nav-height`: `0px` on desktop, `5.25rem` (~84px) at `max-width: 50rem` (768px), `4.625rem` (~74px) at `max-width: 37.5rem` (390px/375px), and `4.5rem` (~72px) at `max-width: 23.75rem` (320px).
+     - `--companion-bottom-spacing`: `1.5rem` on desktop, `0.75rem` on tablet/standard mobile, and `0.625rem` on compact mobile.
+     - `--companion-side-spacing`: `1.5rem` on desktop, `1rem` on tablet, `0.75rem` on mobile, and `0.5rem` on compact mobile.
+2. **Safe-Area Inset Support**:
+   - Updated `.mika-companion-root` bottom positioning:
+     $$\text{bottom} = \text{calc}(\text{var}(--\text{bottom-nav-height}, 0\text{px}) + \text{env}(\text{safe-area-inset-bottom}, 0\text{px}) + \text{var}(--\text{companion-bottom-spacing}, 1.5\text{rem}))$$
+   - Updated `.sidebar` padding on mobile to include `max(0.375rem, env(safe-area-inset-bottom, 0px))`, preventing button clipping on iOS home-bar devices.
+3. **Responsive Dialogue Window Boundaries**:
+   - Constrained `max-width: calc(100vw - 2 * var(--companion-side-spacing))` and `max-height: calc(100vh - var(--bottom-nav-height) - env(safe-area-inset-bottom, 0px) - var(--companion-bottom-spacing) - 1rem)`.
+   - Scaled portrait dimensions progressively from `5.5rem x 6.75rem` (tablet) down to `4.5rem x 5.5rem` (mobile) and `3.75rem x 4.75rem` (320px compact mobile).
+   - Scaled minimized avatar from `3.5rem` (desktop) to `3.25rem` (mobile) and `3rem` (320px compact mobile), maintaining tap targets above 48px.
+4. **Desktop Positioning Preserved**:
+   - On viewports `> 50rem` (800px), `--bottom-nav-height` evaluates to `0px`, preserving exact desktop coordinates (`bottom: 1.5rem; right: 1.5rem`).
+
+### 3. Multi-Viewport Automated Clearance Verification
+Verified using automated CDP headless browser runner with exact bounding client rect measurements:
+
+| Viewport | Dimensions | Minimized Clearance | Expanded Clearance | Navigation Clickable |
+| :--- | :--- | :--- | :--- | :--- |
+| **Desktop** | 1200 x 800 | 24px from bottom | N/A (sidebar on left) | PASS (100%) |
+| **Tablet** | 768 x 1024 | **+12.0px** above nav | **+12.0px** above nav | PASS (100%) |
+| **Mobile (iPhone 14/15)** | 390 x 844 | **+12.56px** above nav | **+12.56px** above nav | PASS (100%) |
+| **Mobile (iPhone SE)** | 375 x 667 | **+11.45px** above nav | **+11.45px** above nav | PASS (100%) |
+| **Mobile (Compact)** | 320 x 650 | **+11.45px** above nav | **+11.45px** above nav | PASS (100%) |
+
+### 4. Verification & Test Suite
+All **241 tests passing** (`npm test`), 0 failures, 0 skips:
+- **Test 4C.8**: Mobile companion bottom navigation clearance tokens & responsive spacing.
+- **Test 4C.9**: Mobile dialogue window sizing respects viewport boundaries without horizontal overflow.
+- Production build: `vue-tsc -b && vite build` built cleanly in 5.01s with 0 errors.
+
+
 
 
 

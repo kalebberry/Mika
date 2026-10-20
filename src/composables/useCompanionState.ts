@@ -11,8 +11,13 @@ export const SESSION_GREETED_KEY = "mika_companion_session_greeted";
 
 function readSessionStorage(): boolean {
   try {
-    if (typeof window !== "undefined" && window.sessionStorage) {
-      return window.sessionStorage.getItem(SESSION_GREETED_KEY) === "true";
+    if (typeof window !== "undefined") {
+      if (window.location && window.location.search && window.location.search.includes("mika_minimized")) {
+        return true;
+      }
+      if (window.sessionStorage) {
+        return window.sessionStorage.getItem(SESSION_GREETED_KEY) === "true";
+      }
     }
   } catch {}
   return false;
@@ -42,6 +47,12 @@ export function useCompanionState() {
    * Safe to call multiple times or on view mount; only opens once per session.
    */
   function checkAndTriggerGreeting(): void {
+    if (typeof window !== "undefined" && window.location && window.location.search && window.location.search.includes("mika_minimized")) {
+      isDialogueOpen.value = false;
+      isMinimized.value = true;
+      isGreeting.value = false;
+      return;
+    }
     if (!hasGreetedThisSession.value) {
       isDialogueOpen.value = true;
       isMinimized.value = false;
