@@ -92,7 +92,7 @@ export const navItems: [PageName, string][] = [
   ["Budgets", "◔"],
   ["Pots", "▣"],
   ["Recurring Bills", "▤"],
-  ["Insights", "📊"],
+  ["Insights", "▥"],
   ["Settings", "⚙"],
 ];
 

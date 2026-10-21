@@ -95,7 +95,7 @@ onUnmounted(() => {
         :aria-current="page === label ? 'page' : undefined"
         :title="label"
       >
-        <span class="nav-icon" :class="{ 'has-svg': label === 'Accounts' }">
+        <span class="nav-icon" :class="{ 'has-svg': label === 'Accounts' || label === 'Insights' }">
           <svg
             v-if="label === 'Accounts'"
             class="sidebar-icon-svg"
@@ -109,6 +109,21 @@ onUnmounted(() => {
           >
             <rect x="2" y="5" width="20" height="14" rx="2" />
             <line x1="2" y1="10" x2="22" y2="10" />
+          </svg>
+          <svg
+            v-else-if="label === 'Insights'"
+            class="sidebar-icon-svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <line x1="18" y1="20" x2="18" y2="10" />
+            <line x1="12" y1="20" x2="12" y2="4" />
+            <line x1="6" y1="20" x2="6" y2="14" />
           </svg>
           <template v-else>{{ icon }}</template>
         </span>
@@ -127,8 +142,30 @@ onUnmounted(() => {
         :aria-current="isSecondaryActive ? 'page' : undefined"
         title="More destinations"
       >
-        <span class="nav-icon">
-          {{ isSecondaryActive && activeSecondaryItem ? activeSecondaryItem[1] : "⋯" }}
+        <span
+          class="nav-icon"
+          :class="{
+            'has-svg': isSecondaryActive && activeSecondaryItem && activeSecondaryItem[0] === 'Insights',
+          }"
+        >
+          <svg
+            v-if="isSecondaryActive && activeSecondaryItem && activeSecondaryItem[0] === 'Insights'"
+            class="sidebar-icon-svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <line x1="18" y1="20" x2="18" y2="10" />
+            <line x1="12" y1="20" x2="12" y2="4" />
+            <line x1="6" y1="20" x2="6" y2="14" />
+          </svg>
+          <template v-else>
+            {{ isSecondaryActive && activeSecondaryItem ? activeSecondaryItem[1] : "⋯" }}
+          </template>
         </span>
         <span class="nav-label">
           {{ isSecondaryActive && activeSecondaryItem ? activeSecondaryItem[0] : "More" }}
@@ -167,7 +204,22 @@ onUnmounted(() => {
             :class="{ active: page === 'Insights' }"
             @click="selectPage('Insights')"
           >
-            <span class="more-item-icon">📊</span>
+            <span class="more-item-icon">
+              <svg
+                class="sidebar-icon-svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <line x1="18" y1="20" x2="18" y2="10" />
+                <line x1="12" y1="20" x2="12" y2="4" />
+                <line x1="6" y1="20" x2="6" y2="14" />
+              </svg>
+            </span>
             <div class="more-item-text">
               <strong>Your Insights</strong>
               <small>Understand your money at your own pace</small>

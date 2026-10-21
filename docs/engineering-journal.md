@@ -2038,7 +2038,7 @@ Before implementing calculations, the ledger semantics were explicitly audited a
   - The sticky sidebar includes all 8 navigation destinations directly: `Overview`, `Accounts`, `Transactions`, `Budgets`, `Pots`, `Recurring Bills`, `Insights`, `Settings`.
 - **Mobile (`<= 50rem`)**:
   - To prevent squeezing 8 tabs into the bottom bar (which would reduce touch targets below ergonomic thresholds on 320px screens), the mobile bottom bar renders the 5 primary daily actions (`Overview`, `Accounts`, `Transactions`, `Budgets`, `Recurring Bills`) plus a 6th **`More`** (`⋯`) button.
-  - When the user is on `Insights`, `Pots`, or `Settings`, the 6th button dynamically reflects the active destination (e.g., `📊 Insights`) with an active indicator.
+  - When the user is on `Insights`, `Pots`, or `Settings`, the 6th button dynamically reflects the active destination (e.g., Insights bar-chart icon) with an active indicator.
   - Tapping `More` opens an accessible bottom drawer/sheet (`role="dialog"`, `aria-modal="true"`) containing `Your Insights`, `Pots`, and `Settings`.
   - Accessible interaction: Escape key closes the drawer and restores focus to the trigger button; tap-outside closes the drawer; Mika companion is suppressed while the drawer is open.
   - Every mobile bottom nav touch target on 320px screens measures $53.3\text{px} \times 58.5\text{px}$, comfortably exceeding the $48 \times 48\text{px}$ WCAG 2.5.8 requirement.
