@@ -228,7 +228,7 @@
 @media (max-width: 23.75rem) {
   .sidebar nav button {
     padding: 0.375rem 0.0625rem 0.5rem;
-    min-height: 2.875rem; /* ~46px compact touch target */
+    min-height: 3rem; /* 48px touch target height */
   }
 
   .nav-icon {
