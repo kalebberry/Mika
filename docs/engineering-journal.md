@@ -1914,6 +1914,47 @@ All **241 tests passing** (`npm test`), 0 failures, 0 skips:
 - **Test 4C.9**: Mobile dialogue window sizing respects viewport boundaries without horizontal overflow.
 - Production build: `vue-tsc -b && vite build` built cleanly in 5.01s with 0 errors.
 
+---
+
+## Phase 4C — Final Companion UI Polish & Mutual Exclusivity
+
+### 1. Objectives & UI Polish Goals
+Refine Mika's companion presentation and interactions based on mobile verification and design review:
+1. **One Mika at a Time (Single-Presence Guarantee)**:
+   - Eliminated any possibility of dual avatars or desynchronized floating portraits.
+   - Refactored `useCompanionState` to maintain a single source of truth (`companionMode: "expanded" | "minimized"`), deriving `isDialogueOpen` and `isMinimized` as strictly mutually exclusive computed properties.
+   - Used Vue `<Transition name="mika-pop" mode="out-in">` to ensure smooth exit-before-enter DOM transitions.
+2. **Seamless Visual Connection Between Portrait & Dialogue**:
+   - Anchored the character portrait directly against the dialogue card with interlocking negative margins (`margin-right: -0.75rem` on desktop, `-0.625rem` at 50rem, `-0.5rem` at 37.5rem, and `-0.375rem` at 23.75rem) and balanced card padding.
+   - Removed the separate awkward gap, creating a unified JRPG visual-novel presentation where Mika speaks directly alongside her dialogue box.
+3. **Simplified Dialogue Controls**:
+   - Header: Single clearly labeled minimize button (`id="mika-dialogue-minimize"` with title `"Minimize dialogue"` and `aria-label="Minimize Mika dialogue"`). Removed redundant `✕` close button.
+   - Action row: During typing, displays `#mika-skip-btn` ("Skip to end ›") and a clean skip hint ("Click or press Space"). Once finished, displays the contextual primary action (when present) and a unified `#mika-finish-btn` ("Got it"). Removed redundant duplicate text-link dismiss button.
+4. **Modal Dialog Suppression**:
+   - Connected `MikaCompanion.vue` to `useModal()`. When any modal dialog (e.g. `ActionDialog` for transactions, bills, or reset) is open, the companion root dynamically applies `.modal-active { opacity: 0; pointer-events: none; visibility: hidden; }` to prevent obstruction of modal forms.
+   - Calibrated `useModal.close()` to reset `mode.value = ""` so companion state restores smoothly once modals close.
+5. **Transitions & Accessibility**:
+   - Subtle, lightweight CSS transition (`.mika-pop-enter-active` / `.mika-pop-leave-active`) scaling smoothly by 8% and shifting 6px over 200ms.
+   - Full support for `prefers-reduced-motion: reduce`, disabling all animations and transitions.
+
+### 2. Multi-Viewport Automated Clearance & State Verification
+Verified using automated CDP headless Edge browser runner with exact bounding client rect measurements:
+
+| Viewport | Dimensions | Minimized Clearance | Expanded Clearance | Single Mika Invariant | Controls Simplified | Modal Suppressed |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Desktop** | 1200 x 800 | 24px from bottom | 24px from bottom | PASS (1 avatar) | PASS (minimize + finish) | PASS (hidden) |
+| **Tablet** | 768 x 1024 | **+12.0px** above nav | **+12.0px** above nav | PASS (1 avatar) | PASS (minimize + finish) | PASS (hidden) |
+| **Mobile (iPhone 14/15)** | 390 x 844 | **+13.0px** above nav | **+13.0px** above nav | PASS (1 avatar) | PASS (minimize + finish) | PASS (hidden) |
+| **Mobile (iPhone SE)** | 375 x 667 | **+11.0px** above nav | **+11.0px** above nav | PASS (1 avatar) | PASS (minimize + finish) | PASS (hidden) |
+| **Mobile (Compact)** | 320 x 650 | **+11.0px** above nav | **+11.0px** above nav | PASS (1 avatar) | PASS (minimize + finish) | PASS (hidden) |
+
+### 3. Verification & Test Suite
+All **244 tests passing** (`npm test`), 0 failures, 0 skips:
+- **Test 4C.10**: One Mika at a Time: Strict mutual exclusivity between expanded and minimized states.
+- **Test 4C.11**: Simplified Dialogue Controls and Interlocking Character Portrait Structure.
+- **Test 4C.12**: Modal Suppression and State Transitions.
+- Production build: `vue-tsc -b && vite build` built cleanly in 0.90s with 0 errors.
+
 
 
 

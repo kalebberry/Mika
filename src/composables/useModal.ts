@@ -425,6 +425,7 @@ export function useModal() {
   function close() {
     dialogRef.value?.close();
     focusBefore.value?.focus();
+    mode.value = "";
   }
 
   function submit() {

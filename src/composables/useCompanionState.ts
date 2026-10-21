@@ -5,7 +5,7 @@
  * the greeting occurs once per user session without re-triggering on route changes.
  */
 
-import { ref } from "vue";
+import { ref, computed } from "vue";
 
 export const SESSION_GREETED_KEY = "mika_companion_session_greeted";
 
@@ -35,10 +35,15 @@ function writeSessionStorage(value: boolean): void {
   } catch {}
 }
 
+export type CompanionViewMode = "expanded" | "minimized";
+
 // Module-level reactive singleton state to persist across route/view transitions
 const hasGreetedThisSession = ref(readSessionStorage());
-const isDialogueOpen = ref(!hasGreetedThisSession.value);
-const isMinimized = ref(hasGreetedThisSession.value);
+const companionMode = ref<CompanionViewMode>(
+  hasGreetedThisSession.value ? "minimized" : "expanded"
+);
+const isDialogueOpen = computed(() => companionMode.value === "expanded");
+const isMinimized = computed(() => companionMode.value === "minimized");
 const isGreeting = ref(!hasGreetedThisSession.value);
 
 export function useCompanionState() {
@@ -48,14 +53,12 @@ export function useCompanionState() {
    */
   function checkAndTriggerGreeting(): void {
     if (typeof window !== "undefined" && window.location && window.location.search && window.location.search.includes("mika_minimized")) {
-      isDialogueOpen.value = false;
-      isMinimized.value = true;
+      companionMode.value = "minimized";
       isGreeting.value = false;
       return;
     }
     if (!hasGreetedThisSession.value) {
-      isDialogueOpen.value = true;
-      isMinimized.value = false;
+      companionMode.value = "expanded";
       isGreeting.value = true;
       // Mark greeted immediately so route changes do not restart greeting
       markGreeted();
@@ -68,14 +71,12 @@ export function useCompanionState() {
   }
 
   function openDialogue(): void {
-    isDialogueOpen.value = true;
-    isMinimized.value = false;
+    companionMode.value = "expanded";
     isGreeting.value = false;
   }
 
   function minimizeDialogue(): void {
-    isDialogueOpen.value = false;
-    isMinimized.value = true;
+    companionMode.value = "minimized";
     isGreeting.value = false;
     markGreeted();
   }
@@ -85,7 +86,7 @@ export function useCompanionState() {
   }
 
   function toggleDialogue(): void {
-    if (isDialogueOpen.value) {
+    if (companionMode.value === "expanded") {
       minimizeDialogue();
     } else {
       openDialogue();
@@ -95,8 +96,7 @@ export function useCompanionState() {
   function resetSessionGreeting(): void {
     hasGreetedThisSession.value = false;
     writeSessionStorage(false);
-    isDialogueOpen.value = true;
-    isMinimized.value = false;
+    companionMode.value = "expanded";
     isGreeting.value = true;
   }
 

@@ -13458,6 +13458,116 @@ test("Test 4C.9 — Mobile dialogue window sizing respects viewport boundaries w
   assert.ok(css.includes("width: 3rem"), "Compact minimized avatar sizing on ultra-narrow viewports");
 });
 
+test("Test 4C.10 — One Mika at a Time: Strict mutual exclusivity between expanded and minimized states", () => {
+  const companionState = useCompanionState();
+
+  // Fresh reset: starts in expanded greeting mode
+  companionState.resetSessionGreeting();
+  assert.equal(companionState.isDialogueOpen.value, true, "Starts expanded for session greeting");
+  assert.equal(companionState.isMinimized.value, false, "Must not be minimized when expanded");
+  assert.notEqual(
+    companionState.isDialogueOpen.value,
+    companionState.isMinimized.value,
+    "Single-presence invariant: expanded and minimized must never be identical"
+  );
+
+  // Minimize
+  companionState.minimizeDialogue();
+  assert.equal(companionState.isDialogueOpen.value, false, "Dialogue closed after minimize");
+  assert.equal(companionState.isMinimized.value, true, "Minimized portrait active after minimize");
+  assert.notEqual(
+    companionState.isDialogueOpen.value,
+    companionState.isMinimized.value,
+    "Single-presence invariant holds when minimized"
+  );
+
+  // Re-open
+  companionState.openDialogue();
+  assert.equal(companionState.isDialogueOpen.value, true, "Dialogue opened");
+  assert.equal(companionState.isMinimized.value, false, "Minimized portrait inactive");
+  assert.notEqual(
+    companionState.isDialogueOpen.value,
+    companionState.isMinimized.value,
+    "Single-presence invariant holds when reopened"
+  );
+
+  // Dismiss (also maps to minimized state)
+  companionState.dismissDialogue();
+  assert.equal(companionState.isDialogueOpen.value, false);
+  assert.equal(companionState.isMinimized.value, true);
+  assert.notEqual(
+    companionState.isDialogueOpen.value,
+    companionState.isMinimized.value,
+    "Single-presence invariant holds when dismissed"
+  );
+
+  // Toggle back and forth
+  companionState.toggleDialogue(); // to expanded
+  assert.equal(companionState.isDialogueOpen.value, true);
+  assert.equal(companionState.isMinimized.value, false);
+
+  companionState.toggleDialogue(); // to minimized
+  assert.equal(companionState.isDialogueOpen.value, false);
+  assert.equal(companionState.isMinimized.value, true);
+});
+
+test("Test 4C.11 — Simplified Dialogue Controls and Interlocking Character Portrait Structure", async () => {
+  const fs = await import("fs");
+  const path = await import("path");
+  const vuePath = path.resolve(process.cwd(), "src/components/companion/MikaCompanion.vue");
+  const vueTemplate = fs.readFileSync(vuePath, "utf-8");
+
+  // 1. One clearly labeled minimize control in the header
+  assert.ok(vueTemplate.includes('id="mika-dialogue-minimize"'), "Includes clear minimize button in header");
+  assert.ok(vueTemplate.includes('aria-label="Minimize Mika dialogue"'), "Accessible aria-label on minimize button");
+
+  // 2. No redundant header close (✕) button or duplicate dismiss text link
+  assert.ok(!vueTemplate.includes('id="mika-dialogue-close"'), "Does not include redundant close (✕) button in header");
+  assert.ok(!vueTemplate.includes('id="mika-dialogue-dismiss"'), "Does not include redundant separate Dismiss link in footer");
+
+  // 3. Clear way to advance or finish dialogue
+  assert.ok(vueTemplate.includes('id="mika-finish-btn"'), "Includes clear finish button (Got it)");
+  assert.ok(vueTemplate.includes('id="mika-skip-btn"'), "Includes skip button when typing");
+
+  // 4. Portrait visually connected inside the dialogue presentation
+  assert.ok(vueTemplate.includes('class="mika-dialogue-portrait"'), "Renders portrait within dialogue window");
+  assert.ok(vueTemplate.includes('class="mika-dialogue-card"'), "Renders dialogue card alongside portrait");
+
+  // 5. CSS interlocking connection
+  const cssPath = path.resolve(process.cwd(), "src/styles/components/_companion-dialogue.css");
+  const css = fs.readFileSync(cssPath, "utf-8");
+  assert.ok(css.includes("margin-right: -0.75rem"), "Interlocking negative margin connects portrait to dialogue card");
+  assert.ok(css.includes(".mika-finish-btn"), "Defines styles for simplified finish button");
+  assert.ok(css.includes(".mika-finish-btn.primary-finish"), "Defines primary variant for finish button");
+});
+
+test("Test 4C.12 — Modal Suppression and State Transitions", async () => {
+  const fs = await import("fs");
+  const path = await import("path");
+  const vuePath = path.resolve(process.cwd(), "src/components/companion/MikaCompanion.vue");
+  const vue = fs.readFileSync(vuePath, "utf-8");
+  const cssPath = path.resolve(process.cwd(), "src/styles/components/_companion-dialogue.css");
+  const css = fs.readFileSync(cssPath, "utf-8");
+
+  // 1. MikaCompanion binds modal-active when a modal is open
+  assert.ok(vue.includes(":class=\"{ 'modal-active': isModalOpen }\""), "Applies modal-active class during open modals");
+
+  // 2. CSS suppresses Mika entirely during active modals
+  assert.ok(css.includes(".mika-companion-root.modal-active"), "CSS targets modal-active state on companion root");
+  assert.ok(css.includes("opacity: 0"), "Suppresses opacity during modal");
+  assert.ok(css.includes("pointer-events: none"), "Disables pointer events during modal");
+  assert.ok(css.includes("visibility: hidden"), "Hides visibility during modal");
+
+  // 3. Lightweight CSS transition between minimized and expanded states
+  assert.ok(vue.includes('<Transition name="mika-pop" mode="out-in">'), "Uses out-in Vue transition for smooth mode change");
+  assert.ok(css.includes(".mika-pop-enter-active"), "Defines transition active state");
+  assert.ok(css.includes(".mika-pop-enter-from"), "Defines transition from/to transform");
+
+  // 4. prefers-reduced-motion suppresses transitions
+  assert.ok(css.includes("@media (prefers-reduced-motion: reduce)"), "Supports reduced-motion media query");
+  assert.ok(css.includes(".mika-pop-enter-active"), "Reduced motion includes mika-pop");
+});
+
 
 
 
