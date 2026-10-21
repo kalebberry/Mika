@@ -1998,6 +1998,89 @@ All **252 tests passing** (`npm test`), 0 failures, 0 skips:
 - **Test 4D.8**: Regression Protection: Financial invariants remain pure and intact (Safe to Spend, Covered Credit, partial payments, and bill settlements).
 - Production build: `vue-tsc -b && vite build` built cleanly in 0.88s with 0 errors.
 
+---
+
+# Mika Budget — Phase 5A: Insights Foundation
+
+## 1. Objective & Architecture Audit
+
+Phase 5A delivers a dedicated **Insights** page (`Your Insights`) designed to help users understand their recorded spending without cluttering the Daily Dashboard. It emphasizes financial clarity, simple CSS-based proportional visualizations, and strictly verified financial calculations.
+
+### Documented Spending Calculation Rules (Ledger Derivation)
+
+Before implementing calculations, the ledger semantics were explicitly audited and documented across all transaction types:
+
+1. **Cleared versus Pending Transactions**:
+   - Qualifying transactions must satisfy `isLedgerStatus(t.status)` (`pending`, `cleared`, `posted`) or legacy entries where `!t.status`.
+   - Transactions with `status === "scheduled"` represent future projections and are strictly excluded from recorded spending.
+2. **Transfers Between Owned Accounts**:
+   - Inter-account transfers (`t.kind === "transfer"`) move funds between owned accounts (e.g. Checking $\leftrightarrow$ Savings) without consumption.
+   - All transactions with `t.kind === "transfer"` or category `"Transfer"` are strictly excluded to prevent double-counting.
+3. **Credit-Card Purchases versus Card Payments**:
+   - Credit-card purchases are standard expenses (`amount < 0`, `kind === "standard"` or undefined, on credit accounts). They represent actual spending and are counted in their category.
+   - Credit-card payments (`kind === "payment"`) transfer cash from checking to pay down already-recorded card liabilities. If counted as spending, every card purchase would be counted twice (once when bought, once when paid off). Therefore, `kind === "payment"` is strictly excluded.
+4. **Refunds and Reversals**:
+   - Merchant refunds and returns are recorded with `t.amount > 0` in an expense category.
+   - In accordance with established `spent(s, category, month)` semantics, cash refunds offset cash purchases, and credit card refunds offset credit card purchases within the same category.
+   - Net spending per category is clamped to $\ge 0$ (`Math.max(0, purchases - refunds)`), guaranteeing that an over-refund never creates negative spending or artificially lowers spending in other categories.
+   - Positive transactions in category `"Income"` represent earnings (paychecks, interest) and are not treated as expense refunds.
+5. **Bill Payments**:
+   - Bill payments recorded via `recordBillPayment()` create standard expense transactions (`amount < 0`, `billId: b.id`) on checking or credit card accounts. They are counted as qualifying expenses.
+   - Manual bill settlements (`settleBillOccurrence()`) do not create cash ledger entries and therefore do not count toward spending.
+6. **Scheduled or Future-Dated Transactions**:
+   - Transactions with `status === "scheduled"` or dated beyond the calendar month boundary are strictly excluded from spending summaries.
+7. **Split Transactions**:
+   - The data model does not support multi-category split allocations. Each transaction has exactly one category and one integer-cent amount.
+
+## 2. Navigation Architecture & Mobile Secondary Overflow
+
+- **Desktop (`> 50rem`)**:
+  - The sticky sidebar includes all 8 navigation destinations directly: `Overview`, `Accounts`, `Transactions`, `Budgets`, `Pots`, `Recurring Bills`, `Insights`, `Settings`.
+- **Mobile (`<= 50rem`)**:
+  - To prevent squeezing 8 tabs into the bottom bar (which would reduce touch targets below ergonomic thresholds on 320px screens), the mobile bottom bar renders the 5 primary daily actions (`Overview`, `Accounts`, `Transactions`, `Budgets`, `Recurring Bills`) plus a 6th **`More`** (`⋯`) button.
+  - When the user is on `Insights`, `Pots`, or `Settings`, the 6th button dynamically reflects the active destination (e.g., `📊 Insights`) with an active indicator.
+  - Tapping `More` opens an accessible bottom drawer/sheet (`role="dialog"`, `aria-modal="true"`) containing `Your Insights`, `Pots`, and `Settings`.
+  - Accessible interaction: Escape key closes the drawer and restores focus to the trigger button; tap-outside closes the drawer; Mika companion is suppressed while the drawer is open.
+  - Every mobile bottom nav touch target on 320px screens measures $53.3\text{px} \times 58.5\text{px}$, comfortably exceeding the $48 \times 48\text{px}$ WCAG 2.5.8 requirement.
+
+## 3. Dedicated Insights Page Implementation
+
+- **Page Title & Subtitle**: "Your Insights" · "Understand your money at your own pace."
+- **Reporting Period Selector**:
+  - Supports "This month" (`October 2026`) and "Last month" (`September 2026`).
+  - Strict calendar-month day boundaries (`YYYY-MM-01` to `YYYY-MM-LastDay`).
+  - Full reactivity: selecting a period immediately updates summary metrics, observation, and category breakdown.
+- **Spending Summary Metrics**:
+  - Total Recorded Spending (`$263.75` for current demo data).
+  - Number of qualifying expense transactions (count of `amount < 0` expense transactions).
+  - Top spending area with amount and percentage of total.
+- **One Concise, Factual Observation**:
+  - Grounded strictly in recorded ledger data (zero generative AI, zero fabricated estimates).
+  - Example: *"Bills is your largest recorded spending category this month, accounting for 38% of your spending."*
+  - Empty state: *"No spending recorded for this period yet."*
+- **Category Breakdown**:
+  - Groups qualifying spending by category, sorted highest first.
+  - Category name, transaction count, dollar amount, percentage badge, and accessible CSS-based proportional progress bar.
+  - Accessible markup (`role="progressbar"`, `aria-valuenow`, `aria-valuemin="0"`, `aria-valuemax="100"`). Does not rely on color alone.
+  - Direct contextual action: "View [Category] transactions →" navigates directly to Transactions filtered by that category.
+- **ADHD-Friendly Calm Empty States**:
+  - Clear, reassuring explanation when no spending exists in a period without guilt, warnings, or gamification.
+
+## 4. Test Suite & Verification Results
+
+All **262 tests passing** (`npm test`), 0 failures, 0 skips:
+- **Test 5A.1**: Calendar-month boundaries, leap years, year rollbacks (`Jan -> Dec`), and reporting period resolution.
+- **Test 5A.2**: Category aggregation, proportional calculations, and highest-first sorting.
+- **Test 5A.3**: Transfers and credit-card debt repayments strictly excluded (zero double-counting).
+- **Test 5A.4**: Credit-card purchases counted correctly as qualifying expenses.
+- **Test 5A.5**: Refund and reversal treatment: offsets purchases within category, isolated by account type, clamped $\ge 0$.
+- **Test 5A.6**: Future and scheduled transactions strictly excluded from spending.
+- **Test 5A.7**: Empty state and zero-spending period handling.
+- **Test 5A.8**: Reporting period switching across isolated calendar months.
+- **Test 5A.9**: Factual observations grounded strictly in recorded data.
+- **Test 5A.10**: Financial invariants preserved: Safe to Spend, totals, and existing ledger pure to the penny.
+- Production build: `vue-tsc -b && vite build` built cleanly in 2.10s with 0 errors.
+
 
 
 

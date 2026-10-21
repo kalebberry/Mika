@@ -2634,6 +2634,218 @@ export const spent = (
   return netCash + netCredit;
 };
 
+export interface CategorySpending {
+  name: string;
+  amount: number; // Integer cents >= 0
+  percentage: number; // 0-100 rounded
+  exactPercentage: number; // 0-100 float for proportional visualization
+  count: number; // Number of qualifying expense transactions
+  color: string;
+}
+
+export interface InsightsSpendingSummary {
+  periodMonth: string; // YYYY-MM
+  periodLabel: string; // e.g. "October 2026"
+  totalSpent: number; // Integer cents >= 0
+  transactionCount: number; // Count of qualifying expense transactions
+  largestCategory: CategorySpending | null;
+  categories: CategorySpending[];
+  observation: string;
+}
+
+export interface ReportingPeriod {
+  id: "this_month" | "last_month";
+  month: string; // YYYY-MM
+  label: string; // "This month" or "Last month"
+  fullLabel: string; // "October 2026"
+}
+
+export function getPreviousMonth(monthStr: string): string {
+  const parts = monthStr.split("-").map(Number);
+  const y = parts[0];
+  const m = parts[1];
+  if (!y || !m || isNaN(y) || isNaN(m) || m < 1 || m > 12) {
+    const d = new Date();
+    const currY = d.getFullYear();
+    const currM = d.getMonth() + 1;
+    const prevY = currM === 1 ? currY - 1 : currY;
+    const prevM = currM === 1 ? 12 : currM - 1;
+    return `${prevY}-${String(prevM).padStart(2, "0")}`;
+  }
+  const prevYear = m === 1 ? y - 1 : y;
+  const prevMonth = m === 1 ? 12 : m - 1;
+  return `${prevYear}-${String(prevMonth).padStart(2, "0")}`;
+}
+
+export function formatMonthYear(monthStr: string): string {
+  if (!monthStr || !monthStr.includes("-")) return "";
+  const [y, m] = monthStr.split("-").map(Number);
+  if (!y || !m) return monthStr;
+  const date = new Date(Date.UTC(y, m - 1, 1, 12, 0, 0));
+  return date.toLocaleDateString("en-US", {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+export function getReportingPeriods(now = today()): {
+  thisMonth: ReportingPeriod;
+  lastMonth: ReportingPeriod;
+} {
+  const thisMonthStr = now.slice(0, 7);
+  const lastMonthStr = getPreviousMonth(thisMonthStr);
+  return {
+    thisMonth: {
+      id: "this_month",
+      month: thisMonthStr,
+      label: "This month",
+      fullLabel: formatMonthYear(thisMonthStr),
+    },
+    lastMonth: {
+      id: "last_month",
+      month: lastMonthStr,
+      label: "Last month",
+      fullLabel: formatMonthYear(lastMonthStr),
+    },
+  };
+}
+
+export function getInsightsSpending(
+  s: State,
+  month = today().slice(0, 7),
+): InsightsSpendingSummary {
+  const targetMonth = month || today().slice(0, 7);
+  const periodLabel = formatMonthYear(targetMonth);
+
+  if (!s || !Array.isArray(s.transactions)) {
+    return {
+      periodMonth: targetMonth,
+      periodLabel,
+      totalSpent: 0,
+      transactionCount: 0,
+      largestCategory: null,
+      categories: [],
+      observation: "No spending recorded for this period yet.",
+    };
+  }
+
+  // 1. Filter qualifying transactions in this calendar month
+  // Qualifying rules:
+  // - Valid ledger status: pending, cleared, or posted (and legacy !status)
+  // - Exclude scheduled / future transactions
+  // - Exclude legacy debt migration transactions
+  // - Exclude non-standard transaction kinds (transfers and credit card debt repayments)
+  // - Exclude non-expense category groupings (Income, Transfer, Payment)
+  const qualifyingTransactions = s.transactions.filter(
+    (t) =>
+      t.status !== "scheduled" &&
+      (!t.status || isLedgerStatus(t.status)) &&
+      !t.isLegacyDebt &&
+      (t.kind === "standard" || !t.kind) &&
+      t.date.startsWith(targetMonth),
+  );
+
+  const expenseTxList = qualifyingTransactions.filter((t) => {
+    const cat = (t.category || "").trim().toLowerCase();
+    return (
+      cat !== "income" &&
+      cat !== "transfer" &&
+      cat !== "payment" &&
+      cat !== "credit card payment"
+    );
+  });
+
+  // 2. Discover all distinct expense categories present
+  const categoryNames = new Set<string>();
+  for (const t of expenseTxList) {
+    if (t.category && t.category.trim()) {
+      categoryNames.add(t.category.trim());
+    }
+  }
+
+  // 3. Calculate category spending using established spent() net-spending semantics
+  const categoryBreakdown: CategorySpending[] = [];
+
+  for (const catName of categoryNames) {
+    const catSpent = spent(s, catName, targetMonth);
+    const catExpenseCount = expenseTxList.filter(
+      (t) =>
+        t.category.toLowerCase() === catName.toLowerCase() && t.amount < 0,
+    ).length;
+
+    if (catSpent > 0 || catExpenseCount > 0) {
+      // Find budget color or assign deterministic theme color
+      const matchingBudget = (s.budgets || []).find(
+        (b) => b.category.toLowerCase() === catName.toLowerCase(),
+      );
+      let catColor = matchingBudget?.color;
+      if (!catColor) {
+        let hash = 0;
+        for (let i = 0; i < catName.length; i++) {
+          hash = (hash << 5) - hash + catName.charCodeAt(i);
+          hash |= 0;
+        }
+        const colorIdx = Math.abs(hash) % colors.length;
+        catColor = colors[colorIdx] || "#277c78";
+      }
+
+      categoryBreakdown.push({
+        name: catName,
+        amount: catSpent,
+        percentage: 0,
+        exactPercentage: 0,
+        count: catExpenseCount,
+        color: catColor,
+      });
+    }
+  }
+
+  // Filter out categories where net spent <= 0
+  const activeCategories = categoryBreakdown.filter((c) => c.amount > 0);
+
+  // Sort descending by amount, then alphabetically by name
+  activeCategories.sort((a, b) => {
+    if (b.amount !== a.amount) return b.amount - a.amount;
+    return a.name.localeCompare(b.name);
+  });
+
+  const totalSpent = activeCategories.reduce((sum, c) => sum + c.amount, 0);
+  const transactionCount = expenseTxList.filter((t) => t.amount < 0).length;
+
+  // Calculate percentages
+  for (const cat of activeCategories) {
+    cat.exactPercentage = totalSpent > 0 ? (cat.amount / totalSpent) * 100 : 0;
+    cat.percentage = Math.round(cat.exactPercentage);
+  }
+
+  const largestCategory =
+    activeCategories.length > 0 ? activeCategories[0]! : null;
+
+  // Generate one concise, factual, nonjudgmental observation
+  const isCurrent = targetMonth === today().slice(0, 7);
+  const timeContext = isCurrent ? "this month" : "last month";
+
+  let observation = "No spending recorded for this period yet.";
+  if (totalSpent > 0 && largestCategory) {
+    if (activeCategories.length === 1) {
+      observation = `${largestCategory.name} is your only recorded spending category ${timeContext}.`;
+    } else {
+      observation = `${largestCategory.name} is your largest recorded spending category ${timeContext}, accounting for ${largestCategory.percentage}% of your spending.`;
+    }
+  }
+
+  return {
+    periodMonth: targetMonth,
+    periodLabel,
+    totalSpent,
+    transactionCount,
+    largestCategory,
+    categories: activeCategories,
+    observation,
+  };
+}
+
 export function dueDate(b: Bill, month: string) {
   const [y, m] = month.split("-").map(Number);
   return `${month}-${String(Math.min(b.day, new Date(y!, m!, 0).getDate())).padStart(2, "0")}`;

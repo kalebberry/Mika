@@ -1,0 +1,384 @@
+/* ==========================================================================
+   Insights Page Styles — Mika Budget Phase 5A
+   Warm neutral cards, accessible period pills, lightweight proportional bars
+   ========================================================================== */
+
+.insights-view {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding-bottom: 2rem;
+  max-width: 68rem;
+  margin: 0 auto;
+}
+
+/* Header & Period Selector */
+.insights-intro-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 0.25rem;
+}
+
+.insights-subtitle {
+  font-size: 1.05rem;
+  color: var(--color-muted, #626070);
+  margin: 0;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+/* Period Selector Group */
+.period-selector-group {
+  display: inline-flex;
+  background: var(--color-surface, #ffffff);
+  border: 1px solid var(--color-border, #ededf2);
+  border-radius: var(--radius-md, 8px);
+  padding: 0.25rem;
+  gap: 0.25rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.period-pill {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: all var(--transition-normal, 0.2s ease);
+  min-height: 3rem; /* 48px touch target */
+  min-width: 6.5rem;
+  color: var(--color-muted, #626070);
+}
+
+.period-pill:hover {
+  background: var(--color-surface-subtle, #f8f8fa);
+  color: var(--color-text, #201f24);
+}
+
+.period-pill:focus-visible {
+  outline: 2px solid var(--color-teal, #277c78);
+  outline-offset: 2px;
+}
+
+.period-pill.active {
+  background: var(--color-dark, #201f24);
+  color: #ffffff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+}
+
+.period-name {
+  font-size: 0.875rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.period-full-label {
+  font-size: 0.725rem;
+  opacity: 0.85;
+  margin-top: 0.125rem;
+}
+
+/* Observation Card */
+.observation-card {
+  background: #fdfdfd;
+  border-left: 4px solid var(--color-teal, #277c78);
+  padding: 1.125rem 1.375rem;
+}
+
+.observation-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.observation-icon {
+  font-size: 1.5rem;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-top: 0.125rem;
+}
+
+.observation-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.observation-tag {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-teal, #277c78);
+}
+
+.observation-text {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--color-text, #201f24);
+  font-weight: 600;
+}
+
+/* Spending Metrics Grid */
+.insights-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13.5rem, 1fr));
+  gap: 1rem;
+}
+
+.metric-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 1.25rem 1.375rem;
+}
+
+.metric-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-muted, #626070);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.metric-value {
+  font-size: 1.85rem;
+  font-weight: 800;
+  color: var(--color-text, #201f24);
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+
+.metric-card.metric-primary .metric-value {
+  color: var(--color-teal, #277c78);
+}
+
+.metric-category-name {
+  font-size: 1.35rem;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-subtext {
+  font-size: 0.8125rem;
+  color: var(--color-muted, #626070);
+  margin-top: 0.15rem;
+}
+
+/* Category Breakdown Card */
+.category-breakdown-card {
+  padding: 1.5rem 1.625rem;
+}
+
+.breakdown-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--color-border, #ededf2);
+}
+
+.breakdown-header h2 {
+  font-size: 1.25rem;
+  font-weight: 800;
+  margin: 0 0 0.25rem;
+  color: var(--color-text, #201f24);
+  letter-spacing: -0.01em;
+}
+
+.breakdown-caption {
+  font-size: 0.85rem;
+  line-height: 1.4;
+  margin: 0;
+  max-width: 40rem;
+}
+
+/* Category List */
+.category-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.category-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.875rem 1rem;
+  background: var(--color-surface-subtle, #f8f8fa);
+  border: 1px solid var(--color-border, #ededf2);
+  border-radius: var(--radius-md, 8px);
+  transition: border-color var(--transition-normal, 0.2s ease);
+}
+
+.category-item:hover {
+  border-color: rgba(39, 124, 120, 0.4);
+}
+
+.category-meta-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.category-title-area {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-width: 0;
+}
+
+.category-swatch {
+  width: 0.875rem;
+  height: 0.875rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+.category-name {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--color-text, #201f24);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.category-count {
+  font-size: 0.775rem;
+}
+
+.category-values-area {
+  display: flex;
+  align-items: baseline;
+  gap: 0.625rem;
+  flex-shrink: 0;
+}
+
+.category-amount {
+  font-size: 1rem;
+  font-weight: 800;
+  color: var(--color-text, #201f24);
+}
+
+.category-percentage-badge {
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.15rem 0.45rem;
+  border-radius: var(--radius-sm, 4px);
+  background: rgba(32, 31, 36, 0.06);
+  color: var(--color-text, #201f24);
+}
+
+/* Simple Proportional CSS Bar */
+.category-bar-track {
+  width: 100%;
+  height: 0.5rem;
+  background: #ebebee;
+  border-radius: var(--radius-xs, 3px);
+  overflow: hidden;
+  position: relative;
+}
+
+.category-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-xs, 3px);
+  transition: width 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  min-width: 2px;
+}
+
+/* Action link */
+.category-action-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.125rem;
+}
+
+.category-action-row .text-link {
+  font-size: 0.75rem;
+  color: var(--color-teal, #277c78);
+  font-weight: 600;
+  text-decoration: none;
+  background: none;
+  border: none;
+  padding: 0.25rem 0;
+  cursor: pointer;
+}
+
+.category-action-row .text-link:hover {
+  text-decoration: underline;
+}
+
+/* Empty State */
+.insights-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 3rem 1.5rem;
+  gap: 0.75rem;
+}
+
+.empty-icon {
+  font-size: 2.25rem;
+  margin-bottom: 0.25rem;
+}
+
+.insights-empty-state h3 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--color-text, #201f24);
+  margin: 0;
+}
+
+.insights-empty-state p {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  max-width: 26rem;
+  margin: 0;
+}
+
+/* Mobile Responsiveness */
+@media (max-width: 37.5rem) {
+  .insights-intro-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.75rem;
+  }
+
+  .period-selector-group {
+    width: 100%;
+  }
+
+  .period-pill {
+    flex: 1;
+    min-width: auto;
+  }
+
+  .insights-metrics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .category-meta-row {
+    flex-wrap: wrap;
+  }
+
+  .category-breakdown-card {
+    padding: 1.125rem 1rem;
+  }
+}

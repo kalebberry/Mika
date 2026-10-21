@@ -8,6 +8,8 @@ import {
   type Transaction,
   type TransactionKind,
   blank,
+  demo,
+  today,
   totals,
   reserveBillsBreakdown,
   nextUnpaidDueDate,
@@ -93,6 +95,13 @@ import {
   type DailyAttentionSummary,
   type DailySuggestedAction,
   type DailyPaydayPresentation,
+  getInsightsSpending,
+  getReportingPeriods,
+  getPreviousMonth,
+  formatMonthYear,
+  type InsightsSpendingSummary,
+  type CategorySpending,
+  type ReportingPeriod,
 } from "../src/model.ts";
 import { useBudget } from "../src/composables/useBudget.ts";
 import {
@@ -13847,6 +13856,278 @@ test("Test 4D.8 — Regression Protection: Financial invariants remain pure and 
   const tAfterSettle = totals(state, simulatedToday);
   assert.equal(tAfterSettle.balance, 495000, "Settling a bill does not deduct cash balance");
 });
+
+/* ==========================================================================
+   Phase 5A — Insights Foundation Tests
+   ========================================================================== */
+
+test("Test 5A.1 — Calendar-month boundaries and reporting period resolution", () => {
+  // Calendar month boundary resolution
+  assert.equal(getPreviousMonth("2026-10"), "2026-09", "October -> September");
+  assert.equal(getPreviousMonth("2026-01"), "2025-12", "January rolls back to December of prior year");
+  assert.equal(getPreviousMonth("2024-03"), "2024-02", "March rolls back to February in leap year");
+
+  // Format month year
+  assert.equal(formatMonthYear("2026-10"), "October 2026", "Formats 2026-10 to October 2026");
+  assert.equal(formatMonthYear("2026-09"), "September 2026", "Formats 2026-09 to September 2026");
+
+  // Reporting periods helper
+  const periods = getReportingPeriods("2026-10-21");
+  assert.equal(periods.thisMonth.month, "2026-10", "thisMonth is 2026-10");
+  assert.equal(periods.thisMonth.label, "This month", "label is This month");
+  assert.equal(periods.thisMonth.fullLabel, "October 2026", "fullLabel is October 2026");
+  assert.equal(periods.lastMonth.month, "2026-09", "lastMonth is 2026-09");
+  assert.equal(periods.lastMonth.label, "Last month", "label is Last month");
+  assert.equal(periods.lastMonth.fullLabel, "September 2026", "fullLabel is September 2026");
+
+  // Calendar boundary transaction filtering
+  const state = blank();
+  state.transactions = [
+    { id: "tx-sep-30", name: "Late Sept", amount: -2000, category: "Groceries", date: "2026-09-30", status: "posted" },
+    { id: "tx-oct-01", name: "Early Oct", amount: -3000, category: "Groceries", date: "2026-10-01", status: "posted" },
+    { id: "tx-oct-31", name: "End Oct", amount: -4000, category: "Groceries", date: "2026-10-31", status: "posted" },
+    { id: "tx-nov-01", name: "Early Nov", amount: -5000, category: "Groceries", date: "2026-11-01", status: "posted" },
+  ];
+
+  const octInsights = getInsightsSpending(state, "2026-10");
+  assert.equal(octInsights.totalSpent, 7000, "Includes exact October transactions ($30 + $40 = $70.00)");
+  assert.equal(octInsights.transactionCount, 2, "2 qualifying transactions in October");
+
+  const sepInsights = getInsightsSpending(state, "2026-09");
+  assert.equal(sepInsights.totalSpent, 2000, "Includes exact September 30 transaction ($20.00)");
+  assert.equal(sepInsights.transactionCount, 1, "1 qualifying transaction in September");
+});
+
+test("Test 5A.2 — Category aggregation, proportional calculations, and highest-first sorting", () => {
+  const state = blank();
+  state.transactions = [
+    { id: "tx-g1", name: "Supermarket", amount: -5000, category: "Groceries", date: "2026-10-05", status: "posted" },
+    { id: "tx-g2", name: "Farmers Market", amount: -3000, category: "Groceries", date: "2026-10-12", status: "posted" },
+    { id: "tx-d1", name: "Bistro Dinner", amount: -12000, category: "Dining Out", date: "2026-10-08", status: "posted" },
+    { id: "tx-e1", name: "Cinema", amount: -4000, category: "Entertainment", date: "2026-10-15", status: "posted" },
+  ];
+
+  const insights = getInsightsSpending(state, "2026-10");
+
+  // Total spending: $50 + $30 + $120 + $40 = $240.00 (24000 cents)
+  assert.equal(insights.totalSpent, 24000, "Total recorded spending is $240.00");
+  assert.equal(insights.transactionCount, 4, "4 qualifying expense transactions");
+
+  // Categories sorted descending: Dining Out ($120), Groceries ($80), Entertainment ($40)
+  assert.equal(insights.categories.length, 3, "3 distinct spending categories");
+  assert.equal(insights.categories[0]!.name, "Dining Out", "Largest category is Dining Out");
+  assert.equal(insights.categories[0]!.amount, 12000, "Dining Out amount is $120.00");
+  assert.equal(insights.categories[0]!.percentage, 50, "Dining Out is 50% of spending");
+
+  assert.equal(insights.categories[1]!.name, "Groceries", "Second category is Groceries");
+  assert.equal(insights.categories[1]!.amount, 8000, "Groceries amount is $80.00");
+  assert.equal(insights.categories[1]!.count, 2, "Groceries has 2 transactions");
+  assert.equal(insights.categories[1]!.percentage, 33, "Groceries is 33% of spending");
+
+  assert.equal(insights.categories[2]!.name, "Entertainment", "Third category is Entertainment");
+  assert.equal(insights.categories[2]!.amount, 4000, "Entertainment amount is $40.00");
+  assert.equal(insights.categories[2]!.percentage, 17, "Entertainment is 17% of spending");
+
+  // Largest category metadata
+  assert.ok(insights.largestCategory !== null, "Largest category is defined");
+  assert.equal(insights.largestCategory!.name, "Dining Out");
+});
+
+test("Test 5A.3 — Transfers and credit-card payments strictly excluded (zero double-counting)", () => {
+  const state = blank();
+  const checking = state.accounts[0]!;
+  const savings: Account = {
+    id: "acc-savings-1",
+    name: "Savings",
+    type: "savings",
+    opening: 100000,
+    includeInSafeToSpend: false,
+    createdAt: today(),
+    updatedAt: today(),
+  };
+  const card: Account = {
+    id: "acc-card-1",
+    name: "Credit Card",
+    type: "credit",
+    opening: 50000,
+    includeInSafeToSpend: false,
+    createdAt: today(),
+    updatedAt: today(),
+  };
+  state.accounts.push(savings, card);
+
+  state.transactions = [
+    // Standard genuine expense
+    { id: "tx-real-exp", name: "Coffee Shop", amount: -5500, category: "Dining Out", date: "2026-10-02", status: "posted", accountId: checking.id, kind: "standard" },
+    // Transfer from Checking to Savings: MUST NOT count as spending
+    { id: "tx-transfer", name: "Transfer to Savings", amount: -50000, category: "Transfer", date: "2026-10-03", status: "posted", accountId: checking.id, targetAccountId: savings.id, kind: "transfer" },
+    // Credit card debt repayment from Checking to Credit Card: MUST NOT count as spending
+    { id: "tx-cc-repay", name: "Card Payment", amount: -30000, category: "Credit Card Payment", date: "2026-10-04", status: "posted", accountId: checking.id, targetAccountId: card.id, kind: "payment" },
+    // Income transaction: MUST NOT count as spending
+    { id: "tx-income", name: "Payroll Direct Deposit", amount: 250000, category: "Income", date: "2026-10-01", status: "posted", accountId: checking.id, kind: "standard" },
+  ];
+
+  const insights = getInsightsSpending(state, "2026-10");
+
+  assert.equal(insights.totalSpent, 5500, "Only genuine expenses are counted ($55.00), transfers/repayments/income are strictly excluded");
+  assert.equal(insights.transactionCount, 1, "Only 1 qualifying expense transaction");
+  assert.equal(insights.categories.length, 1, "Only Dining Out category appears");
+  assert.equal(insights.categories[0]!.name, "Dining Out");
+});
+
+test("Test 5A.4 — Credit-card purchases counted correctly as qualifying expenses", () => {
+  const state = blank();
+  const checking = state.accounts[0]!;
+  const card: Account = {
+    id: "acc-credit-test",
+    name: "Sapphire Card",
+    type: "credit",
+    opening: 0,
+    includeInSafeToSpend: false,
+    createdAt: today(),
+    updatedAt: today(),
+  };
+  state.accounts.push(card);
+
+  state.transactions = [
+    // Purchase on Credit Card ($85.00)
+    { id: "tx-crd-1", name: "Tech Gadgets", amount: -8500, category: "Electronics", date: "2026-10-10", status: "posted", accountId: card.id, kind: "standard" },
+    // Bill payment on checking ($40.00)
+    { id: "tx-bill-chk", name: "Internet Service", amount: -4000, category: "Bills", date: "2026-10-12", status: "posted", accountId: checking.id, kind: "standard", billId: "b-net" },
+  ];
+
+  const insights = getInsightsSpending(state, "2026-10");
+
+  assert.equal(insights.totalSpent, 12500, "Total spending includes credit card purchases and bill payments ($125.00)");
+  assert.equal(insights.transactionCount, 2, "2 qualifying expense transactions");
+  assert.equal(insights.categories.length, 2, "2 categories");
+
+  const elecCat = insights.categories.find(c => c.name === "Electronics");
+  assert.ok(elecCat, "Electronics category is present");
+  assert.equal(elecCat!.amount, 8500, "Electronics is $85.00");
+  assert.equal(elecCat!.percentage, 68, "Electronics is 68% of total spending");
+});
+
+test("Test 5A.5 — Refund and reversal treatment: offsets purchases within category, isolated by account type", () => {
+  const state = blank();
+  const checking = state.accounts[0]!;
+
+  state.transactions = [
+    // Groceries: $100 purchase, $30 store refund
+    { id: "tx-g-buy", name: "Grocery Store", amount: -10000, category: "Groceries", date: "2026-10-05", status: "posted", accountId: checking.id },
+    { id: "tx-g-ref", name: "Grocery Refund", amount: 3000, category: "Groceries", date: "2026-10-07", status: "posted", accountId: checking.id },
+    // Shopping: $20 purchase, $30 refund (over-refund case)
+    { id: "tx-s-buy", name: "Apparel Shop", amount: -2000, category: "Shopping", date: "2026-10-10", status: "posted", accountId: checking.id },
+    { id: "tx-s-ref", name: "Return Shirt", amount: 3000, category: "Shopping", date: "2026-10-11", status: "posted", accountId: checking.id },
+  ];
+
+  const insights = getInsightsSpending(state, "2026-10");
+
+  // Groceries net spent = $100 - $30 = $70.00 (7000 cents)
+  // Shopping net spent = max(0, $20 - $30) = $0.00 (clamped, does not create negative spending or reduce other categories)
+  assert.equal(insights.totalSpent, 7000, "Total spending is $70.00 ($100 - $30 net Groceries, Shopping clamped to $0)");
+  assert.equal(insights.categories.length, 1, "Shopping has $0 net spending so only Groceries appears in active category breakdown");
+  assert.equal(insights.categories[0]!.name, "Groceries");
+  assert.equal(insights.categories[0]!.amount, 7000);
+});
+
+test("Test 5A.6 — Future and scheduled transactions strictly excluded from spending", () => {
+  const state = blank();
+  state.transactions = [
+    // Actual posted expense ($50.00)
+    { id: "tx-actual", name: "Gas Station", amount: -5000, category: "Transport", date: "2026-10-10", status: "posted" },
+    // Scheduled unposted transaction ($200.00)
+    { id: "tx-sched", name: "Planned Maintenance", amount: -20000, category: "Transport", date: "2026-10-28", status: "scheduled" },
+  ];
+
+  const insights = getInsightsSpending(state, "2026-10");
+
+  assert.equal(insights.totalSpent, 5000, "Only actual posted spending ($50.00) is counted; scheduled is ignored");
+  assert.equal(insights.transactionCount, 1, "Only 1 qualifying transaction counted");
+});
+
+test("Test 5A.7 — Empty state and zero-spending period handling", () => {
+  const state = blank();
+  state.transactions = [];
+
+  const insights = getInsightsSpending(state, "2026-10");
+
+  assert.equal(insights.totalSpent, 0, "Zero spending");
+  assert.equal(insights.transactionCount, 0, "Zero transactions");
+  assert.equal(insights.largestCategory, null, "No largest category");
+  assert.equal(insights.categories.length, 0, "No categories in breakdown");
+  assert.equal(insights.observation, "No spending recorded for this period yet.", "Provides calm neutral observation");
+});
+
+test("Test 5A.8 — Reporting period switching: isolated calendar months", () => {
+  const state = blank();
+  state.transactions = [
+    { id: "tx-sep", name: "Electric Bill", amount: -20000, category: "Utilities", date: "2026-09-15", status: "posted" },
+    { id: "tx-oct", name: "Whole Foods", amount: -15000, category: "Groceries", date: "2026-10-05", status: "posted" },
+  ];
+
+  // Inspect September (Last Month)
+  const sep = getInsightsSpending(state, "2026-09");
+  assert.equal(sep.periodMonth, "2026-09");
+  assert.equal(sep.periodLabel, "September 2026");
+  assert.equal(sep.totalSpent, 20000, "September spending is $200.00");
+  assert.equal(sep.largestCategory?.name, "Utilities");
+
+  // Inspect October (This Month)
+  const oct = getInsightsSpending(state, "2026-10");
+  assert.equal(oct.periodMonth, "2026-10");
+  assert.equal(oct.periodLabel, "October 2026");
+  assert.equal(oct.totalSpent, 15000, "October spending is $150.00");
+  assert.equal(oct.largestCategory?.name, "Groceries");
+});
+
+test("Test 5A.9 — Factual observations grounded strictly in recorded data", () => {
+  const state = blank();
+
+  // Case 1: Empty
+  const emptyInsights = getInsightsSpending(state, "2026-10");
+  assert.equal(emptyInsights.observation, "No spending recorded for this period yet.");
+
+  // Case 2: Single category
+  state.transactions = [
+    { id: "tx-1", name: "Groceries", amount: -6000, category: "Groceries", date: "2026-10-10", status: "posted" },
+  ];
+  const singleInsights = getInsightsSpending(state, "2026-10");
+  assert.equal(singleInsights.observation, "Groceries is your only recorded spending category this month.");
+
+  // Case 3: Multiple categories
+  state.transactions.push(
+    { id: "tx-2", name: "Restaurant", amount: -14000, category: "Dining Out", date: "2026-10-12", status: "posted" },
+  );
+  // Total: $200.00. Dining Out is $140.00 (70%), Groceries is $60.00 (30%)
+  const multiInsights = getInsightsSpending(state, "2026-10");
+  assert.equal(
+    multiInsights.observation,
+    "Dining Out is your largest recorded spending category this month, accounting for 70% of your spending.",
+  );
+});
+
+test("Test 5A.10 — Financial invariants preserved: Safe to Spend and existing ledger pure", () => {
+  const state = demo();
+  const beforeTotals = totals(state, "2026-10-21");
+
+  // Run insights computations across multiple periods
+  const thisMonthInsights = getInsightsSpending(state, "2026-10");
+  const lastMonthInsights = getInsightsSpending(state, "2026-09");
+
+  assert.ok(thisMonthInsights.totalSpent > 0, "Demo data has spending this month");
+  assert.ok(lastMonthInsights !== null, "Last month insights computed");
+
+  // Re-verify totals
+  const afterTotals = totals(state, "2026-10-21");
+  assert.equal(afterTotals.balance, beforeTotals.balance, "Balance invariant preserved");
+  assert.equal(afterTotals.pots, beforeTotals.pots, "Pots invariant preserved");
+  assert.equal(afterTotals.budgets, beforeTotals.budgets, "Budgets invariant preserved");
+  assert.equal(afterTotals.bills, beforeTotals.bills, "Bills invariant preserved");
+  assert.equal(afterTotals.totalReadyToPay, beforeTotals.totalReadyToPay, "Credit payment reserve invariant preserved");
+  assert.equal(afterTotals.safe, beforeTotals.safe, "Safe to Spend invariant strictly preserved to the penny");
+});
+
 
 
 

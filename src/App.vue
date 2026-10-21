@@ -17,6 +17,7 @@ import TransactionsView from "./components/views/TransactionsView.vue";
 import BudgetsView from "./components/views/BudgetsView.vue";
 import PotsView from "./components/views/PotsView.vue";
 import RecurringBillsView from "./components/views/RecurringBillsView.vue";
+import InsightsView from "./components/views/InsightsView.vue";
 import SettingsView from "./components/views/SettingsView.vue";
 
 const { page, collapsed, registerModelContext } = useBudget();
@@ -42,6 +43,7 @@ onMounted(() => {
       <BudgetsView v-else-if="page === 'Budgets'" />
       <PotsView v-else-if="page === 'Pots'" />
       <RecurringBillsView v-else-if="page === 'Recurring Bills'" />
+      <InsightsView v-else-if="page === 'Insights'" />
       <SettingsView v-else-if="page === 'Settings'" />
 
       <AppFooter />

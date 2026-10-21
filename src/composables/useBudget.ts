@@ -67,6 +67,10 @@ import {
   assignCardPaymentReserve as modelAssignCardPaymentReserve,
   releaseCardPaymentReserve as modelReleaseCardPaymentReserve,
   uid,
+  getReportingPeriods,
+  getInsightsSpending,
+  type InsightsSpendingSummary,
+  type ReportingPeriod,
 } from "../model.ts";
 import { money } from "../utils/format.ts";
 import { useToast } from "./useToast.ts";
@@ -78,6 +82,7 @@ export type PageName =
   | "Budgets"
   | "Pots"
   | "Recurring Bills"
+  | "Insights"
   | "Settings";
 
 export const navItems: [PageName, string][] = [
@@ -87,8 +92,16 @@ export const navItems: [PageName, string][] = [
   ["Budgets", "◔"],
   ["Pots", "▣"],
   ["Recurring Bills", "▤"],
+  ["Insights", "📊"],
   ["Settings", "⚙"],
 ];
+
+const selectedInsightsMonth = ref<string>(today().slice(0, 7));
+const insightsSummary = computed(() =>
+  getInsightsSpending(state.value, selectedInsightsMonth.value),
+);
+const reportingPeriods = computed(() => getReportingPeriods());
+export const isMobileMenuOpen = ref(false);
 
 const STORAGE_KEY = "budget-companion-v1";
 
@@ -978,5 +991,9 @@ export function useBudget() {
     dailySuggestedAction,
     dailyPayday,
     registerModelContext,
+    selectedInsightsMonth,
+    insightsSummary,
+    reportingPeriods,
+    isMobileMenuOpen,
   };
 }

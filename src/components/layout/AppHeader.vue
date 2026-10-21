@@ -22,10 +22,12 @@ const actionLabel = computed(() => {
         {{
           page === "Settings"
             ? "MANAGE YOUR WORKSPACE"
-            : "YOUR MONEY, AT A GLANCE"
+            : page === "Insights"
+              ? "MONTHLY SPENDING PATTERNS"
+              : "YOUR MONEY, AT A GLANCE"
         }}
       </div>
-      <h1>{{ page }}</h1>
+      <h1>{{ page === "Insights" ? "Your Insights" : page }}</h1>
     </div>
     <div class="header-actions">
       <button
@@ -38,7 +40,7 @@ const actionLabel = computed(() => {
         ⚙
       </button>
       <button
-        v-if="page !== 'Settings'"
+        v-if="page !== 'Settings' && page !== 'Insights'"
         class="primary"
         @click="open(actionLabel)"
       >

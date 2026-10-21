@@ -5,11 +5,13 @@ import { useCompanionDialogue } from "../../composables/useCompanionDialogue";
 import { useTypewriter } from "../../composables/useTypewriter";
 import { useCompanion } from "../../composables/useCompanion";
 import { useModal } from "../../composables/useModal";
+import { useBudget } from "../../composables/useBudget";
 import { getMikaPortrait } from "../../utils/mikaExpressions";
 
 const { showCompanion, reduceAnimations } = useCompanion();
 const { mode: modalMode } = useModal();
-const isModalOpen = computed(() => Boolean(modalMode.value));
+const { isMobileMenuOpen } = useBudget();
+const isModalOpen = computed(() => Boolean(modalMode.value) || isMobileMenuOpen.value);
 
 const {
   isDialogueOpen,

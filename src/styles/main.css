@@ -36,6 +36,7 @@
 @import "./pages/_pots.css";
 @import "./pages/_bills.css";
 @import "./pages/_settings.css";
+@import "./pages/_insights.css";
 
 /* 7. Themes */
 @import "./themes/_theme.css";
