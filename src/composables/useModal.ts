@@ -423,8 +423,12 @@ export function useModal() {
   }
 
   function close() {
-    dialogRef.value?.close();
-    focusBefore.value?.focus();
+    try {
+      dialogRef.value?.close();
+    } catch {}
+    try {
+      focusBefore.value?.focus();
+    } catch {}
     mode.value = "";
   }
 

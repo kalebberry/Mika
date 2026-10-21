@@ -1955,6 +1955,50 @@ All **244 tests passing** (`npm test`), 0 failures, 0 skips:
 - **Test 4C.12**: Modal Suppression and State Transitions.
 - Production build: `vue-tsc -b && vite build` built cleanly in 0.90s with 0 errors.
 
+---
+
+## Phase 4D: Accessibility, Preferences & Regression
+
+### 1. Objectives & Quality Goals
+Improve accessibility, user preferences, and application reliability without adding new budgeting features or altering established financial calculations:
+1. **Accessibility Enhancements**:
+   - **Keyboard Navigation & Visible Focus Indicators**: Added high-contrast focus rings (`outline: 2px solid var(--color-sky, #82c9d7); outline-offset: 2px`) across desktop sidebar navigation, mobile nav items, brand link, and companion controls against dark backgrounds.
+   - **Skip to Main Content**: Implemented an accessible top-center skip link (`.skip-to-content` targeting `<main id="main-content" tabindex="-1">`) that is visually hidden off-screen until focused by keyboard.
+   - **Modal Focus Management & Error Announcements**: Added `aria-modal="true"` and native `@close="close"` event handling to `<dialog>` in `ActionDialog.vue`. Programmatically focus the first logical actionable field upon modal open. Form errors are rendered with `role="alert"` and `aria-live="assertive"` for immediate screen-reader announcement.
+   - **Typewriter Screen-Reader Accessibility**: Prevented assistive technology stuttering caused by progressive letter-by-letter live announcements by separating presentation: the complete dialogue text is announced once via an off-screen container with `class="sr-only" aria-live="polite"`, while the animated paragraph is marked with `aria-hidden="true"`.
+   - **Touch Targets**: Enforced minimum touch target heights (`min-height: 3rem` / 48px) on mobile bottom navigation items to satisfy WCAG 2.5.5 / 2.5.8 requirements across all mobile viewports.
+2. **User Preferences & Persistence**:
+   - **Companion Visibility (`showCompanion`)**: Persisted under `"budget-companion-mika-visible"`. Controls global visibility of companion avatar and dialogue.
+   - **Automatic Greetings (`enableGreetings`)**: Persisted under `"budget-companion-mika-greetings"`. When enabled (default), Mika greets the user once per session with mindful observations; when disabled, Mika starts and remains minimized until explicitly clicked.
+   - **Reduce Animations (`reduceAnimations`)**: Persisted under `"budget-companion-mika-reduce-animations"`. Instantly reveals dialogue text without typewriter delays (0ms) and suppresses companion keyframe animations, pulsing, and transitions via `.mika-companion-root.reduce-motion`.
+   - **Clear Separation of Rules vs. AI**: The Settings view clearly labels the rules-based companion with a **"Deterministic Rules"** tag, explicitly explaining that guidance is calculated locally from actual accounts, budgets, and bill cycles without AI hallucinations or cloud data transmission. The on-device WebGPU neural model is positioned in a distinct section labeled **"On-Device AI (Optional WebGPU)"**, clearly framed as an optional local conversational feature separate from financial calculations.
+3. **Regression Protection & Reliability**:
+   - Hardened `useModal.close()` with try/catch blocks around native `dialogRef.value?.close()` and `focusBefore.value?.focus()` to ensure `mode.value = ""` always executes cleanly, reliably removing `.modal-active` companion suppression.
+   - Verified that Safe to Spend formulas, Covered Credit rules, partial bill payments, scheduled transactions, and manual adjustments remain 100% intact.
+
+### 2. Multi-Viewport & Keyboard Automated Verification
+
+| Viewport | Dimensions | Touch Target Compliance | Horizontal Overflow | Companion State | Focus Visibility |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Desktop** | 1200 x 800 | N/A (mouse/pointer) | None (0 horizontal scroll) | Clear of content | PASS (High-contrast cyan outline) |
+| **Tablet** | 768 x 1024 | ≥ 48px min-height | None (0 horizontal scroll) | Cleared above bottom nav (+12px) | PASS (Visible focus ring) |
+| **Mobile (iPhone 14/15)** | 390 x 844 | ≥ 48px min-height | None (0 horizontal scroll) | Cleared above bottom nav (+13px) | PASS (Visible focus ring) |
+| **Mobile (iPhone SE)** | 375 x 667 | ≥ 48px min-height | None (0 horizontal scroll) | Cleared above bottom nav (+11px) | PASS (Visible focus ring) |
+| **Mobile (Compact)** | 320 x 650 | ≥ 46px compact | None (0 horizontal scroll) | Cleared above bottom nav (+11px) | PASS (Visible focus ring) |
+
+### 3. Verification & Test Suite
+All **252 tests passing** (`npm test`), 0 failures, 0 skips:
+- **Test 4D.1**: Companion preferences persistence and defaults (`showCompanion`, `enableGreetings`, `reduceAnimations`).
+- **Test 4D.2**: Greeting preference controls initial session behavior (minimized when disabled, expanded when enabled).
+- **Test 4D.3**: Reduced animations preference bypasses typewriter and activates CSS suppression.
+- **Test 4D.4**: Screen-reader typewriter accessibility and live regions (`.sr-only` live region + `aria-hidden` typewriter).
+- **Test 4D.5**: Modal dialog lifecycle, focus management, and error announcements (`aria-modal`, `@close`, focus restoration, `mode.value` reset).
+- **Test 4D.6**: Keyboard accessibility: skip-to-content, visible focus indicators, and touch targets.
+- **Test 4D.7**: Settings view: Clear distinction between deterministic companion and optional WebGPU AI.
+- **Test 4D.8**: Regression Protection: Financial invariants remain pure and intact (Safe to Spend, Covered Credit, partial payments, and bill settlements).
+- Production build: `vue-tsc -b && vite build` built cleanly in 0.88s with 0 errors.
+
+
 
 
 

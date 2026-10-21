@@ -509,7 +509,7 @@
 }
 
 /* --------------------------------------------------------------------------
-   Accessibility: Reduced Motion Preference
+   Accessibility: Reduced Motion Preference (OS query and in-app preference)
    -------------------------------------------------------------------------- */
 @media (prefers-reduced-motion: reduce) {
   .mika-companion-root,
@@ -524,3 +524,12 @@
     transition: none !important;
   }
 }
+
+.mika-companion-root.reduce-motion,
+.mika-companion-root.reduce-motion *,
+.mika-companion-root.reduce-motion .mika-pop-enter-active,
+.mika-companion-root.reduce-motion .mika-pop-leave-active {
+  animation: none !important;
+  transition: none !important;
+}
+

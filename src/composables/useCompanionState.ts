@@ -6,6 +6,7 @@
  */
 
 import { ref, computed } from "vue";
+import { useCompanion } from "./useCompanion.ts";
 
 export const SESSION_GREETED_KEY = "mika_companion_session_greeted";
 
@@ -39,12 +40,10 @@ export type CompanionViewMode = "expanded" | "minimized";
 
 // Module-level reactive singleton state to persist across route/view transitions
 const hasGreetedThisSession = ref(readSessionStorage());
-const companionMode = ref<CompanionViewMode>(
-  hasGreetedThisSession.value ? "minimized" : "expanded"
-);
+const companionMode = ref<CompanionViewMode>("minimized");
 const isDialogueOpen = computed(() => companionMode.value === "expanded");
 const isMinimized = computed(() => companionMode.value === "minimized");
-const isGreeting = ref(!hasGreetedThisSession.value);
+const isGreeting = ref(false);
 
 export function useCompanionState() {
   /**
@@ -52,6 +51,12 @@ export function useCompanionState() {
    * Safe to call multiple times or on view mount; only opens once per session.
    */
   function checkAndTriggerGreeting(): void {
+    const { enableGreetings } = useCompanion();
+    if (!enableGreetings.value) {
+      companionMode.value = "minimized";
+      isGreeting.value = false;
+      return;
+    }
     if (typeof window !== "undefined" && window.location && window.location.search && window.location.search.includes("mika_minimized")) {
       companionMode.value = "minimized";
       isGreeting.value = false;
@@ -96,8 +101,14 @@ export function useCompanionState() {
   function resetSessionGreeting(): void {
     hasGreetedThisSession.value = false;
     writeSessionStorage(false);
-    companionMode.value = "expanded";
-    isGreeting.value = true;
+    const { enableGreetings } = useCompanion();
+    if (!enableGreetings.value) {
+      companionMode.value = "minimized";
+      isGreeting.value = false;
+    } else {
+      companionMode.value = "expanded";
+      isGreeting.value = true;
+    }
   }
 
   return {

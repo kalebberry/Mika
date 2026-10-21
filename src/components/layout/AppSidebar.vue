@@ -6,7 +6,12 @@ const { page, collapsed } = useBudget();
 
 <template>
   <aside class="sidebar">
-    <a class="brand" href="#" @click.prevent="page = 'Overview'">
+    <a
+      class="brand"
+      href="#"
+      @click.prevent="page = 'Overview'"
+      aria-label="Budget - Go to Overview"
+    >
       <span class="brand-mark">b.</span>
       <span class="brand-name">budget<span class="brand-dot">.</span></span>
     </a>

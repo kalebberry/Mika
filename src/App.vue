@@ -30,8 +30,9 @@ onMounted(() => {
 
 <template>
   <div class="app" :class="{ collapsed }">
+    <a href="#main-content" class="skip-to-content">Skip to main content</a>
     <AppSidebar />
-    <main>
+    <main id="main-content" tabindex="-1">
       <AppHeader />
       <DemoBanner />
 

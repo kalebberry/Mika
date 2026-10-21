@@ -11,6 +11,8 @@ import { useBudget } from "./useBudget.ts";
 import { useToast } from "./useToast.ts";
 
 const COMPANION_KEY = "budget-companion-mika-visible";
+const GREETINGS_KEY = "budget-companion-mika-greetings";
+const REDUCE_ANIMATIONS_KEY = "budget-companion-mika-reduce-animations";
 const WEB_MODEL_KEY = "budget-companion-webllm-model";
 
 let savedVisibility = true;
@@ -31,6 +33,40 @@ watch(showCompanion, (visible) => {
     const { toast } = useToast();
     toast("Your companion preference could not be saved in this browser.");
   }
+});
+
+let savedGreetings = true;
+try {
+  if (typeof localStorage !== "undefined") {
+    savedGreetings = localStorage.getItem(GREETINGS_KEY) !== "false";
+  }
+} catch {}
+
+const enableGreetings = ref(savedGreetings);
+
+watch(enableGreetings, (enabled) => {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(GREETINGS_KEY, String(enabled));
+    }
+  } catch {}
+});
+
+let savedReduceAnimations = false;
+try {
+  if (typeof localStorage !== "undefined") {
+    savedReduceAnimations = localStorage.getItem(REDUCE_ANIMATIONS_KEY) === "true";
+  }
+} catch {}
+
+const reduceAnimations = ref(savedReduceAnimations);
+
+watch(reduceAnimations, (reduced) => {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(REDUCE_ANIMATIONS_KEY, String(reduced));
+    }
+  } catch {}
 });
 
 let savedWebModel = DEFAULT_WEB_MODEL;
@@ -122,6 +158,8 @@ export function useCompanion() {
 
   return {
     showCompanion,
+    enableGreetings,
+    reduceAnimations,
     selectedWebModel,
     webGpuAvailable,
     aiAdvice,

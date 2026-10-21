@@ -98,3 +98,15 @@ select:focus {
   color: var(--color-muted);
   line-height: 1.4;
 }
+
+.settings-toggles-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.toggle-card.is-disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, watch, nextTick } from "vue";
 import {
   colors,
   themeColors,
@@ -279,8 +279,16 @@ const showCycleOverride = ref(false);
 
 watch(
   () => mode.value,
-  () => {
+  (newMode) => {
     showCycleOverride.value = false;
+    if (newMode) {
+      nextTick(() => {
+        const firstInput = dialogRef.value?.querySelector<HTMLElement>(
+          'input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled])',
+        );
+        firstInput?.focus();
+      });
+    }
   },
 );
 
@@ -320,10 +328,12 @@ function onDateInput() {
 
 <template>
   <dialog
+    aria-modal="true"
     aria-labelledby="dialog-title"
     ref="dialogRef"
     @click="handleBackdropClick"
     @cancel="close"
+    @close="close"
   >
     <form @submit.prevent="submit">
       <div class="section-heading">
@@ -1331,7 +1341,7 @@ function onDateInput() {
         </div>
       </div>
 
-      <p class="form-error" v-if="error" role="alert">{{ error }}</p>
+      <p class="form-error" v-if="error" role="alert" aria-live="assertive">{{ error }}</p>
 
       <!-- Secondary settlement option for bill payment -->
       <div v-if="mode === 'Pay bill' && payMethod === 'transaction'" class="bill-settle-alt">

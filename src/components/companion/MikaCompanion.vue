@@ -7,7 +7,7 @@ import { useCompanion } from "../../composables/useCompanion";
 import { useModal } from "../../composables/useModal";
 import { getMikaPortrait } from "../../utils/mikaExpressions";
 
-const { showCompanion } = useCompanion();
+const { showCompanion, reduceAnimations } = useCompanion();
 const { mode: modalMode } = useModal();
 const isModalOpen = computed(() => Boolean(modalMode.value));
 
@@ -26,6 +26,7 @@ const dialogueCardRef = ref<HTMLElement | null>(null);
 
 const { displayedText, isTyping, isFinished, start: startTypewriter, skip: skipTypewriter } = useTypewriter({
   speedMs: 22,
+  reduceAnimations,
 });
 
 // Sync dialogue text changes with typewriter
@@ -90,7 +91,7 @@ function onActionClick() {
   <aside
     v-if="showCompanion"
     class="mika-companion-root"
-    :class="{ 'modal-active': isModalOpen }"
+    :class="{ 'modal-active': isModalOpen, 'reduce-motion': reduceAnimations }"
     aria-label="Mika Budget Companion"
   >
     <Transition name="mika-pop" mode="out-in">
@@ -165,17 +166,22 @@ function onActionClick() {
             </div>
           </div>
 
-          <!-- Dialogue Body with Progressive Typewriter -->
+          <!-- Dialogue Body with Progressive Typewriter & Accessible Announcement -->
           <div class="mika-dialogue-body">
             <h3 class="mika-dialogue-title">{{ currentDialogue.title }}</h3>
+            <!-- Clean announcement for screen readers (single update on dialogue change without typewriter stutter) -->
+            <p class="sr-only" aria-live="polite">
+              {{ currentDialogue.text }}
+            </p>
+            <!-- Visual text with typewriter animation -->
             <p
               id="mika-dialogue-text"
               class="mika-dialogue-text"
-              aria-live="polite"
+              aria-hidden="true"
             >
               {{ displayedText }}
-              <span v-if="isTyping" class="mika-typing-cursor" aria-hidden="true">|</span>
-              <span v-else class="mika-advance-prompt" aria-hidden="true">▼</span>
+              <span v-if="isTyping" class="mika-typing-cursor">|</span>
+              <span v-else class="mika-advance-prompt">▼</span>
             </p>
           </div>
 

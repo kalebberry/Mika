@@ -27,6 +27,8 @@ const {
 
 const {
   showCompanion,
+  enableGreetings,
+  reduceAnimations,
   selectedWebModel,
   webGpuAvailable,
   availableWebModels,
@@ -711,13 +713,13 @@ function handleRemoveOverride(idOrDate: string) {
     </div>
 
     <div class="settings-col">
-      <section class="card settings-card">
+      <section class="card settings-card" id="budget-companion-card">
         <div class="section-heading">
           <h2>
             <span class="settings-heading-icon">✨</span>
             Budget Companion
           </h2>
-          <span class="companion-tag">Mika</span>
+          <span class="companion-tag">Deterministic Rules</span>
         </div>
         <div class="companion-settings-banner">
           <div class="companion-preview-avatar">
@@ -731,30 +733,69 @@ function handleRemoveOverride(idOrDate: string) {
           <div class="companion-preview-info">
             <strong>Mika</strong>
             <p class="muted">
-              Your mindful financial companion who offers encouraging tips and
-              payday reminders.
+              Your mindful companion providing deterministic guidance based on actual cash, bills, and card coverage.
             </p>
           </div>
         </div>
-        <div class="toggle-card">
-          <label>
-            <input type="checkbox" v-model="showCompanion" />
-            <div>
-              <strong>Show Mika on Overview</strong>
-              <small>
-                Display gentle spending prompts, goal milestones, and on-device
-                AI advice.
-              </small>
-            </div>
-          </label>
+
+        <div class="formula-note" style="margin-bottom: 1rem;">
+          🛡️ <strong>Deterministic Guidance:</strong> Mika’s tips and observations are calculated directly from your actual accounts, budgets, and bill cycles using local deterministic rules—never AI hallucinations or third-party cloud services.
+        </div>
+
+        <div class="settings-toggles-stack">
+          <div class="toggle-card">
+            <label>
+              <input type="checkbox" v-model="showCompanion" id="pref-show-companion" />
+              <div>
+                <strong>Enable Mika Companion</strong>
+                <small>
+                  Display Mika’s companion portrait and mindful budget guidance across the application.
+                </small>
+              </div>
+            </label>
+          </div>
+
+          <div class="toggle-card" :class="{ 'is-disabled': !showCompanion }">
+            <label>
+              <input
+                type="checkbox"
+                v-model="enableGreetings"
+                :disabled="!showCompanion"
+                id="pref-enable-greetings"
+              />
+              <div>
+                <strong>Enable Automatic Greetings</strong>
+                <small>
+                  Automatically expand dialogue once per session with mindful observations. When disabled, Mika stays minimized until clicked.
+                </small>
+              </div>
+            </label>
+          </div>
+
+          <div class="toggle-card" :class="{ 'is-disabled': !showCompanion }">
+            <label>
+              <input
+                type="checkbox"
+                v-model="reduceAnimations"
+                :disabled="!showCompanion"
+                id="pref-reduce-animations"
+              />
+              <div>
+                <strong>Reduce Companion Animations</strong>
+                <small>
+                  Reveal dialogue text immediately without typewriter delays, and disable floating avatar motions.
+                </small>
+              </div>
+            </label>
+          </div>
         </div>
       </section>
 
-      <section class="card settings-card">
+      <section class="card settings-card" id="webgpu-ai-card">
         <div class="section-heading">
           <h2>
             <span class="settings-heading-icon">⚡</span>
-            On-Device AI (WebGPU)
+            On-Device AI (Optional WebGPU)
           </h2>
           <span
             class="ai-status-tag"
@@ -764,9 +805,7 @@ function handleRemoveOverride(idOrDate: string) {
           </span>
         </div>
         <p class="muted settings-desc">
-          Mika can use private in-browser neural models to analyze your budget.
-          100% free, runs entirely on your device GPU, with zero token costs and
-          zero telemetry.
+          An optional, experimental in-browser neural model for natural-language inquiries. 100% private, runs directly on your device GPU, and completely distinct from Mika’s core deterministic budgeting rules.
         </p>
         <div class="ai-settings-form">
           <label>

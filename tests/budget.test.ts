@@ -13550,7 +13550,7 @@ test("Test 4C.12 — Modal Suppression and State Transitions", async () => {
   const css = fs.readFileSync(cssPath, "utf-8");
 
   // 1. MikaCompanion binds modal-active when a modal is open
-  assert.ok(vue.includes(":class=\"{ 'modal-active': isModalOpen }\""), "Applies modal-active class during open modals");
+  assert.ok(vue.includes("'modal-active': isModalOpen"), "Applies modal-active class during open modals");
 
   // 2. CSS suppresses Mika entirely during active modals
   assert.ok(css.includes(".mika-companion-root.modal-active"), "CSS targets modal-active state on companion root");
@@ -13567,6 +13567,287 @@ test("Test 4C.12 — Modal Suppression and State Transitions", async () => {
   assert.ok(css.includes("@media (prefers-reduced-motion: reduce)"), "Supports reduced-motion media query");
   assert.ok(css.includes(".mika-pop-enter-active"), "Reduced motion includes mika-pop");
 });
+
+test("Test 4D.1 — Companion preferences persistence and defaults", () => {
+  const { showCompanion, enableGreetings, reduceAnimations } = useCompanion();
+
+  // 1. Initial defaults
+  assert.equal(typeof showCompanion.value, "boolean", "showCompanion is a boolean ref");
+  assert.equal(typeof enableGreetings.value, "boolean", "enableGreetings is a boolean ref");
+  assert.equal(typeof reduceAnimations.value, "boolean", "reduceAnimations is a boolean ref");
+
+  // 2. LocalStorage persistence keys verification
+  const prevShow = showCompanion.value;
+  const prevGreetings = enableGreetings.value;
+  const prevReduce = reduceAnimations.value;
+
+  showCompanion.value = false;
+  if (typeof localStorage !== "undefined") {
+    assert.equal(localStorage.getItem("budget-companion-mika-visible"), "false");
+  }
+
+  enableGreetings.value = false;
+  if (typeof localStorage !== "undefined") {
+    assert.equal(localStorage.getItem("budget-companion-mika-greetings"), "false");
+  }
+
+  reduceAnimations.value = true;
+  if (typeof localStorage !== "undefined") {
+    assert.equal(localStorage.getItem("budget-companion-mika-reduce-animations"), "true");
+  }
+
+  // Restore
+  showCompanion.value = prevShow;
+  enableGreetings.value = prevGreetings;
+  reduceAnimations.value = prevReduce;
+});
+
+test("Test 4D.2 — Greeting preference controls initial session behavior", () => {
+  const companionState = useCompanionState();
+  const { enableGreetings } = useCompanion();
+  const prevGreetings = enableGreetings.value;
+
+  // When greetings disabled, session reset keeps Mika minimized
+  enableGreetings.value = false;
+  companionState.resetSessionGreeting();
+  assert.equal(companionState.isMinimized.value, true, "Remains minimized when greetings disabled");
+  assert.equal(companionState.isDialogueOpen.value, false, "Dialogue not open when greetings disabled");
+
+  // Triggering greeting explicitly respects the disabled preference
+  companionState.checkAndTriggerGreeting();
+  assert.equal(companionState.isMinimized.value, true, "Mika stays minimized when checkAndTriggerGreeting called with greetings disabled");
+
+  // When greetings re-enabled, resetSessionGreeting allows expanded greeting
+  enableGreetings.value = true;
+  companionState.resetSessionGreeting();
+  assert.equal(companionState.isDialogueOpen.value, true, "Dialogue opens when greetings enabled");
+  assert.equal(companionState.isMinimized.value, false);
+
+  // Restore
+  enableGreetings.value = prevGreetings;
+});
+
+test("Test 4D.3 — Reduced animations preference bypasses typewriter and activates CSS suppression", async () => {
+  const fs = await import("fs");
+  const path = await import("path");
+  const cssPath = path.resolve(process.cwd(), "src/styles/components/_companion-dialogue.css");
+  const css = fs.readFileSync(cssPath, "utf-8");
+
+  // 1. Typewriter bypass with reduceAnimations: true
+  const typewriter = useTypewriter({
+    speedMs: 50,
+    reduceAnimations: true,
+  });
+
+  typewriter.start("Hello world mindful budget guidance!");
+  assert.equal(typewriter.displayedText.value, "Hello world mindful budget guidance!", "Instantly reveals complete text");
+  assert.equal(typewriter.isTyping.value, false, "Typing is false immediately");
+  assert.equal(typewriter.isFinished.value, true, "Finished is true immediately");
+
+  // 2. CSS contains reduce-motion selector suppressing animations and transitions
+  assert.ok(css.includes(".mika-companion-root.reduce-motion"), "Defines .reduce-motion root styling");
+  assert.ok(css.includes("animation: none !important"), "Suppresses animation in reduce-motion mode");
+  assert.ok(css.includes("transition: none !important"), "Suppresses transition in reduce-motion mode");
+});
+
+test("Test 4D.4 — Screen-reader typewriter accessibility and live regions", async () => {
+  const fs = await import("fs");
+  const path = await import("path");
+  const vuePath = path.resolve(process.cwd(), "src/components/companion/MikaCompanion.vue");
+  const vue = fs.readFileSync(vuePath, "utf-8");
+
+  // 1. Screen reader announced via visually hidden .sr-only container with aria-live="polite"
+  assert.ok(vue.includes('class="sr-only" aria-live="polite"'), "Contains polite sr-only container for clean reading");
+  assert.ok(vue.includes("{{ currentDialogue.text }}"), "sr-only container renders complete dialogue text");
+
+  // 2. Progressively animated visual text has aria-hidden="true" to prevent stuttering
+  assert.ok(vue.includes('id="mika-dialogue-text"'), "Contains visual typewriter text paragraph");
+  assert.ok(vue.includes('aria-hidden="true"'), "Hides visual typewriter animation from screen readers");
+});
+
+test("Test 4D.5 — Modal dialog lifecycle, focus management, and error announcements", async () => {
+  const fs = await import("fs");
+  const path = await import("path");
+  const vuePath = path.resolve(process.cwd(), "src/components/common/ActionDialog.vue");
+  const vue = fs.readFileSync(vuePath, "utf-8");
+  const composablePath = path.resolve(process.cwd(), "src/composables/useModal.ts");
+  const composable = fs.readFileSync(composablePath, "utf-8");
+
+  // 1. ActionDialog binds native dialog accessibility attributes
+  assert.ok(vue.includes('aria-modal="true"'), "Native dialog includes aria-modal='true'");
+  assert.ok(vue.includes('@close="close"'), "Binds @close event listener");
+  assert.ok(vue.includes('@cancel="close"'), "Binds @cancel event listener");
+
+  // 2. Form error live region
+  assert.ok(vue.includes('class="form-error"'), "Renders form error");
+  assert.ok(vue.includes('aria-live="assertive"'), "Assertive live region on form error");
+
+  // 3. Safe close implementation
+  assert.ok(composable.includes("dialogRef.value?.close()"), "Closes dialog ref");
+  assert.ok(composable.includes("focusBefore.value?.focus()"), "Restores focus");
+  assert.ok(composable.includes('mode.value = ""'), "Resets modal mode");
+
+  // 4. Test programmatic close resilience
+  const { open, close, mode } = useModal();
+  open("Add transaction");
+  assert.equal(mode.value, "Add transaction");
+  close();
+  assert.equal(mode.value, "", "mode reset to empty string after close");
+});
+
+test("Test 4D.6 — Keyboard accessibility: skip-to-content, visible focus indicators, and touch targets", async () => {
+  const fs = await import("fs");
+  const path = await import("path");
+
+  // 1. App.vue skip-to-content link and main landmark
+  const appVuePath = path.resolve(process.cwd(), "src/App.vue");
+  const appVue = fs.readFileSync(appVuePath, "utf-8");
+  assert.ok(appVue.includes('<a href="#main-content" class="skip-to-content">Skip to main content</a>'), "App includes skip to content link");
+  assert.ok(appVue.includes('id="main-content"'), "main element has id='main-content'");
+  assert.ok(appVue.includes('tabindex="-1"'), "main element has tabindex='-1' for programmatic focus");
+
+  // 2. Skip to content styling
+  const appCssPath = path.resolve(process.cwd(), "src/styles/layout/_app.css");
+  const appCss = fs.readFileSync(appCssPath, "utf-8");
+  assert.ok(appCss.includes(".skip-to-content"), "Defines .skip-to-content styling");
+  assert.ok(appCss.includes(".skip-to-content:focus"), "Defines visible focused state for skip link");
+
+  // 3. Sidebar high-contrast focus indicators and mobile touch targets
+  const sidebarCssPath = path.resolve(process.cwd(), "src/styles/layout/_sidebar.css");
+  const sidebarCss = fs.readFileSync(sidebarCssPath, "utf-8");
+  assert.ok(sidebarCss.includes(".sidebar button:focus-visible"), "Defines visible focus indicator on sidebar buttons");
+  assert.ok(sidebarCss.includes("outline: 2px solid"), "High-contrast outline on focus-visible");
+  assert.ok(sidebarCss.includes("min-height: 3rem"), "Enforces 48px minimum touch target on mobile nav");
+
+  // 4. Accessible brand link label
+  const sidebarVuePath = path.resolve(process.cwd(), "src/components/layout/AppSidebar.vue");
+  const sidebarVue = fs.readFileSync(sidebarVuePath, "utf-8");
+  assert.ok(sidebarVue.includes('aria-label="Budget - Go to Overview"'), "Brand link has descriptive accessible label");
+});
+
+test("Test 4D.7 — Settings view: Clear distinction between deterministic companion and optional WebGPU AI", async () => {
+  const fs = await import("fs");
+  const path = await import("path");
+  const settingsVuePath = path.resolve(process.cwd(), "src/components/views/SettingsView.vue");
+  const settingsVue = fs.readFileSync(settingsVuePath, "utf-8");
+
+  // 1. Distinct section IDs
+  assert.ok(settingsVue.includes('id="budget-companion-card"'), "Companion has distinct card ID");
+  assert.ok(settingsVue.includes('id="webgpu-ai-card"'), "WebGPU AI has distinct card ID");
+
+  // 2. Deterministic guidance wording
+  assert.ok(settingsVue.includes("Deterministic Rules"), "Badge marks companion as deterministic rules");
+  assert.ok(settingsVue.includes("Deterministic Guidance"), "Explains deterministic calculation without AI hallucinations");
+
+  // 3. Optional on-device AI wording
+  assert.ok(settingsVue.includes("On-Device AI (Optional WebGPU)"), "Clarifies AI is optional WebGPU feature");
+  assert.ok(settingsVue.includes("distinct from Mika’s core deterministic budgeting rules"), "Notes AI is separate from companion math");
+
+  // 4. Companion preference controls
+  assert.ok(settingsVue.includes('id="pref-show-companion"'), "Toggle for companion visibility");
+  assert.ok(settingsVue.includes('id="pref-enable-greetings"'), "Toggle for automatic session greetings");
+  assert.ok(settingsVue.includes('id="pref-reduce-animations"'), "Toggle for reduced companion animations");
+});
+
+test("Test 4D.8 — Regression Protection: Financial invariants remain pure and intact", () => {
+  const simulatedToday = "2026-10-20";
+  const state: State = blank();
+  state.opening = 500000; // $5,000.00
+  state.payday = "2026-10-31";
+  state.followingPayday = "2026-11-14";
+
+  // 1. Add savings pot
+  state.pots.push({
+    id: "pot-emergency",
+    name: "Emergency Fund",
+    target: 200000,
+    saved: 100000, // $1,000.00 reserved
+    color: colors[1]!,
+  });
+
+  // 2. Add budget category
+  state.budgets.push({
+    id: "b-dining",
+    category: "Dining",
+    limit: 40000, // $400.00
+    color: colors[2]!,
+  });
+
+  // 3. Add bill with partial payment
+  const bill: Bill = {
+    id: "bill-electric",
+    name: "Electric Bill",
+    amount: 15000, // $150.00
+    day: 25,
+    category: "Utilities",
+  };
+  state.bills.push(bill);
+
+  // Partial payment: $50 paid
+  state.transactions.push({
+    id: "tx-electric-partial",
+    name: "Electric partial",
+    amount: -5000,
+    category: "Utilities",
+    date: "2026-10-20",
+    status: "cleared",
+    billId: "bill-electric",
+    billDueDate: "2026-10-25",
+  });
+
+  // 4. Add credit card with covered credit
+  const card: Account = {
+    id: "acc-credit-1",
+    name: "Cashback Card",
+    type: "credit",
+    balance: 20000, // $200.00 owed
+    creditLimit: 500000,
+  };
+  state.accounts.push(card);
+
+  // Reserve $100 for credit card payment
+  assignCardPaymentReserve(card, 10000, simulatedToday);
+
+  // 5. Verify totals calculation
+  const t = totals(state, simulatedToday);
+
+  // Cash balance: $5,000 opening - $50 partial payment = $4,950.00 (495000 cents)
+  assert.equal(t.balance, 495000, "Cash balance reflects opening minus cleared spending");
+
+  // Pots reserved: $1,000 (100000 cents)
+  assert.equal(t.pots, 100000, "Pots reserved matches $1,000.00");
+
+  // Remaining budget: $400.00 (dining has no spending yet)
+  assert.equal(t.budgets, 40000, "Budget remaining is $400.00");
+
+  // Unpaid bill remaining: $150 - $50 = $100 (10000 cents)
+  assert.equal(t.bills, 10000, "Unpaid bills correctly reserves $100 remaining obligation");
+
+  // Credit card payment reserves: $100 (10000 cents)
+  assert.equal(t.totalReadyToPay, 10000, "Credit card payment reserve is $100.00");
+
+  // Safe to Spend = Balance ($4,950) - Pots ($1,000) - Budget ($400) - Unpaid Bills ($100) - Card Reserves ($100)
+  // = $3,350.00 (335000 cents)
+  const expectedSafe = 495000 - 100000 - 40000 - 10000 - 10000;
+  assert.equal(t.safe, expectedSafe, "Safe to spend strictly enforces all financial reservation invariants");
+  assert.equal(t.safe, 335000, "Safe to spend equals $3,350.00");
+
+  // 6. Verify bill occurrence status
+  const occ = getBillOccurrenceStatus(state, bill, "2026-10-25");
+  assert.equal(occ.status, "partially_paid", "Bill status is partially_paid");
+  assert.equal(occ.paidAmount, 5000, "Bill paid amount is $50.00");
+  assert.equal(occ.remainingAmount, 10000, "Bill remaining amount is $100.00");
+
+  // 7. Settle bill occurrence
+  settleBillOccurrence(state, bill.id, "2026-10-25");
+  const occSettled = getBillOccurrenceStatus(state, bill, "2026-10-25");
+  assert.equal(occSettled.status, "paid", "Settled bill is marked paid");
+
+  // Settle does NOT deduct cash
+  const tAfterSettle = totals(state, simulatedToday);
+  assert.equal(tAfterSettle.balance, 495000, "Settling a bill does not deduct cash balance");
+});
+
 
 
 

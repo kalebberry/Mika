@@ -7,11 +7,12 @@
  * - Non-blocking execution and clean timer cleanup
  */
 
-import { ref, onUnmounted } from "vue";
+import { ref, onUnmounted, unref, type Ref } from "vue";
 
 export interface TypewriterOptions {
   speedMs?: number;
   onComplete?: () => void;
+  reduceAnimations?: boolean | Ref<boolean> | (() => boolean);
 }
 
 export function useTypewriter(options?: TypewriterOptions) {
@@ -24,6 +25,13 @@ export function useTypewriter(options?: TypewriterOptions) {
   let timer: ReturnType<typeof setInterval> | null = null;
 
   function isReducedMotion(): boolean {
+    if (options?.reduceAnimations !== undefined) {
+      const pref =
+        typeof options.reduceAnimations === "function"
+          ? options.reduceAnimations()
+          : unref(options.reduceAnimations);
+      if (pref) return true;
+    }
     try {
       if (typeof window !== "undefined" && window.matchMedia) {
         return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
