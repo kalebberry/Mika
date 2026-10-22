@@ -5105,6 +5105,538 @@ export function totals(s: State, now = today()) {
   };
 }
 
+/* ==========================================================================
+   Phase 5C: Money Outlook & Mika Explains Your Money Models
+   Deterministic, zero-secondary-engine financial breakdowns and commitments
+   ========================================================================== */
+
+export type AccountFreshnessStatus = "fresh" | "stale" | "unverified" | "fallback";
+
+export type AccountFreshnessInfo = {
+  accountId: string;
+  accountName: string;
+  accountType: AccountType;
+  updatedAt: string;
+  daysSinceUpdate: number;
+  status: AccountFreshnessStatus;
+  label: string;
+};
+
+export function getAccountFreshnessInfo(
+  s: State,
+  now = today(),
+): AccountFreshnessInfo[] {
+  const validNow = isValidDateString(now) ? now : today();
+  const eligibleCashAccounts = (s.accounts || []).filter(
+    (a) =>
+      !a.archived &&
+      (a.type === "checking" || a.type === "savings") &&
+      a.includeInSafeToSpend,
+  );
+
+  if (eligibleCashAccounts.length === 0) {
+    return [
+      {
+        accountId: "fallback-opening",
+        accountName: "Ledger Cash Baseline",
+        accountType: "checking",
+        updatedAt: "",
+        daysSinceUpdate: 0,
+        status: "fallback",
+        label: "Using manual opening balance + ledger (no checking/savings linked)",
+      },
+    ];
+  }
+
+  return eligibleCashAccounts.map((a) => {
+    const rawDate = a.updatedAt || a.createdAt || "";
+    const dateStr = rawDate.slice(0, 10);
+    if (!isValidDateString(dateStr)) {
+      return {
+        accountId: a.id,
+        accountName: a.name,
+        accountType: a.type,
+        updatedAt: rawDate,
+        daysSinceUpdate: 999,
+        status: "unverified",
+        label: "Balance unverified (no update date recorded)",
+      };
+    }
+
+    const days = daysBetween(dateStr, validNow);
+    if (dateStr > validNow || days <= 7) {
+      return {
+        accountId: a.id,
+        accountName: a.name,
+        accountType: a.type,
+        updatedAt: rawDate,
+        daysSinceUpdate: Math.max(0, days),
+        status: "fresh",
+        label:
+          days === 0
+            ? "Updated today"
+            : days === 1
+              ? "Updated yesterday"
+              : `Updated ${days} days ago`,
+      };
+    } else {
+      return {
+        accountId: a.id,
+        accountName: a.name,
+        accountType: a.type,
+        updatedAt: rawDate,
+        daysSinceUpdate: days,
+        status: "stale",
+        label: `Balance unverified (${days} days since update)`,
+      };
+    }
+  });
+}
+
+export type MoneyOutlookProtectionItem = {
+  id: string;
+  name: string;
+  amount: number; // in cents
+  category:
+    | "pots"
+    | "budgets"
+    | "bills"
+    | "scheduled"
+    | "credit_ready_to_pay"
+    | "credit_minimums";
+  description: string;
+  count?: number;
+  subdetails?: string;
+};
+
+export type MoneyOutlookSummary = {
+  cashBalance: number;
+  cashAccountCount: number;
+  freshnessList: AccountFreshnessInfo[];
+  overallFreshness: AccountFreshnessStatus;
+  freshnessLabel: string;
+  isFallbackCash: boolean;
+
+  // Protections strictly derived from totals(s, now)
+  pots: number;
+  potsCount: number;
+  budgets: number;
+  budgetsCount: number;
+  bills: number;
+  currentCycleBills: number;
+  protectedCycleBills: number;
+  billsCount: number;
+  uncoveredScheduledExpenses: number;
+  totalReadyToPay: number;
+  creditCardMinimums: number;
+  totalProtections: number;
+
+  // Bottom Line
+  rawSafe: number;
+  safe: number;
+  shortfall: number;
+  hasShortfall: boolean;
+  reconciliationVerified: boolean;
+
+  // Payday Context
+  paydayPresentation: DailyPaydayPresentation;
+  paydayCutoffDate: string;
+  hasConfiguredPayday: boolean;
+
+  // Protection items breakdown
+  protectionItems: MoneyOutlookProtectionItem[];
+};
+
+export function getMoneyOutlook(s: State, now = today()): MoneyOutlookSummary {
+  const validNow = isValidDateString(now) ? now : today();
+  const tot = totals(s, validNow);
+  const freshnessList = getAccountFreshnessInfo(s, validNow);
+  const isFallbackCash =
+    freshnessList.length === 1 && freshnessList[0]!.status === "fallback";
+
+  let overallFreshness: AccountFreshnessStatus = "fresh";
+  if (isFallbackCash) {
+    overallFreshness = "fallback";
+  } else if (freshnessList.some((f) => f.status === "stale")) {
+    overallFreshness = "stale";
+  } else if (freshnessList.some((f) => f.status === "unverified")) {
+    overallFreshness = "unverified";
+  }
+
+  let freshnessLabel = "Balances verified";
+  if (overallFreshness === "fallback") {
+    freshnessLabel = "Using ledger baseline (no checking/savings linked)";
+  } else if (overallFreshness === "stale") {
+    const staleCount = freshnessList.filter((f) => f.status === "stale").length;
+    freshnessLabel =
+      staleCount === 1
+        ? "1 account unverified (7+ days)"
+        : `${staleCount} accounts unverified (7+ days)`;
+  } else if (overallFreshness === "unverified") {
+    freshnessLabel = "Balance unverified";
+  } else {
+    freshnessLabel = "Balances up to date";
+  }
+
+  const eligibleCashAccounts = (s.accounts || []).filter(
+    (a) =>
+      !a.archived &&
+      (a.type === "checking" || a.type === "savings") &&
+      a.includeInSafeToSpend,
+  );
+
+  const totalProtections =
+    tot.pots +
+    tot.budgets +
+    tot.bills +
+    tot.uncoveredScheduledExpenses +
+    tot.totalReadyToPay +
+    tot.creditCardMinimums;
+
+  const currentPayday = getCurrentPayday(s, validNow);
+  const paydayPres = getDailyPaydayPresentation(s, validNow);
+  const hasConfiguredPayday =
+    isValidDateString(currentPayday) && currentPayday >= validNow;
+  const paydayCutoffDate = hasConfiguredPayday ? currentPayday : "";
+
+  const protectionItems: MoneyOutlookProtectionItem[] = [
+    {
+      id: "prot-pots",
+      name: "Protected Savings Pots",
+      amount: tot.pots,
+      category: "pots",
+      description: "Funds set aside in your savings pots",
+      count: s.pots.filter((p) => p.saved > 0).length,
+    },
+    {
+      id: "prot-budgets",
+      name: "Remaining Category Budgets",
+      amount: tot.budgets,
+      category: "budgets",
+      description: "Unspent spending allowance for active category budgets",
+      count: s.budgets.length,
+    },
+    {
+      id: "prot-bills",
+      name: "Protected Upcoming Bills",
+      amount: tot.bills,
+      category: "bills",
+      description: "Reserved for recurring bills due before or around payday",
+      count: (reserveBillsBreakdown(s, validNow).details || []).length,
+      subdetails: `${formatSpendingMoney(tot.currentCycleBills)} current cycle · ${formatSpendingMoney(tot.protectedCycleBills)} protected following cycle`,
+    },
+    {
+      id: "prot-scheduled",
+      name: "Uncovered Scheduled Expenses",
+      amount: tot.uncoveredScheduledExpenses,
+      category: "scheduled",
+      description: "Scheduled expenses exceeding budgets or bill reservations",
+    },
+    {
+      id: "prot-credit-ready",
+      name: "Credit Card Ready to Pay",
+      amount: tot.totalReadyToPay,
+      category: "credit_ready_to_pay",
+      description: "Cash reserved to pay credit card purchases covered by budget",
+    },
+    {
+      id: "prot-credit-mins",
+      name: "Credit Card Minimum Protections",
+      amount: tot.creditCardMinimums,
+      category: "credit_minimums",
+      description: "Cash reserved for required minimum card payments due soon",
+    },
+  ];
+
+  return {
+    cashBalance: tot.balance,
+    cashAccountCount: eligibleCashAccounts.length,
+    freshnessList,
+    overallFreshness,
+    freshnessLabel,
+    isFallbackCash,
+    pots: tot.pots,
+    potsCount: s.pots.filter((p) => p.saved > 0).length,
+    budgets: tot.budgets,
+    budgetsCount: s.budgets.length,
+    bills: tot.bills,
+    currentCycleBills: tot.currentCycleBills,
+    protectedCycleBills: tot.protectedCycleBills,
+    billsCount: (reserveBillsBreakdown(s, validNow).details || []).length,
+    uncoveredScheduledExpenses: tot.uncoveredScheduledExpenses,
+    totalReadyToPay: tot.totalReadyToPay,
+    creditCardMinimums: tot.creditCardMinimums,
+    totalProtections,
+    rawSafe: tot.rawSafe,
+    safe: tot.safe,
+    shortfall: tot.shortfall,
+    hasShortfall: tot.rawSafe < 0,
+    reconciliationVerified: tot.balance - totalProtections === tot.rawSafe,
+    paydayPresentation: paydayPres,
+    paydayCutoffDate,
+    hasConfiguredPayday,
+    protectionItems,
+  };
+}
+
+export type CommitmentSourceType =
+  | "recurring_bill"
+  | "scheduled_transaction"
+  | "linked_bill_scheduled";
+
+export type CommitmentProtectionStatus = "protected" | "uncovered";
+
+export type BeforePaydayCommitment = {
+  id: string;
+  name: string;
+  date: string; // YYYY-MM-DD
+  amount: number; // in cents
+  sourceType: CommitmentSourceType;
+  protectionStatus: CommitmentProtectionStatus;
+  protectionReason: string;
+  isConfirmed: boolean;
+  isPartialPayment?: boolean;
+  totalExpectedAmount?: number;
+  paidAmount?: number;
+  billId?: string;
+  scheduledTxId?: string;
+  category?: string;
+  accountName?: string;
+  paymentDetails?: string;
+};
+
+export type BeforePaydayCommitmentsSummary = {
+  cutoffDate: string;
+  daysUntilCutoff: number;
+  hasConfiguredPayday: boolean;
+  setupRequired: boolean;
+  setupMessage: string;
+  commitments: BeforePaydayCommitment[];
+  totalCommitmentsAmount: number;
+  protectedCommitmentsAmount: number;
+  uncoveredCommitmentsAmount: number;
+  recurringBillsCount: number;
+  scheduledTxCount: number;
+  partialPaymentsCount: number;
+};
+
+export function getBeforePaydayCommitments(
+  s: State,
+  now = today(),
+): BeforePaydayCommitmentsSummary {
+  const validNow = isValidDateString(now) ? now : today();
+  const currentPayday = getCurrentPayday(s, validNow);
+  const hasConfiguredPayday =
+    isValidDateString(currentPayday) && currentPayday >= validNow;
+
+  if (!hasConfiguredPayday) {
+    return {
+      cutoffDate: "",
+      daysUntilCutoff: 0,
+      hasConfiguredPayday: false,
+      setupRequired: true,
+      setupMessage:
+        "Set your next payday in Settings to see upcoming commitments through your next paycheck.",
+      commitments: [],
+      totalCommitmentsAmount: 0,
+      protectedCommitmentsAmount: 0,
+      uncoveredCommitmentsAmount: 0,
+      recurringBillsCount: 0,
+      scheduledTxCount: 0,
+      partialPaymentsCount: 0,
+    };
+  }
+
+  const currentPaydayEnd = currentPayday;
+  const daysUntilCutoff = Math.max(0, daysBetween(validNow, currentPaydayEnd));
+
+  const billBreakdown = reserveBillsBreakdown(s, validNow);
+  const eligibleBillDetails = (billBreakdown.details || []).filter(
+    (d) => d.dueDate >= validNow && d.dueDate <= currentPaydayEnd && d.amount > 0,
+  );
+
+  const scheduledTxs = s.transactions.filter(
+    (t) =>
+      t.status === "scheduled" &&
+      t.amount < 0 &&
+      (t.kind === "standard" || !t.kind) &&
+      t.date >= validNow &&
+      t.date <= currentPaydayEnd,
+  );
+
+  const consumedScheduledTxIds = new Set<string>();
+  const commitments: BeforePaydayCommitment[] = [];
+
+  // 1. Process upcoming recurring bills through payday cutoff
+  for (const detail of eligibleBillDetails) {
+    const occStatus = getBillOccurrenceStatus(s, detail.bill, detail.dueDate);
+    if (occStatus.remainingAmount <= 0) {
+      // Bill occurrence already fully paid/settled
+      continue;
+    }
+
+    // Check for linked scheduled transaction
+    const matchingSched = scheduledTxs.find((t) => {
+      if (t.billId === detail.bill.id) {
+        const targetDue =
+          t.billDueDate && isValidDateString(t.billDueDate)
+            ? t.billDueDate
+            : nextUnpaidDueDate(s, detail.bill, t.date);
+        return targetDue === detail.dueDate;
+      }
+      return false;
+    });
+
+    const isPartial = occStatus.paidAmount > 0;
+    const paidDesc = isPartial
+      ? `${formatSpendingMoney(occStatus.paidAmount)} paid of ${formatSpendingMoney(occStatus.expectedAmount)} — ${formatSpendingMoney(occStatus.remainingAmount)} remaining`
+      : undefined;
+
+    if (matchingSched) {
+      consumedScheduledTxIds.add(matchingSched.id);
+      commitments.push({
+        id: `commit-bill-${detail.bill.id}-${detail.dueDate}`,
+        name: `${detail.bill.name} (Scheduled: ${matchingSched.name})`,
+        date: matchingSched.date <= detail.dueDate ? matchingSched.date : detail.dueDate,
+        amount: occStatus.remainingAmount,
+        sourceType: "linked_bill_scheduled",
+        protectionStatus: "protected",
+        protectionReason: "Protected by bill reservation in Safe to Spend",
+        isConfirmed: false,
+        isPartialPayment: isPartial,
+        totalExpectedAmount: occStatus.expectedAmount,
+        paidAmount: occStatus.paidAmount,
+        billId: detail.bill.id,
+        scheduledTxId: matchingSched.id,
+        category: matchingSched.category || "Bills",
+        paymentDetails: paidDesc,
+      });
+    } else {
+      commitments.push({
+        id: `commit-bill-${detail.bill.id}-${detail.dueDate}`,
+        name: detail.bill.name,
+        date: detail.dueDate,
+        amount: occStatus.remainingAmount,
+        sourceType: "recurring_bill",
+        protectionStatus: "protected",
+        protectionReason: "Protected by bill reservation in Safe to Spend",
+        isConfirmed: false,
+        isPartialPayment: isPartial,
+        totalExpectedAmount: occStatus.expectedAmount,
+        paidAmount: occStatus.paidAmount,
+        billId: detail.bill.id,
+        category: "Bills",
+        paymentDetails: paidDesc,
+      });
+    }
+  }
+
+  // 2. Process remaining scheduled transactions
+  for (const t of scheduledTxs) {
+    if (consumedScheduledTxIds.has(t.id)) {
+      continue;
+    }
+
+    const txAmount = Math.abs(t.amount);
+    const acc = s.accounts ? s.accounts.find((a) => a.id === t.accountId) : undefined;
+    const isCredit = acc && acc.type === "credit";
+    const isExcluded = acc && !acc.includeInSafeToSpend;
+
+    let protectionStatus: CommitmentProtectionStatus = "protected";
+    let protectionReason = "Protected by scheduled expenses reserve";
+
+    if (isCredit || isExcluded) {
+      protectionStatus = "uncovered";
+      protectionReason = isCredit
+        ? "Credit card purchase (not deducted from spendable cash until posted)"
+        : "Non-Safe-to-Spend account transaction";
+    } else if (t.category) {
+      const budget = s.budgets.find(
+        (b) => b.category.toLowerCase() === t.category.toLowerCase(),
+      );
+      if (budget) {
+        const remainingBudget = Math.max(
+          0,
+          budget.limit - spent(s, budget.category, validNow.slice(0, 7)),
+        );
+        if (txAmount <= remainingBudget) {
+          protectionReason = `Covered by ${budget.category} budget reserve`;
+        } else {
+          protectionReason = `Partially covered by budget; remainder in scheduled reserve`;
+        }
+      }
+    }
+
+    commitments.push({
+      id: `commit-sched-${t.id}`,
+      name: t.name,
+      date: t.date,
+      amount: txAmount,
+      sourceType: "scheduled_transaction",
+      protectionStatus,
+      protectionReason,
+      isConfirmed: false,
+      scheduledTxId: t.id,
+      category: t.category,
+      accountName: acc?.name,
+    });
+  }
+
+  // Sort chronologically by date, then by name
+  commitments.sort((a, b) => {
+    if (a.date !== b.date) {
+      return a.date.localeCompare(b.date);
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  const totalCommitmentsAmount = commitments.reduce((sum, c) => sum + c.amount, 0);
+  const protectedCommitmentsAmount = commitments
+    .filter((c) => c.protectionStatus === "protected")
+    .reduce((sum, c) => sum + c.amount, 0);
+  const uncoveredCommitmentsAmount = commitments
+    .filter((c) => c.protectionStatus === "uncovered")
+    .reduce((sum, c) => sum + c.amount, 0);
+
+  const recurringBillsCount = commitments.filter(
+    (c) => c.sourceType === "recurring_bill" || c.sourceType === "linked_bill_scheduled",
+  ).length;
+  const scheduledTxCount = commitments.filter(
+    (c) => c.sourceType === "scheduled_transaction",
+  ).length;
+  const partialPaymentsCount = commitments.filter((c) => c.isPartialPayment).length;
+
+  return {
+    cutoffDate: currentPaydayEnd,
+    daysUntilCutoff,
+    hasConfiguredPayday: true,
+    setupRequired: false,
+    setupMessage: "",
+    commitments,
+    totalCommitmentsAmount,
+    protectedCommitmentsAmount,
+    uncoveredCommitmentsAmount,
+    recurringBillsCount,
+    scheduledTxCount,
+    partialPaymentsCount,
+  };
+}
+
+export function getOutlookExplanation(outlook: MoneyOutlookSummary): string {
+  const cashStr = formatSpendingMoney(outlook.cashBalance);
+  const protStr = formatSpendingMoney(outlook.totalProtections);
+  const safeStr = formatSpendingMoney(outlook.safe);
+  const shortfallStr = formatSpendingMoney(outlook.shortfall);
+
+  if (outlook.hasShortfall) {
+    return `Your planned protections (${protStr}) exceed your eligible recorded cash (${cashStr}) by ${shortfallStr}. While Safe to Spend displays $0.00 to prevent overspending, your plan has a signed shortfall of -${shortfallStr}. Adjusting budget limits or pot savings can bring your plan into balance.`;
+  }
+
+  return `Your Safe to Spend is ${safeStr}. It starts with your eligible recorded cash of ${cashStr} and reserves ${protStr} for your savings pots (${formatSpendingMoney(outlook.pots)}), remaining category budgets (${formatSpendingMoney(outlook.budgets)}), upcoming bills (${formatSpendingMoney(outlook.bills)}), credit-card commitments (${formatSpendingMoney(outlook.totalReadyToPay + outlook.creditCardMinimums)}), and scheduled expenses (${formatSpendingMoney(outlook.uncoveredScheduledExpenses)}). What remains is completely safe for daily spending before payday.`;
+}
+
+
+
 export function migrateState(raw: any, now = today()): State {
   if (!raw || typeof raw !== "object") {
     return blank();

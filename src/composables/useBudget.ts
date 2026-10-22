@@ -75,13 +75,30 @@ import {
   getPreviousMonth,
   getInsightsReconciliation,
   getTransactionInsightsStatus,
+  getAccountFreshnessInfo,
+  getMoneyOutlook,
+  getBeforePaydayCommitments,
+  getOutlookExplanation,
   type InsightsSpendingSummary,
   type ReportingPeriod,
   type MonthComparison,
   type CategoryTrend,
   type SpendingHistorySummary,
   type InsightsReconciliation,
+  type AccountFreshnessInfo,
+  type AccountFreshnessStatus,
+  type MoneyOutlookProtectionItem,
+  type MoneyOutlookSummary,
+  type BeforePaydayCommitment,
+  type BeforePaydayCommitmentsSummary,
+  type CommitmentProtectionStatus,
+  type CommitmentSourceType,
 } from "../model.ts";
+import {
+  getMikaOutlookExplanation,
+  type OutlookTopic,
+  type MikaOutlookExplanation,
+} from "../companion.ts";
 import { money } from "../utils/format.ts";
 import { useToast } from "./useToast.ts";
 
@@ -130,6 +147,15 @@ const activeReconciliation = computed(() => {
   if (category.value === "All" || monthFilter.value === "All") return null;
   return getInsightsReconciliation(state.value, monthFilter.value, category.value);
 });
+
+const moneyOutlook = computed(() => getMoneyOutlook(state.value));
+const beforePaydayCommitments = computed(() =>
+  getBeforePaydayCommitments(state.value),
+);
+const outlookExplanation = computed(() =>
+  getOutlookExplanation(moneyOutlook.value),
+);
+
 export const isMobileMenuOpen = ref(false);
 
 const STORAGE_KEY = "budget-companion-v1";
@@ -1084,6 +1110,13 @@ export function useBudget() {
     getTransactionInsightsStatus,
     getInsightsReconciliation: (m: string, cat: string) =>
       getInsightsReconciliation(state.value, m, cat),
+    moneyOutlook,
+    beforePaydayCommitments,
+    outlookExplanation,
+    getMikaOutlookExplanation: (topic: OutlookTopic, now?: string) =>
+      getMikaOutlookExplanation(state.value, topic, now),
+    getAccountFreshnessInfo: (now?: string) =>
+      getAccountFreshnessInfo(state.value, now),
     isMobileMenuOpen,
   };
 }

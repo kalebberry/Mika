@@ -114,6 +114,16 @@ import {
   type MonthlyHistoryPoint,
   type SpendingHistorySummary,
   type InsightsReconciliation,
+  getAccountFreshnessInfo,
+  getMoneyOutlook,
+  getBeforePaydayCommitments,
+  getOutlookExplanation,
+  type AccountFreshnessInfo,
+  type AccountFreshnessStatus,
+  type MoneyOutlookProtectionItem,
+  type MoneyOutlookSummary,
+  type BeforePaydayCommitment,
+  type BeforePaydayCommitmentsSummary,
 } from "../src/model.ts";
 import { useBudget } from "../src/composables/useBudget.ts";
 import {
@@ -133,7 +143,12 @@ import { useCompanionState } from "../src/composables/useCompanionState.ts";
 import { useTypewriter } from "../src/composables/useTypewriter.ts";
 import { useCompanionDialogue } from "../src/composables/useCompanionDialogue.ts";
 import { useCompanion } from "../src/composables/useCompanion.ts";
-import { companionMessage } from "../src/companion.ts";
+import {
+  companionMessage,
+  getMikaOutlookExplanation,
+  type OutlookTopic,
+  type MikaOutlookExplanation,
+} from "../src/companion.ts";
 
 test("Test A — Future paycheck: income remains scheduled until confirmed/posted", () => {
   const simulatedToday = "2026-10-13";
@@ -14772,6 +14787,541 @@ test("Test 5B.13 — Six-month chart and data table consistency", () => {
     assert.equal(history.averageSpent, Math.round(sumCheck / activeMonthCount), "Monthly average matches across active months");
   }
 });
+
+/* ==========================================================================
+   Phase 5C: Money Outlook & Mika Explains Your Money Tests
+   ========================================================================== */
+
+test("Test 5C.1 — Exact reconciliation with existing Safe to Spend", () => {
+  const state = demo();
+  const simNow = "2026-10-21";
+  const tot = totals(state, simNow);
+  const outlook = getMoneyOutlook(state, simNow);
+
+  // Assert exact matching with core totals()
+  assert.equal(outlook.cashBalance, tot.balance, "Cash balance matches totals.balance");
+  assert.equal(outlook.pots, tot.pots, "Pots matches totals.pots");
+  assert.equal(outlook.budgets, tot.budgets, "Budgets matches totals.budgets");
+  assert.equal(outlook.bills, tot.bills, "Bills matches totals.bills");
+  assert.equal(outlook.currentCycleBills, tot.currentCycleBills, "Current cycle bills match");
+  assert.equal(outlook.protectedCycleBills, tot.protectedCycleBills, "Protected following cycle bills match");
+  assert.equal(outlook.uncoveredScheduledExpenses, tot.uncoveredScheduledExpenses, "Uncovered scheduled expenses match");
+  assert.equal(outlook.totalReadyToPay, tot.totalReadyToPay, "Total Ready to Pay matches");
+  assert.equal(outlook.creditCardMinimums, tot.creditCardMinimums, "Credit card minimums match");
+
+  const expectedTotalProtections =
+    tot.pots +
+    tot.budgets +
+    tot.bills +
+    tot.uncoveredScheduledExpenses +
+    tot.totalReadyToPay +
+    tot.creditCardMinimums;
+
+  assert.equal(outlook.totalProtections, expectedTotalProtections, "Total protections match sum of individual protections");
+  assert.equal(outlook.rawSafe, tot.rawSafe, "rawSafe matches totals.rawSafe");
+  assert.equal(outlook.safe, tot.safe, "Safe matches totals.safe");
+  assert.equal(outlook.shortfall, tot.shortfall, "Shortfall matches totals.shortfall");
+
+  // Exact fundamental invariant: balance - totalProtections === rawSafe
+  assert.equal(
+    outlook.cashBalance - outlook.totalProtections,
+    outlook.rawSafe,
+    "Cash balance minus total protections strictly equals raw Safe to Spend",
+  );
+  assert.equal(outlook.reconciliationVerified, true, "Reconciliation flag verified");
+});
+
+test("Test 5C.2 — Negative raw Safe to Spend: signed shortfall and zero safe to spend presentation", () => {
+  const state: State = blank();
+  state.opening = 50000; // $500.00 cash
+  state.budgets = [
+    { id: "b1", category: "Dining", limit: 30000, color: "#111" },
+    { id: "b2", category: "Groceries", limit: 40000, color: "#222" },
+  ]; // $700.00 in budgets
+  state.pots = [
+    { id: "p1", name: "Emergency", saved: 10000, target: 50000, color: "#333" },
+  ]; // $100.00 in pots
+  // Total protections = $800.00, Cash = $500.00 -> rawSafe = -$300.00 (-30000 cents)
+
+  const outlook = getMoneyOutlook(state, "2026-10-21");
+  assert.equal(outlook.cashBalance, 50000);
+  assert.equal(outlook.totalProtections, 80000);
+  assert.equal(outlook.rawSafe, -30000, "rawSafe is signed negative -30000");
+  assert.equal(outlook.safe, 0, "Safe to Spend is clamped to 0");
+  assert.equal(outlook.shortfall, 30000, "Shortfall is exactly 30000 cents ($300.00)");
+  assert.equal(outlook.hasShortfall, true, "hasShortfall flag is true");
+
+  const explanation = getOutlookExplanation(outlook);
+  assert.ok(explanation.includes("-$300.00"), "Explanation shows signed negative shortfall amount");
+  assert.ok(explanation.includes("$800.00"), "Explanation shows total protections");
+  assert.ok(explanation.includes("$500.00"), "Explanation shows recorded cash");
+});
+
+test("Test 5C.3 — Credit-card protection isolation: Ready to Pay and Minimum Due protections", () => {
+  const state: State = blank();
+  const checking: Account = {
+    id: "chk-1",
+    name: "Primary Checking",
+    type: "checking",
+    opening: 300000, // $3,000.00
+    includeInSafeToSpend: true,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-21",
+  };
+  const cardWithBudget: Account = {
+    id: "card-1",
+    name: "Rewards Card",
+    type: "credit",
+    opening: 20000, // $200.00 current balance owed
+    includeInSafeToSpend: false,
+    assignedPaymentReserve: 20000, // $200.00 manual payment reserve covering the balance
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-21",
+  };
+  const cardWithDebt: Account = {
+    id: "card-2",
+    name: "Legacy Debt Card",
+    type: "credit",
+    opening: 150000, // $1,500.00 debt owed
+    dueDay: 25,
+    minPayment: 4500, // $45.00 min payment due soon
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-21",
+  };
+
+  state.accounts = [checking, cardWithBudget, cardWithDebt];
+  state.payday = "2026-10-28";
+  state.paydaySchedule = {
+    frequency: "monthly",
+    anchorDate: "2026-10-28",
+    monthlyMode: "day_of_month",
+    dayOfMonth: 28,
+  };
+
+  const simNow = "2026-10-21";
+  const tot = totals(state, simNow);
+  const outlook = getMoneyOutlook(state, simNow);
+
+  // Ready to Pay from card 1 = $200.00
+  assert.equal(outlook.totalReadyToPay, 20000);
+  // Minimum Due protection from card 2 = $45.00
+  assert.equal(outlook.creditCardMinimums, 4500);
+
+  // Total debt owed (-$1,500.00) is NOT deducted as a lump sum from checking cash
+  // Only the protected reserves ($200.00 + $45.00) are deducted from Safe to Spend
+  assert.equal(
+    outlook.cashBalance - (outlook.totalReadyToPay + outlook.creditCardMinimums),
+    outlook.rawSafe,
+    "Only protected credit reserves are subtracted from cash",
+  );
+  assert.equal(outlook.rawSafe, 300000 - 24500);
+});
+
+test("Test 5C.4 — Partial bill payments: remaining amount calculation, paid amount transparency, and status", () => {
+  const state: State = blank();
+  state.opening = 200000;
+  const bill: Bill = {
+    id: "bill-water",
+    name: "City Water",
+    amount: 10000, // $100.00
+    day: 25,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills = [bill];
+  state.payday = "2026-10-28";
+  state.paydaySchedule = {
+    frequency: "monthly",
+    anchorDate: "2026-10-28",
+    monthlyMode: "day_of_month",
+    dayOfMonth: 28,
+  };
+
+  // Record partial payment of $40.00
+  const paymentTx: Transaction = {
+    id: "tx-pay-part",
+    name: "Partial Water Payment",
+    amount: -4000,
+    category: "Bills",
+    date: "2026-10-18",
+    billId: "bill-water",
+    billDueDate: "2026-10-25",
+    status: "posted",
+    kind: "standard",
+  };
+  state.transactions = [paymentTx];
+
+  const simNow = "2026-10-21";
+  const outlook = getMoneyOutlook(state, simNow);
+  const commitmentsSummary = getBeforePaydayCommitments(state, simNow);
+
+  // In totals() & Outlook, remaining bill reserve is $60.00 ($100 - $40)
+  assert.equal(outlook.bills, 6000, "Bills reserve accounts for partial payment: $60.00 remaining");
+
+  // In Before Payday Commitments
+  assert.equal(commitmentsSummary.commitments.length, 1);
+  const commit = commitmentsSummary.commitments[0]!;
+  assert.equal(commit.amount, 6000, "Commitment net amount is $60.00");
+  assert.equal(commit.isPartialPayment, true, "isPartialPayment flag is true");
+  assert.equal(commit.totalExpectedAmount, 10000, "totalExpectedAmount is $100.00");
+  assert.equal(commit.paidAmount, 4000, "paidAmount is $40.00");
+  assert.ok(commit.paymentDetails?.includes("$40.00 paid of $100.00 — $60.00 remaining"));
+});
+
+test("Test 5C.5 — Scheduled transaction and bill deduplication", () => {
+  const state: State = blank();
+  state.opening = 300000;
+  const bill: Bill = {
+    id: "bill-gym",
+    name: "Gym Membership",
+    amount: 5000, // $50.00
+    day: 24,
+    trackingStartDate: "2026-10-01",
+  };
+  state.bills = [bill];
+  state.payday = "2026-10-28";
+  state.paydaySchedule = {
+    frequency: "monthly",
+    anchorDate: "2026-10-28",
+    monthlyMode: "day_of_month",
+    dayOfMonth: 28,
+  };
+
+  // Add scheduled transaction linked to Gym bill
+  const schedTx: Transaction = {
+    id: "tx-sched-gym",
+    name: "Auto-pay Gym",
+    amount: -5000,
+    category: "Bills",
+    date: "2026-10-24",
+    billId: "bill-gym",
+    billDueDate: "2026-10-24",
+    status: "scheduled",
+    kind: "standard",
+  };
+  state.transactions = [schedTx];
+
+  const simNow = "2026-10-21";
+  const commitmentsSummary = getBeforePaydayCommitments(state, simNow);
+
+  // Exactly ONE commitment should appear (deduplicated!)
+  assert.equal(commitmentsSummary.commitments.length, 1, "Exactly one commitment after deduplication");
+  const commit = commitmentsSummary.commitments[0]!;
+  assert.equal(commit.sourceType, "linked_bill_scheduled");
+  assert.equal(commit.amount, 5000);
+  assert.equal(commit.protectionStatus, "protected");
+  assert.equal(commitmentsSummary.totalCommitmentsAmount, 5000, "Total commitments amount does not double-count");
+});
+
+test("Test 5C.6 — Scheduled category expenses: absorption by category budget vs uncovered excess", () => {
+  const state: State = blank();
+  state.opening = 300000;
+  state.budgets = [
+    { id: "b1", category: "Groceries", limit: 20000, color: "#111" }, // $200 limit
+  ];
+  state.transactions = [
+    // $50 already spent in October
+    {
+      id: "t1",
+      name: "Supermarket",
+      amount: -5000,
+      category: "Groceries",
+      date: "2026-10-10",
+      status: "posted",
+      kind: "standard",
+    },
+    // Scheduled $100 within remaining budget ($150 remaining)
+    {
+      id: "t2",
+      name: "Grocery Delivery 1",
+      amount: -10000,
+      category: "Groceries",
+      date: "2026-10-23",
+      status: "scheduled",
+      kind: "standard",
+    },
+    // Scheduled $80: total scheduled $180 exceeds remaining $150 by $30
+    {
+      id: "t3",
+      name: "Grocery Delivery 2",
+      amount: -8000,
+      category: "Groceries",
+      date: "2026-10-25",
+      status: "scheduled",
+      kind: "standard",
+    },
+  ];
+  state.payday = "2026-10-28";
+  state.paydaySchedule = {
+    frequency: "monthly",
+    anchorDate: "2026-10-28",
+    monthlyMode: "day_of_month",
+    dayOfMonth: 28,
+  };
+
+  const simNow = "2026-10-21";
+  const tot = totals(state, simNow);
+  const outlook = getMoneyOutlook(state, simNow);
+  const commitmentsSummary = getBeforePaydayCommitments(state, simNow);
+
+  // In totals():
+  // Remaining budget = $150.00
+  // Total scheduled in category = $180.00
+  // Excess beyond budget = $30.00 -> uncoveredScheduledExpenses = 3000
+  assert.equal(tot.budgets, 15000);
+  assert.equal(tot.uncoveredScheduledExpenses, 3000);
+  assert.equal(outlook.uncoveredScheduledExpenses, 3000);
+
+  // Both scheduled transactions appear in commitments
+  assert.equal(commitmentsSummary.commitments.length, 2);
+  for (const c of commitmentsSummary.commitments) {
+    assert.equal(c.protectionStatus, "protected", "All cash scheduled expenses are protected in Safe to Spend");
+  }
+});
+
+test("Test 5C.7 — Commitments crossing month boundaries within payday horizon", () => {
+  const state: State = blank();
+  state.opening = 300000;
+  // Current date is late in October: Oct 28
+  const simNow = "2026-10-28";
+  // Payday is in early November: Nov 05
+  state.payday = "2026-11-05";
+  state.paydaySchedule = {
+    frequency: "biweekly",
+    anchorDate: "2026-11-05",
+  };
+
+  // Bill 1: Oct 30
+  // Bill 2: Nov 02 (early next month, before Nov 05 payday)
+  state.bills = [
+    { id: "b1", name: "End of Month Internet", amount: 6000, day: 30, trackingStartDate: "2026-10-01" },
+    { id: "b2", name: "Early Month Rent", amount: 120000, day: 2, trackingStartDate: "2026-10-01" },
+  ];
+
+  const commitmentsSummary = getBeforePaydayCommitments(state, simNow);
+
+  // Both bills fall on or before Nov 05
+  assert.equal(commitmentsSummary.commitments.length, 2, "Both bills crossing month boundary are included");
+  assert.equal(commitmentsSummary.commitments[0]!.name, "End of Month Internet");
+  assert.equal(commitmentsSummary.commitments[0]!.date, "2026-10-30");
+  assert.equal(commitmentsSummary.commitments[1]!.name, "Early Month Rent");
+  assert.equal(commitmentsSummary.commitments[1]!.date, "2026-11-02");
+});
+
+test("Test 5C.8 — Payday cutoff behavior: strict exclusion of commitments past payday", () => {
+  const state: State = blank();
+  state.opening = 300000;
+  const simNow = "2026-10-21";
+  state.payday = "2026-10-25";
+  state.paydaySchedule = {
+    frequency: "monthly",
+    anchorDate: "2026-10-25",
+    monthlyMode: "day_of_month",
+    dayOfMonth: 25,
+  };
+
+  // Bill due on 2026-10-24 (before payday) -> included
+  // Bill due on 2026-10-26 (after payday) -> strictly excluded
+  state.bills = [
+    { id: "b-pre", name: "Pre-Payday Bill", amount: 4000, day: 24, trackingStartDate: "2026-10-01" },
+    { id: "b-post", name: "Post-Payday Bill", amount: 7000, day: 26, trackingStartDate: "2026-10-01" },
+  ];
+
+  // Scheduled transaction on 2026-10-27 -> strictly excluded
+  state.transactions = [
+    {
+      id: "tx-sched-post",
+      name: "Late Sched",
+      amount: -2500,
+      category: "Shopping",
+      date: "2026-10-27",
+      status: "scheduled",
+      kind: "standard",
+    },
+  ];
+
+  const commitmentsSummary = getBeforePaydayCommitments(state, simNow);
+  assert.equal(commitmentsSummary.commitments.length, 1);
+  assert.equal(commitmentsSummary.commitments[0]!.name, "Pre-Payday Bill");
+  assert.equal(commitmentsSummary.commitments[0]!.date, "2026-10-24");
+});
+
+test("Test 5C.9 — No configured payday: helpful setup state without fabricated dates", () => {
+  const state: State = blank();
+  state.opening = 300000;
+  state.payday = "";
+  state.paydaySchedule = { frequency: "manual" };
+  const simNow = "2026-10-21";
+
+  const commitmentsSummary = getBeforePaydayCommitments(state, simNow);
+  assert.equal(commitmentsSummary.hasConfiguredPayday, false);
+  assert.equal(commitmentsSummary.setupRequired, true);
+  assert.equal(commitmentsSummary.cutoffDate, "", "Does not fabricate a cutoff date");
+  assert.equal(commitmentsSummary.commitments.length, 0);
+  assert.ok(commitmentsSummary.setupMessage.includes("Set your next payday in Settings"));
+
+  const mikaExplanation = getMikaOutlookExplanation(state, "commitments", simNow);
+  assert.equal(mikaExplanation.actionDestination, "Settings");
+  assert.ok(mikaExplanation.text.includes("once your payday is set"));
+});
+
+test("Test 5C.10 — Missing and stale account data: freshness classification and fallback baseline", () => {
+  const simNow = "2026-10-21";
+
+  // Case A: Stale account (>7 days old)
+  const stateStale: State = blank();
+  stateStale.accounts = [
+    {
+      id: "a-stale",
+      name: "Old Checking",
+      type: "checking",
+      opening: 100000,
+      includeInSafeToSpend: true,
+      createdAt: "2026-10-01",
+      updatedAt: "2026-10-10", // 11 days ago
+    },
+  ];
+  const freshnessStale = getAccountFreshnessInfo(stateStale, simNow);
+  assert.equal(freshnessStale.length, 1);
+  assert.equal(freshnessStale[0]!.status, "stale");
+  assert.equal(freshnessStale[0]!.daysSinceUpdate, 11);
+  assert.ok(freshnessStale[0]!.label.includes("11 days since update"));
+
+  const outlookStale = getMoneyOutlook(stateStale, simNow);
+  assert.equal(outlookStale.overallFreshness, "stale");
+
+  // Case B: Fresh account (updated today or <= 7 days)
+  const stateFresh: State = blank();
+  stateFresh.accounts = [
+    {
+      id: "a-fresh",
+      name: "Fresh Checking",
+      type: "checking",
+      opening: 100000,
+      includeInSafeToSpend: true,
+      createdAt: "2026-10-01",
+      updatedAt: "2026-10-21", // today
+    },
+  ];
+  const freshnessFresh = getAccountFreshnessInfo(stateFresh, simNow);
+  assert.equal(freshnessFresh[0]!.status, "fresh");
+  assert.equal(freshnessFresh[0]!.label, "Updated today");
+
+  // Case C: Fallback baseline (no linked checking/savings accounts)
+  const stateFallback: State = blank();
+  stateFallback.opening = 250000;
+  stateFallback.accounts = [];
+  const freshnessFallback = getAccountFreshnessInfo(stateFallback, simNow);
+  assert.equal(freshnessFallback[0]!.status, "fallback");
+  assert.ok(freshnessFallback[0]!.label.includes("manual opening balance + ledger"));
+
+  const outlookFallback = getMoneyOutlook(stateFallback, simNow);
+  assert.equal(outlookFallback.isFallbackCash, true);
+  assert.equal(outlookFallback.overallFreshness, "fallback");
+});
+
+test("Test 5C.11 — No assumed future income: paychecks never added to cash balance or Safe to Spend", () => {
+  const state: State = blank();
+  state.opening = 100000; // $1,000 recorded cash
+  state.payday = "2026-10-25";
+  state.paydaySchedule = {
+    frequency: "biweekly",
+    anchorDate: "2026-10-25",
+  };
+
+  // Add expected upcoming paycheck transaction in scheduled status
+  const futurePaycheck: Transaction = {
+    id: "tx-paycheck",
+    name: "Employer Direct Deposit",
+    amount: 250000, // $2,500.00
+    category: "Income",
+    date: "2026-10-25",
+    status: "scheduled",
+    kind: "standard",
+  };
+  state.transactions = [futurePaycheck];
+
+  const simNow = "2026-10-21";
+  const outlook = getMoneyOutlook(state, simNow);
+
+  // Cash balance MUST strictly remain $1,000.00, NOT $3,500.00!
+  assert.equal(outlook.cashBalance, 100000, "Cash balance strictly excludes scheduled future income");
+  assert.equal(outlook.safe, 100000, "Safe to Spend does not assume expected paycheck before receipt");
+});
+
+test("Test 5C.12 — Mika explanations grounded in real values: deterministic text matching actual model numbers", () => {
+  const state = demo();
+  const simNow = "2026-10-21";
+  const tot = totals(state, simNow);
+
+  // Safe to Spend topic
+  const mikaSafe = getMikaOutlookExplanation(state, "safe_to_spend", simNow);
+  assert.ok(mikaSafe.text.includes(money(tot.balance)));
+  assert.ok(mikaSafe.detail?.includes(money(tot.safe)));
+
+  // Protected bills topic
+  const mikaBills = getMikaOutlookExplanation(state, "protected_bills", simNow);
+  if (tot.bills > 0) {
+    assert.ok(mikaBills.text.includes(money(tot.bills)));
+  }
+
+  // Shortfall topic when healthy
+  const mikaShortfallHealthy = getMikaOutlookExplanation(state, "shortfall", simNow);
+  assert.equal(mikaShortfallHealthy.expression, "celebrating");
+  assert.ok(mikaShortfallHealthy.title.includes("No shortfall"));
+  assert.ok(mikaShortfallHealthy.text.includes(money(tot.balance)));
+
+  // Shortfall topic when deficit exists
+  const stateDeficit: State = blank();
+  stateDeficit.opening = 10000;
+  stateDeficit.budgets = [{ id: "b1", category: "Dining", limit: 30000, color: "#111" }];
+  const mikaShortfallDeficit = getMikaOutlookExplanation(stateDeficit, "shortfall", simNow);
+  assert.equal(mikaShortfallDeficit.expression, "concerned");
+  assert.ok(mikaShortfallDeficit.text.includes(money(20000)));
+});
+
+test("Test 5C.13 — Companion preference compliance and UI contracts", () => {
+  const state = demo();
+  const simNow = "2026-10-21";
+
+  // When companion is minimized or greeting completed
+  const { isMinimized, minimizeDialogue, openDialogue } = useCompanionState();
+  minimizeDialogue();
+  assert.equal(isMinimized.value, true);
+  openDialogue();
+  assert.equal(isMinimized.value, false);
+
+  // Even if companion is toggled or disabled in settings, getMoneyOutlook and getBeforePaydayCommitments
+  // remain completely pure and functional
+  const outlook = getMoneyOutlook(state, simNow);
+  assert.equal(typeof outlook.safe, "number");
+  assert.equal(outlook.reconciliationVerified, true);
+});
+
+test("Test 5C.14 — Financial invariants preserved across all Phase 5C operations", () => {
+  const state = demo();
+  const simNow = "2026-10-21";
+
+  // Take snapshot of core engine outputs before any Phase 5C function execution
+  const totBefore = totals(state, simNow);
+  const jsonBefore = JSON.stringify(state);
+
+  // Execute all Phase 5C functions multiple times
+  const outlook1 = getMoneyOutlook(state, simNow);
+  const commits1 = getBeforePaydayCommitments(state, simNow);
+  const exp1 = getOutlookExplanation(outlook1);
+  const freshness1 = getAccountFreshnessInfo(state, simNow);
+  const mika1 = getMikaOutlookExplanation(state, "safe_to_spend", simNow);
+  const mika2 = getMikaOutlookExplanation(state, "shortfall", simNow);
+
+  // Verify pure side-effect-free invariant
+  const jsonAfter = JSON.stringify(state);
+  assert.equal(jsonBefore, jsonAfter, "State is completely immutable and unmutated by Phase 5C functions");
+
+  const totAfter = totals(state, simNow);
+  assert.deepEqual(totBefore, totAfter, "Core totals() engine returns identical results");
+});
+
 
 
 

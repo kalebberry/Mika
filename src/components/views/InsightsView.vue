@@ -1,7 +1,13 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useBudget } from "../../composables/useBudget";
-import { money } from "../../utils/format";
+import { useModal } from "../../composables/useModal";
+import { money, dateWithDay } from "../../utils/format";
+import {
+  companionPortraits,
+  type OutlookTopic,
+  type MikaOutlookExplanation,
+} from "../../companion";
 
 const {
   state,
@@ -14,9 +20,42 @@ const {
   monthFilter,
   page,
   category,
+  moneyOutlook,
+  beforePaydayCommitments,
+  outlookExplanation,
+  getMikaOutlookExplanation,
 } = useBudget();
 
+const { open: openModal } = useModal();
+
 const showHistoryTable = ref(false);
+const showOutlookDetails = ref(false);
+
+const activeMikaTopic = ref<OutlookTopic>(
+  moneyOutlook.value.hasShortfall ? "shortfall" : "safe_to_spend",
+);
+
+watch(
+  () => moneyOutlook.value.hasShortfall,
+  (hasShortfall) => {
+    if (hasShortfall && activeMikaTopic.value === "safe_to_spend") {
+      activeMikaTopic.value = "shortfall";
+    }
+  },
+);
+
+const currentMikaExplanation = computed<MikaOutlookExplanation>(() =>
+  getMikaOutlookExplanation(activeMikaTopic.value),
+);
+
+function handleMikaAction(explanation: MikaOutlookExplanation) {
+  if (!explanation.actionDestination) return;
+  if (explanation.actionDestination === "Add transaction") {
+    openModal("Add transaction");
+  } else {
+    page.value = explanation.actionDestination as any;
+  }
+}
 
 const periods = computed(() => [
   reportingPeriods.value.thisMonth,
@@ -114,6 +153,469 @@ function viewCategoryInTransactions(catName: string) {
         <span class="metric-subtext" v-else>
           No category spending
         </span>
+      </div>
+    </section>
+
+    <!-- =======================================================================
+         Phase 5C: Money Outlook & Safe to Spend Explanation
+         ======================================================================= -->
+    <section
+      class="card money-outlook-card"
+      id="money-outlook-section"
+      aria-labelledby="money-outlook-heading"
+    >
+      <div class="section-card-header">
+        <div class="outlook-header-title-area">
+          <div class="header-with-badge">
+            <h2 id="money-outlook-heading">Money Outlook</h2>
+            <span
+              v-if="moneyOutlook.hasShortfall"
+              class="outlook-shortfall-badge"
+              role="status"
+            >
+              Shortfall Active
+            </span>
+            <span
+              v-else
+              class="outlook-healthy-badge"
+            >
+              Plan In Balance
+            </span>
+          </div>
+          <p class="muted section-caption">
+            What is recorded, what is protected, and what remains available before payday.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          class="btn btn-secondary outlook-toggle-btn"
+          :aria-expanded="showOutlookDetails"
+          aria-controls="outlook-details-panel"
+          @click="showOutlookDetails = !showOutlookDetails"
+        >
+          {{ showOutlookDetails ? "Hide breakdown" : "Show detailed breakdown" }}
+        </button>
+      </div>
+
+      <!-- Top-Level 3-Card Summary Grid -->
+      <div class="outlook-summary-grid">
+        <!-- Eligible Recorded Cash -->
+        <div class="card outlook-metric-card">
+          <div class="outlook-metric-top">
+            <span class="metric-label">Eligible Recorded Cash</span>
+            <span
+              class="outlook-freshness-pill"
+              :class="`freshness-${moneyOutlook.overallFreshness}`"
+            >
+              {{ moneyOutlook.freshnessLabel }}
+            </span>
+          </div>
+          <strong class="outlook-metric-value">{{ money(moneyOutlook.cashBalance) }}</strong>
+          <span class="metric-subtext">
+            {{
+              moneyOutlook.isFallbackCash
+                ? "Ledger baseline (no cash accounts linked)"
+                : `${moneyOutlook.cashAccountCount} checking/savings ${moneyOutlook.cashAccountCount === 1 ? 'account' : 'accounts'}`
+            }}
+          </span>
+        </div>
+
+        <!-- Total Protected Reserves -->
+        <div class="card outlook-metric-card">
+          <div class="outlook-metric-top">
+            <span class="metric-label">Total Protected Reserves</span>
+            <span class="outlook-protection-pill">Protected</span>
+          </div>
+          <strong class="outlook-metric-value text-muted-amount">
+            -{{ money(moneyOutlook.totalProtections) }}
+          </strong>
+          <span class="metric-subtext">
+            Reserved for pots, budgets, bills & card debt
+          </span>
+        </div>
+
+        <!-- Safe to Spend Bottom Line -->
+        <div
+          class="card outlook-metric-card"
+          :class="{ 'outlook-card-shortfall': moneyOutlook.hasShortfall, 'outlook-card-safe': !moneyOutlook.hasShortfall }"
+        >
+          <div class="outlook-metric-top">
+            <span class="metric-label">Safe to Spend</span>
+            <span
+              v-if="moneyOutlook.hasShortfall"
+              class="outlook-deficit-pill"
+            >
+              Shortfall: -{{ money(moneyOutlook.shortfall) }}
+            </span>
+            <span
+              v-else
+              class="outlook-available-pill"
+            >
+              Available
+            </span>
+          </div>
+          <strong class="outlook-metric-value outlook-final-safe">
+            {{ money(moneyOutlook.safe) }}
+          </strong>
+          <span class="metric-subtext">
+            {{
+              moneyOutlook.hasShortfall
+                ? `Plan is short by ${money(moneyOutlook.shortfall)}`
+                : "Available for unbudgeted spending"
+            }}
+          </span>
+        </div>
+      </div>
+
+      <!-- Plain-English Calculation Explanation Banner -->
+      <div class="outlook-explanation-banner" role="region" aria-label="Safe to Spend explanation">
+        <span class="explanation-icon" aria-hidden="true">ℹ️</span>
+        <div class="explanation-body">
+          <strong class="explanation-title">How Safe to Spend is Calculated</strong>
+          <p class="explanation-text">{{ outlookExplanation }}</p>
+        </div>
+      </div>
+
+      <!-- Progressive Disclosure: Detailed Breakdown Panel -->
+      <div
+        v-if="showOutlookDetails"
+        id="outlook-details-panel"
+        class="outlook-breakdown-panel"
+      >
+        <h3 class="outlook-panel-title">Itemized Protection Allocations</h3>
+        <p class="muted small">
+          Every dollar subtracted from your recorded cash is accounted for below. Protections are never independently subtracted from Safe to Spend.
+        </p>
+
+        <!-- Protection items list -->
+        <div class="outlook-items-table" role="table" aria-label="Protection items breakdown">
+          <div class="outlook-table-header" role="row">
+            <span role="columnheader">Protection Category</span>
+            <span role="columnheader">Details</span>
+            <span role="columnheader" class="text-right">Reserved Amount</span>
+          </div>
+          <div
+            v-for="item in moneyOutlook.protectionItems"
+            :key="item.id"
+            class="outlook-table-row"
+            role="row"
+          >
+            <div class="item-name-cell" role="cell">
+              <strong>{{ item.name }}</strong>
+              <span v-if="item.count !== undefined" class="item-count-tag">
+                {{ item.count }} {{ item.count === 1 ? 'item' : 'items' }}
+              </span>
+            </div>
+            <div class="item-desc-cell" role="cell">
+              <span class="muted small">{{ item.description }}</span>
+              <span v-if="item.subdetails" class="item-subdetails small">
+                {{ item.subdetails }}
+              </span>
+            </div>
+            <div class="item-amount-cell text-right" role="cell">
+              <strong>-{{ money(item.amount) }}</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- Exact Reconciliation Formula Banner -->
+        <div class="outlook-reconciliation-formula" aria-label="Reconciliation formula">
+          <div class="formula-line">
+            <span class="formula-part">
+              <span class="formula-label">Recorded Cash</span>
+              <strong>{{ money(moneyOutlook.cashBalance) }}</strong>
+            </span>
+            <span class="formula-operator">−</span>
+            <span class="formula-part">
+              <span class="formula-label">Total Protections</span>
+              <strong>{{ money(moneyOutlook.totalProtections) }}</strong>
+            </span>
+            <span class="formula-operator">=</span>
+            <span class="formula-part formula-result">
+              <span class="formula-label">
+                {{ moneyOutlook.hasShortfall ? "Raw Shortfall" : "Safe to Spend" }}
+              </span>
+              <strong :class="{ 'text-negative': moneyOutlook.hasShortfall }">
+                {{ moneyOutlook.hasShortfall ? `-${money(moneyOutlook.shortfall)}` : money(moneyOutlook.safe) }}
+              </strong>
+            </span>
+          </div>
+          <span class="reconciliation-verified-tag">
+            ✓ Exactly matches core financial engine
+          </span>
+        </div>
+
+        <!-- Account Freshness Detail List -->
+        <div class="outlook-accounts-freshness-box">
+          <h4 class="freshness-box-title">Account Balance Freshness</h4>
+          <div class="freshness-accounts-grid">
+            <div
+              v-for="acc in moneyOutlook.freshnessList"
+              :key="acc.accountId"
+              class="freshness-account-pill"
+              :class="`status-${acc.status}`"
+            >
+              <div class="acc-info">
+                <strong>{{ acc.accountName }}</strong>
+                <span class="muted small">{{ acc.label }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =======================================================================
+         Phase 5C: Before Payday Timeline
+         ======================================================================= -->
+    <section
+      class="card timeline-commitments-card"
+      id="before-payday-timeline-section"
+      aria-labelledby="before-payday-heading"
+    >
+      <div class="section-card-header">
+        <div>
+          <div class="header-with-badge">
+            <h2 id="before-payday-heading">Before Payday Timeline</h2>
+            <span
+              v-if="beforePaydayCommitments.hasConfiguredPayday"
+              class="timeline-payday-badge"
+            >
+              Through {{ dateWithDay(beforePaydayCommitments.cutoffDate) }}
+            </span>
+          </div>
+          <p class="muted section-caption">
+            All approaching recurring bills and scheduled commitments due before your next paycheck.
+          </p>
+        </div>
+      </div>
+
+      <!-- Setup State: No Payday Configured -->
+      <div
+        v-if="beforePaydayCommitments.setupRequired"
+        class="timeline-setup-state"
+        role="region"
+        aria-label="Payday configuration needed"
+      >
+        <span class="setup-icon" aria-hidden="true">🗓️</span>
+        <div class="setup-body">
+          <h3>Set your payday schedule</h3>
+          <p class="muted">
+            {{ beforePaydayCommitments.setupMessage }}
+          </p>
+          <button
+            type="button"
+            class="btn btn-primary btn-sm"
+            @click="page = 'Settings'"
+          >
+            Configure Payday in Settings →
+          </button>
+        </div>
+      </div>
+
+      <!-- Configured Payday Timeline -->
+      <div v-else class="timeline-content-wrapper">
+        <!-- Paycheck Transparency Notice -->
+        <div class="timeline-income-notice" role="note">
+          <span class="notice-icon" aria-hidden="true">💡</span>
+          <p class="notice-text">
+            <strong>Income Safety:</strong> Expected paychecks are never counted as available money until they are actually received and recorded in your accounts.
+          </p>
+        </div>
+
+        <!-- Commitments List -->
+        <div
+          v-if="beforePaydayCommitments.commitments.length > 0"
+          class="commitments-list"
+          role="list"
+          aria-label="Upcoming commitments before payday"
+        >
+          <div
+            v-for="commit in beforePaydayCommitments.commitments"
+            :key="commit.id"
+            class="commitment-item-row"
+            role="listitem"
+          >
+            <!-- Left: Date indicator -->
+            <div class="commitment-date-badge">
+              <span class="date-main">{{ dateWithDay(commit.date) }}</span>
+            </div>
+
+            <!-- Middle: Name, details, badges -->
+            <div class="commitment-details-area">
+              <div class="commitment-name-row">
+                <strong class="commitment-name">{{ commit.name }}</strong>
+                <span
+                  class="commitment-status-pill"
+                  :class="`status-${commit.protectionStatus}`"
+                  :title="commit.protectionReason"
+                >
+                  {{ commit.protectionStatus === 'protected' ? '✓ Protected' : 'Uncovered' }}
+                </span>
+                <span
+                  v-if="commit.sourceType === 'linked_bill_scheduled'"
+                  class="commitment-type-pill"
+                >
+                  Scheduled Bill
+                </span>
+                <span
+                  v-else-if="commit.sourceType === 'recurring_bill'"
+                  class="commitment-type-pill"
+                >
+                  Recurring Bill
+                </span>
+                <span
+                  v-else
+                  class="commitment-type-pill"
+                >
+                  Scheduled
+                </span>
+              </div>
+
+              <!-- Reason / partial note -->
+              <div class="commitment-subtext-row">
+                <span class="muted small">{{ commit.protectionReason }}</span>
+                <span v-if="commit.paymentDetails" class="commitment-partial-note small">
+                  {{ commit.paymentDetails }}
+                </span>
+              </div>
+            </div>
+
+            <!-- Right: Amount -->
+            <div class="commitment-amount-col text-right">
+              <strong class="commitment-amount">{{ money(commit.amount) }}</strong>
+              <span class="muted micro">due</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Empty State: No Commitments -->
+        <div
+          v-else
+          class="insights-empty-state"
+          role="region"
+          aria-label="No upcoming commitments"
+        >
+          <span class="empty-icon" aria-hidden="true">🌿</span>
+          <h3>No upcoming commitments before payday</h3>
+          <p class="muted">
+            You have no recurring bills or scheduled expenses due between now and {{ dateWithDay(beforePaydayCommitments.cutoffDate) }}.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- =======================================================================
+         Phase 5C: Mika Explains Your Money
+         Deterministic, rules-based companion financial explanations
+         ======================================================================= -->
+    <section
+      class="card mika-explains-card"
+      id="mika-explains-section"
+      aria-labelledby="mika-explains-heading"
+    >
+      <div class="mika-explains-layout">
+        <!-- Companion Portrait Column -->
+        <div class="mika-character-col">
+          <img
+            :src="companionPortraits[currentMikaExplanation.expression]"
+            :alt="`Mika looking ${currentMikaExplanation.expression}`"
+            class="mika-avatar-img"
+            width="88"
+            height="88"
+          />
+          <span class="mika-name-label">Mika</span>
+        </div>
+
+        <!-- Speech Bubble Column -->
+        <div class="mika-speech-col">
+          <!-- Topic Selector Chips -->
+          <div
+            class="mika-topic-pills"
+            role="tablist"
+            aria-label="Select explanation topic"
+          >
+            <button
+              v-if="moneyOutlook.hasShortfall"
+              type="button"
+              class="mika-topic-btn"
+              :class="{ active: activeMikaTopic === 'shortfall' }"
+              :aria-selected="activeMikaTopic === 'shortfall'"
+              role="tab"
+              @click="activeMikaTopic = 'shortfall'"
+            >
+              Shortfall
+            </button>
+            <button
+              type="button"
+              class="mika-topic-btn"
+              :class="{ active: activeMikaTopic === 'safe_to_spend' }"
+              :aria-selected="activeMikaTopic === 'safe_to_spend'"
+              role="tab"
+              @click="activeMikaTopic = 'safe_to_spend'"
+            >
+              Safe to Spend
+            </button>
+            <button
+              type="button"
+              class="mika-topic-btn"
+              :class="{ active: activeMikaTopic === 'protected_bills' }"
+              :aria-selected="activeMikaTopic === 'protected_bills'"
+              role="tab"
+              @click="activeMikaTopic = 'protected_bills'"
+            >
+              Protected Bills
+            </button>
+            <button
+              type="button"
+              class="mika-topic-btn"
+              :class="{ active: activeMikaTopic === 'commitments' }"
+              :aria-selected="activeMikaTopic === 'commitments'"
+              role="tab"
+              @click="activeMikaTopic = 'commitments'"
+            >
+              Commitments
+            </button>
+            <button
+              type="button"
+              class="mika-topic-btn"
+              :class="{ active: activeMikaTopic === 'balance_freshness' }"
+              :aria-selected="activeMikaTopic === 'balance_freshness'"
+              role="tab"
+              @click="activeMikaTopic = 'balance_freshness'"
+            >
+              Account Freshness
+            </button>
+          </div>
+
+          <!-- Dialogue Speech Bubble -->
+          <div
+            class="mika-speech-bubble"
+            role="region"
+            :aria-label="`Mika's explanation for ${currentMikaExplanation.title}`"
+          >
+            <h3 id="mika-explains-heading" class="mika-bubble-title">
+              {{ currentMikaExplanation.title }}
+            </h3>
+            <p class="mika-bubble-text">
+              {{ currentMikaExplanation.text }}
+            </p>
+            <p v-if="currentMikaExplanation.detail" class="mika-bubble-detail">
+              {{ currentMikaExplanation.detail }}
+            </p>
+
+            <div v-if="currentMikaExplanation.actionLabel" class="mika-bubble-action-row">
+              <button
+                type="button"
+                class="btn btn-secondary btn-sm"
+                @click="handleMikaAction(currentMikaExplanation)"
+              >
+                {{ currentMikaExplanation.actionLabel }} →
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
