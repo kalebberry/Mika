@@ -26,6 +26,7 @@ const {
   storageHealth,
   prepareRestoreFromFile,
   restoreRollbackSnapshot,
+  reloadFromStorage,
   downloadCorruptData,
 } = useBudget();
 
@@ -702,6 +703,26 @@ function handleRemoveOverride(idOrDate: string) {
           <button type="button" class="secondary sm" @click="downloadCorruptData">
             Download raw data (.json)
           </button>
+        </div>
+
+        <div
+          v-else-if="storageHealth.status === 'conflict'"
+          class="storage-banner conflict-banner"
+          role="alert"
+        >
+          <span class="banner-icon" aria-hidden="true">⚠️</span>
+          <div class="banner-content">
+            <strong>Storage Conflict: Unsaved Changes Protected</strong>
+            <p>{{ storageHealth.errorMessage }}</p>
+            <div class="banner-actions">
+              <button type="button" class="primary sm" @click="backup">
+                Export unsaved changes ↓
+              </button>
+              <button type="button" class="secondary sm" @click="reloadFromStorage">
+                Reload & sync latest ↺
+              </button>
+            </div>
+          </div>
         </div>
 
         <div

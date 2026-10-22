@@ -15773,26 +15773,35 @@ test("Test 6A.3 — Invalid JSON and malformed structures", () => {
   assert.match(res4.error || "", /missing required collections/i);
 });
 
-test("Test 6A.4 — Missing required records or broken references", () => {
+test("Test 6A.4 — Prevent silent financial reassignment: reject orphaned accounts & invalid relationships", () => {
   const state = demo();
-  // Modify a transaction to reference a non-existent account
-  state.transactions[0]!.accountId = "acc-ghost-nonexistent";
+  // Part A: An orphaned account ID must be strictly rejected
+  const orphanedState = JSON.parse(JSON.stringify(state));
+  orphanedState.transactions[0]!.accountId = "acc-ghost-nonexistent";
 
-  const exported = exportBackup(state);
-  const res = validateAndPreviewBackup(exported, "2026-10-22");
-  assert.equal(res.valid, true);
-  assert.ok(res.preview);
-  assert.ok(
-    res.preview.warnings.some((w) =>
-      w.includes("referenced unlisted account IDs"),
-    ),
-  );
+  const exportedOrphan = exportBackup(orphanedState);
+  const resOrphan = validateAndPreviewBackup(exportedOrphan, "2026-10-22");
+  assert.equal(resOrphan.valid, false);
+  assert.match(resOrphan.error || "", /non-existent account ID/i);
+  assert.match(resOrphan.error || "", /cannot be silently reassigned/i);
 
-  // Ensure the transaction is not discarded
-  assert.equal(
-    res.stateToRestore?.transactions.length,
-    state.transactions.length,
-  );
+  // Part B: Missing account ID in multi-account state must be strictly rejected
+  const missingAccState = JSON.parse(JSON.stringify(state));
+  delete missingAccState.transactions[0]!.accountId;
+  const exportedMissing = exportBackup(missingAccState);
+  const resMissing = validateAndPreviewBackup(exportedMissing, "2026-10-22");
+  assert.equal(resMissing.valid, false);
+  assert.match(resMissing.error || "", /missing an account assignment/i);
+
+  // Part C: Invalid transfer destination account ID must be strictly rejected
+  const invalidTransferState = JSON.parse(JSON.stringify(state));
+  invalidTransferState.transactions[0]!.kind = "transfer";
+  invalidTransferState.transactions[0]!.destinationAccountId =
+    "acc-nonexistent-dest";
+  const exportedTransfer = exportBackup(invalidTransferState);
+  const resTransfer = validateAndPreviewBackup(exportedTransfer, "2026-10-22");
+  assert.equal(resTransfer.valid, false);
+  assert.match(resTransfer.error || "", /non-existent destination account ID/i);
 });
 
 test("Test 6A.5 — Unsupported future schema versions", () => {
@@ -15933,35 +15942,96 @@ test("Test 6A.9 — Interrupted or conflicting saves: Monotonic saveRevision tra
   }
 });
 
-test("Test 6A.10 — Cross-tab concurrent edits: Storage synchronization and validation", () => {
-  const original = demo();
-  original.payday = "2026-10-31";
+test("Test 6A.10 — Cross-tab conflict protection: two tabs editing from same revision", () => {
+  const originalLocalStorage = globalThis.localStorage;
+  const store: Record<string, string> = {};
+  (globalThis as any).localStorage = {
+    getItem: (k: string) => store[k] || null,
+    setItem: (k: string, v: string) => {
+      store[k] = v;
+    },
+    removeItem: (k: string) => {
+      delete store[k];
+    },
+  };
 
-  // Foreign tab writes a new transaction
-  const foreignState = JSON.parse(JSON.stringify(original));
-  foreignState.transactions.push({
-    id: "tx-tab-b",
-    name: "Coffee Shop from Tab B",
-    amount: -450,
-    category: "Groceries",
-    date: "2026-10-21",
-    accountId: "acc-default-checking",
-    status: "cleared",
-    kind: "standard",
-  });
+  try {
+    const original = demo();
+    original.payday = "2026-10-31";
+    const initialJson = JSON.stringify(original);
+    store[STORAGE_KEY] = initialJson;
 
-  const foreignJson = JSON.stringify(foreignState);
-  const validation = validateAndPreviewBackup(foreignJson, "2026-10-22");
-  assert.equal(validation.valid, true);
-  assert.equal(
-    validation.stateToRestore?.transactions.some((t) => t.id === "tx-tab-b"),
-    true,
-  );
+    const { reloadFromStorage } = useBudget();
+    reloadFromStorage();
 
-  // Foreign tab writes garbage
-  const foreignGarbage = "corrupted-unparseable-data";
-  const garbageValidation = validateAndPreviewBackup(foreignGarbage);
-  assert.equal(garbageValidation.valid, false);
+    // Tab A loads and saves a new transaction
+    const tabAState = JSON.parse(initialJson);
+    tabAState.transactions.push({
+      id: "tx-tab-a",
+      name: "Tab A Groceries",
+      amount: -3500,
+      category: "Groceries",
+      date: "2026-10-22",
+      accountId: "acc-default-checking",
+      status: "cleared",
+      kind: "standard",
+    });
+
+    saveCurrentStateToStorage(tabAState);
+    assert.equal(storageHealth.status, "healthy");
+    assert.ok(store[STORAGE_KEY].includes("tx-tab-a"));
+
+    // Tab B attempts to write a stale state diverging from Tab A
+    const tabBState = JSON.parse(initialJson);
+    tabBState.transactions.push({
+      id: "tx-tab-b",
+      name: "Tab B Coffee",
+      amount: -550,
+      category: "Groceries",
+      date: "2026-10-22",
+      accountId: "acc-default-checking",
+      status: "cleared",
+      kind: "standard",
+    });
+
+    // Directly simulate external tab modifying storage:
+    store[STORAGE_KEY] = JSON.stringify({
+      ...original,
+      transactions: [
+        ...original.transactions,
+        {
+          id: "tx-external-tab",
+          name: "External Tab Transaction",
+          amount: -9999,
+          category: "Groceries",
+          date: "2026-10-22",
+          accountId: "acc-default-checking",
+          status: "cleared",
+          kind: "standard",
+        },
+      ],
+    });
+
+    // Tab B attempts to save:
+    const saveResult = saveCurrentStateToStorage(tabBState);
+    assert.equal(saveResult.success, false);
+    assert.equal(saveResult.conflict, true);
+    assert.equal(storageHealth.status, "conflict");
+    assert.match(storageHealth.errorMessage, /conflict detected/i);
+
+    // Stale write was blocked: store still has external tab transaction
+    assert.ok(store[STORAGE_KEY].includes("tx-external-tab"));
+    assert.ok(!store[STORAGE_KEY].includes("tx-tab-b"));
+
+    // Safe recovery: reloadFromStorage adopts external changes and clears conflict
+    const reloadOk = reloadFromStorage();
+    assert.equal(reloadOk, true);
+    assert.equal(storageHealth.status, "healthy");
+  } finally {
+    (globalThis as any).localStorage = originalLocalStorage;
+    storageHealth.status = "healthy";
+    storageHealth.errorMessage = "";
+  }
 });
 
 test("Test 6A.11 — Restore cancellation leaving state unchanged", () => {
@@ -15995,12 +16065,19 @@ test("Test 6A.11 — Restore cancellation leaving state unchanged", () => {
   );
 });
 
-test("Test 6A.12 — Restore rollback snapshot capability", () => {
+test("Test 6A.12 — Restore rollback safety: simulated pre-restore snapshot and candidate persistence failures", () => {
   const originalLocalStorage = globalThis.localStorage;
   const store: Record<string, string> = {};
+  let failOnKey: string | null = null;
+
   (globalThis as any).localStorage = {
     getItem: (k: string) => store[k] || null,
     setItem: (k: string, v: string) => {
+      if (failOnKey === k || failOnKey === "*") {
+        const err = new Error("Storage quota exceeded");
+        err.name = "QuotaExceededError";
+        throw err;
+      }
       store[k] = v;
     },
     removeItem: (k: string) => {
@@ -16009,25 +16086,70 @@ test("Test 6A.12 — Restore rollback snapshot capability", () => {
   };
 
   try {
-    const { state, createRollbackSnapshot, restoreRollbackSnapshot } =
-      useBudget();
+    const {
+      state,
+      pendingRestoreState,
+      confirmRestore,
+      restoreRollbackSnapshot,
+    } = useBudget();
 
-    // Save original state snapshot
-    state.value.opening = 77777;
-    const snapOk = createRollbackSnapshot();
-    assert.equal(snapOk, true);
-    assert.ok(store[STORAGE_BACKUP_KEY]);
+    // Baseline state
+    state.value.opening = 55555;
+    store[STORAGE_KEY] = JSON.stringify(state.value);
 
-    // Mutate state to simulate bad restore or accidental wipe
-    state.value.opening = 0;
-    state.value.transactions = [];
+    // Prepare candidate restore state
+    const candidate = JSON.parse(JSON.stringify(state.value));
+    candidate.opening = 99999;
+    pendingRestoreState.value = candidate;
 
-    // Rollback
+    // Part A: Simulated failure when writing pre-restore snapshot
+    failOnKey = STORAGE_BACKUP_KEY;
+    const restoreResultFailSnapshot = confirmRestore();
+    assert.equal(
+      restoreResultFailSnapshot,
+      false,
+      "Must return false on snapshot failure",
+    );
+    assert.equal(state.value.opening, 55555, "Active state was preserved");
+
+    // Part B: Simulated failure when persisting candidate dataset
+    failOnKey = STORAGE_KEY;
+    pendingRestoreState.value = candidate;
+    const restoreResultFailPersist = confirmRestore();
+    assert.equal(
+      restoreResultFailPersist,
+      false,
+      "Must return false on storage write failure",
+    );
+    assert.equal(
+      state.value.opening,
+      55555,
+      "Active state was preserved / reverted on persistence failure",
+    );
+    assert.ok(
+      store[STORAGE_BACKUP_KEY],
+      "Pre-restore rollback snapshot exists in storage",
+    );
+
+    // Part C: Successful restore when storage is normal
+    failOnKey = null;
+    pendingRestoreState.value = candidate;
+    const restoreOk = confirmRestore();
+    assert.equal(restoreOk, true);
+    assert.equal(state.value.opening, 99999, "Restored successfully");
+
+    // Part D: Rollback from snapshot restores original data
     const rollOk = restoreRollbackSnapshot();
     assert.equal(rollOk, true);
-    assert.equal(state.value.opening, 77777);
+    assert.equal(
+      state.value.opening,
+      55555,
+      "Original state restored from rollback snapshot",
+    );
   } finally {
     (globalThis as any).localStorage = originalLocalStorage;
+    storageHealth.status = "healthy";
+    storageHealth.errorMessage = "";
   }
 });
 

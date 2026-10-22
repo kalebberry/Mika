@@ -5750,7 +5750,17 @@ export function migrateState(raw: any, now = today()): State {
         const kind: TransactionKind =
           t.kind === "transfer" || t.kind === "payment" ? t.kind : "standard";
 
-        const accountId = t.accountId ? String(t.accountId) : "acc-default-checking";
+        const hasExplicitAccounts = Array.isArray(raw.accounts) && raw.accounts.length > 0;
+        let accountId: string;
+        if (t.accountId) {
+          accountId = String(t.accountId);
+        } else if (!hasExplicitAccounts || raw.version === 1 || raw.version === 2) {
+          // Only migrate known legacy references when their original intended relationship can be determined reliably
+          accountId = "acc-default-checking";
+        } else {
+          // In multi-account datasets, missing accountId must NOT be silently assigned to Primary Checking
+          accountId = "";
+        }
         const isCreditTx = creditAccountIds.has(accountId);
         const isLegacyDebt = hasCoveredCredit ? Boolean(t.isLegacyDebt) : isCreditTx;
 
@@ -6270,6 +6280,49 @@ export function validateAndPreviewBackup(
     };
   }
 
+  // Strict Account Relationship Validation:
+  // Reject invalid or orphaned account references to prevent silent financial reassignment.
+  const hasExplicitAccounts = Array.isArray(rawState.accounts) && rawState.accounts.length > 0;
+  if (hasExplicitAccounts) {
+    const definedAccountIds = new Set(
+      rawState.accounts.map((a: any) => String(a?.id || "").trim()).filter(Boolean),
+    );
+    for (const t of rawState.transactions || []) {
+      const txDesc = t.name ? `"${t.name}"` : `with ID "${t.id}"`;
+      if (!t.accountId) {
+        return {
+          valid: false,
+          error: `Import rejected: Transaction ${txDesc} is missing an account assignment. In a multi-account budget, every transaction must belong to a verified account. Records cannot be silently reassigned.`,
+        };
+      }
+      const accId = String(t.accountId).trim();
+      if (!definedAccountIds.has(accId)) {
+        return {
+          valid: false,
+          error: `Import rejected: Transaction ${txDesc} references non-existent account ID "${accId}". To protect financial integrity, records cannot be silently reassigned to Primary Checking.`,
+        };
+      }
+      if (t.destinationAccountId) {
+        const destId = String(t.destinationAccountId).trim();
+        if (!definedAccountIds.has(destId)) {
+          return {
+            valid: false,
+            error: `Import rejected: Transfer transaction ${txDesc} references non-existent destination account ID "${destId}". Account relationships cannot be silently reassigned.`,
+          };
+        }
+      }
+      if (t.targetAccountId) {
+        const targetId = String(t.targetAccountId).trim();
+        if (!definedAccountIds.has(targetId)) {
+          return {
+            valid: false,
+            error: `Import rejected: Transfer transaction ${txDesc} references non-existent target account ID "${targetId}". Account relationships cannot be silently reassigned.`,
+          };
+        }
+      }
+    }
+  }
+
   // Migrate state deterministically
   const stateToRestore = migrateState(rawState, now);
 
@@ -6279,19 +6332,9 @@ export function validateAndPreviewBackup(
     warnings.push(
       `Restoring from legacy un-enveloped format (schema v${schemaVersion}). The file will be upgraded to schema v${CURRENT_SCHEMA_VERSION}.`,
     );
-  }
-
-  const knownAccountIds = new Set((stateToRestore.accounts || []).map((a) => a.id));
-  let unlinkedTxCount = 0;
-  for (const t of stateToRestore.transactions || []) {
-    if (t.accountId && !knownAccountIds.has(t.accountId)) {
-      unlinkedTxCount++;
+    if (!hasExplicitAccounts) {
+      warnings.push("Migrated legacy single-account records to Primary Checking.");
     }
-  }
-  if (unlinkedTxCount > 0) {
-    warnings.push(
-      `${unlinkedTxCount} transaction${unlinkedTxCount === 1 ? "" : "s"} referenced unlisted account IDs and will be attributed to Primary Checking.`,
-    );
   }
 
   const dates = (stateToRestore.transactions || [])

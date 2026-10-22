@@ -169,7 +169,12 @@ export const STORAGE_BACKUP_KEY = "budget-companion-v1-backup";
 export const STORAGE_CORRUPT_KEY = "budget-companion-v1-corrupt";
 
 export interface StorageHealth {
-  status: "healthy" | "quota_exceeded" | "blocked" | "concurrency_warning";
+  status:
+    | "healthy"
+    | "quota_exceeded"
+    | "blocked"
+    | "concurrency_warning"
+    | "conflict";
   errorMessage: string;
   lastSavedAt: string | null;
   saveRevision: number;
@@ -184,6 +189,7 @@ let initialHasCorrupt = false;
 let initialHasRollback = false;
 let initialRollbackTimestamp: string | null = null;
 let initialBlocked = false;
+let lastLoadedStorageContent: string | null = null;
 
 if (typeof localStorage !== "undefined") {
   // Check if corrupted stash exists
@@ -209,6 +215,7 @@ if (typeof localStorage !== "undefined") {
   // Load primary storage
   const raw = localStorage.getItem(STORAGE_KEY);
   if (raw) {
+    lastLoadedStorageContent = raw;
     try {
       const validation = validateAndPreviewBackup(raw);
       if (validation.valid && validation.stateToRestore) {
@@ -260,7 +267,7 @@ const getInitialPage = (): PageName => {
   if (typeof window !== "undefined" && window.location.hash) {
     const raw = window.location.hash.slice(1);
     const [pathPart, queryPart] = raw.split("?");
-    const h = (pathPart || "").toLowerCase();
+    const h = (pathPart || "").replace(/^\//, "").toLowerCase();
     if (queryPart) {
       const params = new URLSearchParams(queryPart);
       const catParam = params.get("category");
@@ -477,21 +484,53 @@ watch(
   { deep: true },
 );
 
-export function saveCurrentStateToStorage(stateToSave: State): { success: boolean; error?: string } {
+export function saveCurrentStateToStorage(stateToSave: State): {
+  success: boolean;
+  conflict?: boolean;
+  error?: string;
+} {
   if (storageBlocked.value || typeof localStorage === "undefined") {
     return {
       success: false,
       error: "Storage is currently blocked to prevent overwriting unrecovered data.",
     };
   }
+
+  const candidateRaw = JSON.stringify(stateToSave);
+
+  // Optimistic Concurrency Control (OCC) Check:
+  // Detect cross-tab concurrent modifications before writing to storage.
+  const currentInStorage = localStorage.getItem(STORAGE_KEY);
+  if (
+    lastLoadedStorageContent !== null &&
+    currentInStorage !== null &&
+    currentInStorage !== lastLoadedStorageContent &&
+    currentInStorage !== candidateRaw
+  ) {
+    // Stale write conflict: another tab wrote newer data to storage
+    storageHealth.status = "conflict";
+    storageHealth.errorMessage =
+      "Storage conflict detected: Another browser tab saved newer financial records. This tab's writes are blocked to protect your data. You can export a backup of this tab's unsaved changes or reload to sync with the latest records.";
+    const { toast } = useToast();
+    toast(
+      "Storage conflict: Another tab saved newer changes. Stale write blocked.",
+    );
+    return {
+      success: false,
+      conflict: true,
+      error: storageHealth.errorMessage,
+    };
+  }
+
   try {
-    const raw = JSON.stringify(stateToSave);
-    localStorage.setItem(STORAGE_KEY, raw);
+    localStorage.setItem(STORAGE_KEY, candidateRaw);
+    lastLoadedStorageContent = candidateRaw;
     storageHealth.saveRevision++;
     storageHealth.lastSavedAt = new Date().toISOString();
     if (
       storageHealth.status === "quota_exceeded" ||
-      storageHealth.status === "concurrency_warning"
+      storageHealth.status === "concurrency_warning" ||
+      storageHealth.status === "conflict"
     ) {
       storageHealth.status = "healthy";
       storageHealth.errorMessage = "";
@@ -531,14 +570,29 @@ if (typeof window !== "undefined") {
           const currentJson = JSON.stringify(state.value);
           const newJson = JSON.stringify(validation.stateToRestore);
           if (currentJson !== newJson) {
-            state.value = validation.stateToRestore;
-            settingsBalance.value = String(totals(state.value).balance / 100);
-            settingsPayday.value = state.value.payday;
-            settingsFollowingPayday.value = getFollowingPayday(state.value);
-            storageHealth.lastSavedAt = new Date().toISOString();
-            storageHealth.saveRevision++;
-            const { toast } = useToast();
-            toast("Budget updated with changes from another browser tab.");
+            const hasUnsavedLocalEdits =
+              lastLoadedStorageContent !== null &&
+              currentJson !== lastLoadedStorageContent;
+
+            if (hasUnsavedLocalEdits) {
+              storageHealth.status = "conflict";
+              storageHealth.errorMessage =
+                "Storage conflict: Another browser tab saved newer financial records while this tab has unsaved changes. Stale writes are blocked. You can export this tab's unsaved changes or reload to sync with the latest records.";
+              const { toast } = useToast();
+              toast(
+                "Storage conflict: Another tab saved changes. Your unsaved changes are preserved in this tab.",
+              );
+            } else {
+              state.value = validation.stateToRestore;
+              lastLoadedStorageContent = e.newValue;
+              settingsBalance.value = String(totals(state.value).balance / 100);
+              settingsPayday.value = state.value.payday;
+              settingsFollowingPayday.value = getFollowingPayday(state.value);
+              storageHealth.lastSavedAt = new Date().toISOString();
+              storageHealth.saveRevision++;
+              const { toast } = useToast();
+              toast("Budget updated with changes from another browser tab.");
+            }
           }
         }
       } catch {
@@ -659,6 +713,9 @@ export function useBudget() {
       storageHealth.status = "healthy";
       storageHealth.errorMessage = "";
 
+      if (typeof localStorage !== "undefined") {
+        lastLoadedStorageContent = localStorage.getItem(STORAGE_KEY);
+      }
       state.value = validation.stateToRestore;
       saveCurrentStateToStorage(state.value);
       settingsBalance.value = String(totals(state.value).balance / 100);
@@ -750,16 +807,40 @@ export function useBudget() {
       toast("No restore data prepared.");
       return false;
     }
-    // Automatically create a rollback snapshot of current data before replacement!
-    createRollbackSnapshot();
 
-    // Unblock storage if previously blocked
+    const previousState = JSON.parse(JSON.stringify(state.value));
+
+    // 1. Create rollback snapshot before touching anything
+    const snapshotOk = createRollbackSnapshot();
+    if (!snapshotOk) {
+      const err =
+        "Restoration aborted: unable to save safety rollback snapshot to storage. Your existing financial records are untouched.";
+      toast(err);
+      return false;
+    }
+
+    // 2. Persist candidate restored dataset to storage
+    const candidateState = pendingRestoreState.value;
     storageBlocked.value = false;
+    if (typeof localStorage !== "undefined") {
+      lastLoadedStorageContent = localStorage.getItem(STORAGE_KEY);
+    }
+    const saveResult = saveCurrentStateToStorage(candidateState);
+    if (!saveResult.success) {
+      // Storage persistence failed (e.g. QuotaExceededError or write failure)
+      // Keep previous state intact!
+      state.value = previousState;
+      storageHealth.status = "quota_exceeded";
+      const err = `Restoration failed: could not persist restored records to storage (${saveResult.error || "write failed"}). Existing financial records were preserved.`;
+      toast(err);
+      return false;
+    }
+
+    // 3. Persistence succeeded! Commit to active state
+    state.value = candidateState;
+    lastLoadedStorageContent = JSON.stringify(candidateState);
     storageHealth.status = "healthy";
     storageHealth.errorMessage = "";
-
-    state.value = pendingRestoreState.value;
-    saveCurrentStateToStorage(state.value);
     settingsBalance.value = String(totals(state.value).balance / 100);
     settingsPayday.value = state.value.payday;
     settingsFollowingPayday.value = getFollowingPayday(state.value);
@@ -769,6 +850,26 @@ export function useBudget() {
 
     toast("Backup restored successfully.");
     return true;
+  }
+
+  function reloadFromStorage(): boolean {
+    if (typeof localStorage === "undefined") return false;
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    const validation = validateAndPreviewBackup(raw);
+    if (validation.valid && validation.stateToRestore) {
+      state.value = validation.stateToRestore;
+      lastLoadedStorageContent = raw;
+      storageBlocked.value = false;
+      storageHealth.status = "healthy";
+      storageHealth.errorMessage = "";
+      settingsBalance.value = String(totals(state.value).balance / 100);
+      settingsPayday.value = state.value.payday;
+      settingsFollowingPayday.value = getFollowingPayday(state.value);
+      toast("Synced latest financial records from browser storage.");
+      return true;
+    }
+    return false;
   }
 
   function cancelRestore(): void {
@@ -1231,11 +1332,13 @@ export function useBudget() {
     importBackup,
     storageHealth,
     pendingRestorePreview,
+    pendingRestoreState,
     prepareRestoreFromFile,
     confirmRestore,
     cancelRestore,
     createRollbackSnapshot,
     restoreRollbackSnapshot,
+    reloadFromStorage,
     downloadCorruptData,
     saveCurrentStateToStorage,
     postTransaction,
