@@ -76,6 +76,7 @@ export interface Account {
   archived?: boolean; // Soft-delete / hide from active views
   createdAt: string;
   updatedAt: string;
+  lastVerifiedAt?: string; // ISO date YYYY-MM-DD or timestamp of explicit balance verification
   assignedPaymentReserve?: number; // Integer cents (credit card only). Current net manual reserve
   paymentReservations?: PaymentReservation[]; // Chronological manual reservation entries
   coveredCreditBaselineAt?: string; // ISO timestamp of baseline
@@ -5149,7 +5150,7 @@ export function getAccountFreshnessInfo(
   }
 
   return eligibleCashAccounts.map((a) => {
-    const rawDate = a.updatedAt || a.createdAt || "";
+    const rawDate = a.lastVerifiedAt || a.updatedAt || a.createdAt || "";
     const dateStr = rawDate.slice(0, 10);
     if (!isValidDateString(dateStr)) {
       return {
@@ -5159,7 +5160,7 @@ export function getAccountFreshnessInfo(
         updatedAt: rawDate,
         daysSinceUpdate: 999,
         status: "unverified",
-        label: "Balance unverified (no update date recorded)",
+        label: "Balance unverified (no verification date recorded)",
       };
     }
 
@@ -5174,10 +5175,10 @@ export function getAccountFreshnessInfo(
         status: "fresh",
         label:
           days === 0
-            ? "Updated today"
+            ? "Verified today"
             : days === 1
-              ? "Updated yesterday"
-              : `Updated ${days} days ago`,
+              ? "Verified yesterday"
+              : `Verified ${days} days ago`,
       };
     } else {
       return {
@@ -5187,7 +5188,7 @@ export function getAccountFreshnessInfo(
         updatedAt: rawDate,
         daysSinceUpdate: days,
         status: "stale",
-        label: `Balance unverified (${days} days since update)`,
+        label: `Balance unverified (${days} days since verification)`,
       };
     }
   });
@@ -5216,6 +5217,7 @@ export type MoneyOutlookSummary = {
   overallFreshness: AccountFreshnessStatus;
   freshnessLabel: string;
   isFallbackCash: boolean;
+  isConfirmedAvailable: boolean;
 
   // Protections strictly derived from totals(s, now)
   pots: number;
@@ -5277,6 +5279,9 @@ export function getMoneyOutlook(s: State, now = today()): MoneyOutlookSummary {
   } else {
     freshnessLabel = "Balances up to date";
   }
+
+  const isConfirmedAvailable =
+    overallFreshness === "fresh" && !tot.shortfall && !isFallbackCash;
 
   const eligibleCashAccounts = (s.accounts || []).filter(
     (a) =>
@@ -5355,6 +5360,7 @@ export function getMoneyOutlook(s: State, now = today()): MoneyOutlookSummary {
     overallFreshness,
     freshnessLabel,
     isFallbackCash,
+    isConfirmedAvailable,
     pots: tot.pots,
     potsCount: s.pots.filter((p) => p.saved > 0).length,
     budgets: tot.budgets,
@@ -5384,7 +5390,7 @@ export type CommitmentSourceType =
   | "scheduled_transaction"
   | "linked_bill_scheduled";
 
-export type CommitmentProtectionStatus = "protected" | "uncovered";
+export type CommitmentProtectionStatus = "protected" | "partial" | "uncovered";
 
 export type BeforePaydayCommitment = {
   id: string;
@@ -5398,6 +5404,8 @@ export type BeforePaydayCommitment = {
   isPartialPayment?: boolean;
   totalExpectedAmount?: number;
   paidAmount?: number;
+  coveredAmount?: number;
+  uncoveredAmount?: number;
   billId?: string;
   scheduledTxId?: string;
   category?: string;
@@ -5414,6 +5422,7 @@ export type BeforePaydayCommitmentsSummary = {
   commitments: BeforePaydayCommitment[];
   totalCommitmentsAmount: number;
   protectedCommitmentsAmount: number;
+  partiallyCoveredCommitmentsAmount: number;
   uncoveredCommitmentsAmount: number;
   recurringBillsCount: number;
   scheduledTxCount: number;
@@ -5440,6 +5449,7 @@ export function getBeforePaydayCommitments(
       commitments: [],
       totalCommitmentsAmount: 0,
       protectedCommitmentsAmount: 0,
+      partiallyCoveredCommitmentsAmount: 0,
       uncoveredCommitmentsAmount: 0,
       recurringBillsCount: 0,
       scheduledTxCount: 0,
@@ -5506,6 +5516,8 @@ export function getBeforePaydayCommitments(
         isPartialPayment: isPartial,
         totalExpectedAmount: occStatus.expectedAmount,
         paidAmount: occStatus.paidAmount,
+        coveredAmount: occStatus.remainingAmount,
+        uncoveredAmount: 0,
         billId: detail.bill.id,
         scheduledTxId: matchingSched.id,
         category: matchingSched.category || "Bills",
@@ -5524,6 +5536,8 @@ export function getBeforePaydayCommitments(
         isPartialPayment: isPartial,
         totalExpectedAmount: occStatus.expectedAmount,
         paidAmount: occStatus.paidAmount,
+        coveredAmount: occStatus.remainingAmount,
+        uncoveredAmount: 0,
         billId: detail.bill.id,
         category: "Bills",
         paymentDetails: paidDesc,
@@ -5544,12 +5558,53 @@ export function getBeforePaydayCommitments(
 
     let protectionStatus: CommitmentProtectionStatus = "protected";
     let protectionReason = "Protected by scheduled expenses reserve";
+    let coveredAmount = txAmount;
+    let uncoveredAmount = 0;
 
-    if (isCredit || isExcluded) {
+    if (isCredit) {
+      // Credit card transactions: evaluate budget coverage upon posting
+      if (t.category) {
+        const budget = s.budgets.find(
+          (b) => b.category.toLowerCase() === t.category.toLowerCase(),
+        );
+        if (budget) {
+          const remainingBudget = Math.max(
+            0,
+            budget.limit - spent(s, budget.category, validNow.slice(0, 7)),
+          );
+          if (remainingBudget >= txAmount) {
+            protectionStatus = "protected";
+            coveredAmount = txAmount;
+            uncoveredAmount = 0;
+            protectionReason = `Fully covered by ${budget.category} budget reserve upon posting`;
+          } else if (remainingBudget > 0) {
+            protectionStatus = "partial";
+            coveredAmount = remainingBudget;
+            uncoveredAmount = txAmount - remainingBudget;
+            protectionReason = `Partially covered: ${formatSpendingMoney(remainingBudget)} covered by ${budget.category} budget, ${formatSpendingMoney(uncoveredAmount)} uncovered card debt`;
+          } else {
+            protectionStatus = "uncovered";
+            coveredAmount = 0;
+            uncoveredAmount = txAmount;
+            protectionReason = `Credit card purchase with $0 remaining ${budget.category} budget (adds to card debt upon posting)`;
+          }
+        } else {
+          protectionStatus = "uncovered";
+          coveredAmount = 0;
+          uncoveredAmount = txAmount;
+          protectionReason = "Credit card purchase without category budget (adds to card debt upon posting)";
+        }
+      } else {
+        protectionStatus = "uncovered";
+        coveredAmount = 0;
+        uncoveredAmount = txAmount;
+        protectionReason = "Credit card purchase (not deducted from spendable cash until posted)";
+      }
+    } else if (isExcluded) {
       protectionStatus = "uncovered";
-      protectionReason = isCredit
-        ? "Credit card purchase (not deducted from spendable cash until posted)"
-        : "Non-Safe-to-Spend account transaction";
+      coveredAmount = 0;
+      uncoveredAmount = txAmount;
+      protectionReason = "Non-Safe-to-Spend account transaction";
     } else if (t.category) {
       const budget = s.budgets.find(
         (b) => b.category.toLowerCase() === t.category.toLowerCase(),
@@ -5561,8 +5616,12 @@ export function getBeforePaydayCommitments(
         );
         if (txAmount <= remainingBudget) {
           protectionReason = `Covered by ${budget.category} budget reserve`;
+        } else if (remainingBudget > 0) {
+          const budgetPart = remainingBudget;
+          const excessPart = txAmount - remainingBudget;
+          protectionReason = `Covered by ${budget.category} budget (${formatSpendingMoney(budgetPart)}) + scheduled expenses reserve (${formatSpendingMoney(excessPart)})`;
         } else {
-          protectionReason = `Partially covered by budget; remainder in scheduled reserve`;
+          protectionReason = "Protected by scheduled expenses reserve";
         }
       }
     }
@@ -5576,6 +5635,8 @@ export function getBeforePaydayCommitments(
       protectionStatus,
       protectionReason,
       isConfirmed: false,
+      coveredAmount,
+      uncoveredAmount,
       scheduledTxId: t.id,
       category: t.category,
       accountName: acc?.name,
@@ -5593,6 +5654,9 @@ export function getBeforePaydayCommitments(
   const totalCommitmentsAmount = commitments.reduce((sum, c) => sum + c.amount, 0);
   const protectedCommitmentsAmount = commitments
     .filter((c) => c.protectionStatus === "protected")
+    .reduce((sum, c) => sum + c.amount, 0);
+  const partiallyCoveredCommitmentsAmount = commitments
+    .filter((c) => c.protectionStatus === "partial")
     .reduce((sum, c) => sum + c.amount, 0);
   const uncoveredCommitmentsAmount = commitments
     .filter((c) => c.protectionStatus === "uncovered")
@@ -5615,6 +5679,7 @@ export function getBeforePaydayCommitments(
     commitments,
     totalCommitmentsAmount,
     protectedCommitmentsAmount,
+    partiallyCoveredCommitmentsAmount,
     uncoveredCommitmentsAmount,
     recurringBillsCount,
     scheduledTxCount,
@@ -5629,10 +5694,24 @@ export function getOutlookExplanation(outlook: MoneyOutlookSummary): string {
   const shortfallStr = formatSpendingMoney(outlook.shortfall);
 
   if (outlook.hasShortfall) {
-    return `Your planned protections (${protStr}) exceed your eligible recorded cash (${cashStr}) by ${shortfallStr}. While Safe to Spend displays $0.00 to prevent overspending, your plan has a signed shortfall of -${shortfallStr}. Adjusting budget limits or pot savings can bring your plan into balance.`;
+    let explanation = `Your planned protections (${protStr}) exceed your eligible recorded cash (${cashStr}) by ${shortfallStr}. While Safe to Spend displays $0.00 to prevent overspending, your plan has a signed shortfall of -${shortfallStr}. Adjusting budget limits or pot savings can bring your plan into balance.`;
+    if (!outlook.isConfirmedAvailable && (outlook.overallFreshness === "stale" || outlook.overallFreshness === "unverified")) {
+      explanation += ` Note: Your account balances are unverified (${outlook.freshnessLabel.toLowerCase()}), which adds uncertainty to this shortfall figure.`;
+    }
+    return explanation;
   }
 
-  return `Your Safe to Spend is ${safeStr}. It starts with your eligible recorded cash of ${cashStr} and reserves ${protStr} for your savings pots (${formatSpendingMoney(outlook.pots)}), remaining category budgets (${formatSpendingMoney(outlook.budgets)}), upcoming bills (${formatSpendingMoney(outlook.bills)}), credit-card commitments (${formatSpendingMoney(outlook.totalReadyToPay + outlook.creditCardMinimums)}), and scheduled expenses (${formatSpendingMoney(outlook.uncoveredScheduledExpenses)}). What remains is completely safe for daily spending before payday.`;
+  let baseExplanation = `Your Safe to Spend is ${safeStr}. It starts with your eligible recorded cash of ${cashStr} and reserves ${protStr} for your savings pots (${formatSpendingMoney(outlook.pots)}), remaining category budgets (${formatSpendingMoney(outlook.budgets)}), upcoming bills (${formatSpendingMoney(outlook.bills)}), credit-card commitments (${formatSpendingMoney(outlook.totalReadyToPay + outlook.creditCardMinimums)}), and scheduled expenses (${formatSpendingMoney(outlook.uncoveredScheduledExpenses)}).`;
+
+  if (outlook.overallFreshness === "stale" || outlook.overallFreshness === "unverified") {
+    baseExplanation += ` Note: Because account balances are unverified (${outlook.freshnessLabel.toLowerCase()}), this Safe to Spend amount is an estimate based on recorded ledger entries rather than confirmed available bank cash. Verifying your balances in Accounts will confirm your true spendable total.`;
+  } else if (outlook.overallFreshness === "fallback") {
+    baseExplanation += ` Note: You have no checking or savings accounts linked; this total is calculated from your initial manual baseline and recorded transactions rather than confirmed bank balances.`;
+  } else {
+    baseExplanation += ` What remains is completely safe for daily spending before payday.`;
+  }
+
+  return baseExplanation;
 }
 
 
@@ -5947,6 +6026,7 @@ export function migrateState(raw: any, now = today()): State {
         archived: Boolean(a.archived),
         createdAt: String(a.createdAt || now),
         updatedAt: String(a.updatedAt || now),
+        lastVerifiedAt: a.lastVerifiedAt ? String(a.lastVerifiedAt) : undefined,
       };
       if (a.balance !== undefined) {
         acc.balance = Number(a.balance);
@@ -6001,6 +6081,7 @@ export function migrateState(raw: any, now = today()): State {
         archived: false,
         createdAt: now,
         updatedAt: now,
+        lastVerifiedAt: now,
       },
     ];
   }

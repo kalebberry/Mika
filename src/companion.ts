@@ -151,6 +151,28 @@ export function getMikaOutlookExplanation(
           actionDestination: "Budgets",
         };
       }
+      if (outlook.overallFreshness === "stale" || outlook.overallFreshness === "unverified") {
+        return {
+          topic: "safe_to_spend",
+          expression: "focused",
+          title: "Estimated Safe to Spend (unverified)",
+          text: `Safe to Spend starts with your recorded cash (${money(tot.balance)}) and reserves ${money(outlook.totalProtections)} for your pots, budgets, bills, and card commitments.`,
+          detail: `Your estimated remaining Safe to Spend is ${money(tot.safe)}. Because account balances haven't been verified recently, this is an estimate based on your ledger rather than confirmed bank cash.`,
+          actionLabel: "Verify accounts",
+          actionDestination: "Accounts",
+        };
+      }
+      if (outlook.overallFreshness === "fallback") {
+        return {
+          topic: "safe_to_spend",
+          expression: "welcome",
+          title: "Estimated Safe to Spend (ledger baseline)",
+          text: `Safe to Spend starts with your manual opening cash (${money(tot.balance)}) and reserves ${money(outlook.totalProtections)} for active protections.`,
+          detail: `Your estimated remaining Safe to Spend is ${money(tot.safe)}. Linking a checking account in Accounts helps ensure your available cash matches your bank.`,
+          actionLabel: "Link accounts",
+          actionDestination: "Accounts",
+        };
+      }
       return {
         topic: "safe_to_spend",
         expression: "welcome",
@@ -196,12 +218,16 @@ export function getMikaOutlookExplanation(
         };
       }
       if (commitmentsSummary.commitments.length > 0) {
+        const partialNote =
+          commitmentsSummary.partiallyCoveredCommitmentsAmount > 0
+            ? ` (${money(commitmentsSummary.partiallyCoveredCommitmentsAmount)} partially covered)`
+            : "";
         return {
           topic: "commitments",
           expression: "focused",
           title: "Upcoming commitments before payday",
           text: `You have ${commitmentsSummary.commitments.length} commitment(s) totaling ${money(commitmentsSummary.totalCommitmentsAmount)} approaching before payday.`,
-          detail: `${money(commitmentsSummary.protectedCommitmentsAmount)} is already protected in Safe to Spend, keeping your day-to-day spending safe.`,
+          detail: `${money(commitmentsSummary.protectedCommitmentsAmount)} is already protected in Safe to Spend${partialNote}, keeping your day-to-day spending safe.`,
           actionLabel: "View transactions",
           actionDestination: "Transactions",
         };

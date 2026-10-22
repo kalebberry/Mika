@@ -15179,18 +15179,20 @@ test("Test 5C.10 — Missing and stale account data: freshness classification an
       includeInSafeToSpend: true,
       createdAt: "2026-10-01",
       updatedAt: "2026-10-10", // 11 days ago
+      lastVerifiedAt: "2026-10-10",
     },
   ];
   const freshnessStale = getAccountFreshnessInfo(stateStale, simNow);
   assert.equal(freshnessStale.length, 1);
   assert.equal(freshnessStale[0]!.status, "stale");
   assert.equal(freshnessStale[0]!.daysSinceUpdate, 11);
-  assert.ok(freshnessStale[0]!.label.includes("11 days since update"));
+  assert.ok(freshnessStale[0]!.label.includes("11 days since verification"));
 
   const outlookStale = getMoneyOutlook(stateStale, simNow);
   assert.equal(outlookStale.overallFreshness, "stale");
+  assert.equal(outlookStale.isConfirmedAvailable, false);
 
-  // Case B: Fresh account (updated today or <= 7 days)
+  // Case B: Fresh account (verified today or <= 7 days)
   const stateFresh: State = blank();
   stateFresh.accounts = [
     {
@@ -15201,11 +15203,12 @@ test("Test 5C.10 — Missing and stale account data: freshness classification an
       includeInSafeToSpend: true,
       createdAt: "2026-10-01",
       updatedAt: "2026-10-21", // today
+      lastVerifiedAt: "2026-10-21",
     },
   ];
   const freshnessFresh = getAccountFreshnessInfo(stateFresh, simNow);
   assert.equal(freshnessFresh[0]!.status, "fresh");
-  assert.equal(freshnessFresh[0]!.label, "Updated today");
+  assert.equal(freshnessFresh[0]!.label, "Verified today");
 
   // Case C: Fallback baseline (no linked checking/savings accounts)
   const stateFallback: State = blank();
@@ -15321,6 +15324,351 @@ test("Test 5C.14 — Financial invariants preserved across all Phase 5C operatio
   const totAfter = totals(state, simNow);
   assert.deepEqual(totBefore, totAfter, "Core totals() engine returns identical results");
 });
+
+test("Test 5C.15 — Account freshness audit: balance verification vs metadata edits, stale uncertainty, and reopening", () => {
+  const simNow = "2026-10-21";
+  const state: State = blank();
+
+  // 1. Account creation sets lastVerifiedAt
+  const { addAccount, updateAccount, adjustAccountBalance } = useBudget();
+  const createdAcc = addAccount({
+    name: "Savings Stash",
+    type: "savings",
+    balance: 50000,
+    includeInSafeToSpend: true,
+  });
+  assert.equal(createdAcc.lastVerifiedAt, today());
+  assert.equal(createdAcc.updatedAt, today());
+
+  // 2. Metadata edit (e.g. name update) updates updatedAt, but does NOT touch lastVerifiedAt
+  createdAcc.lastVerifiedAt = "2026-10-01"; // simulated past balance verification date
+  const metaUpdated = updateAccount(createdAcc.id, { name: "Renamed Savings" }, simNow);
+  assert.equal(metaUpdated, true);
+  assert.equal(createdAcc.name, "Renamed Savings");
+  assert.equal(createdAcc.updatedAt, simNow);
+  assert.equal(createdAcc.lastVerifiedAt, "2026-10-01", "lastVerifiedAt must not change during metadata edit");
+
+  // 3. Balance adjustment updates both updatedAt and lastVerifiedAt
+  const balanceAdjusted = adjustAccountBalance(createdAcc.id, 65000);
+  assert.equal(balanceAdjusted, true);
+  assert.equal(createdAcc.balance, 65000);
+  assert.equal(createdAcc.lastVerifiedAt, today(), "lastVerifiedAt must update during balance adjustment");
+
+  // 4. Entering transactions on the account does NOT alter lastVerifiedAt
+  const originalVerified = createdAcc.lastVerifiedAt;
+  const dummyTx: Transaction = {
+    id: "tx-test-entry",
+    name: "Transfer In",
+    amount: 10000,
+    category: "Income",
+    date: simNow,
+    status: "cleared",
+    accountId: createdAcc.id,
+  };
+  state.transactions.unshift(dummyTx);
+  assert.equal(createdAcc.lastVerifiedAt, originalVerified, "Entering transactions must not alter lastVerifiedAt");
+
+  // 5. State migration / App reopening preserves lastVerifiedAt
+  const exported = JSON.parse(JSON.stringify({
+    version: 5,
+    accounts: [
+      {
+        id: "acc-past",
+        name: "Old Checking",
+        type: "checking",
+        opening: 100000,
+        includeInSafeToSpend: true,
+        createdAt: "2026-09-01",
+        updatedAt: "2026-10-18",
+        lastVerifiedAt: "2026-10-05", // 16 days ago
+      },
+    ],
+  }));
+  const migrated = migrateState(exported, simNow);
+  const reloadedAcc = migrated.accounts.find((a) => a.id === "acc-past");
+  assert.equal(reloadedAcc?.lastVerifiedAt, "2026-10-05", "State migration preserves persisted lastVerifiedAt");
+
+  // 6. Stale accounts trigger uncertainty flags in Money Outlook & Mika
+  const freshness = getAccountFreshnessInfo(migrated, simNow);
+  assert.equal(freshness[0]!.status, "stale");
+  assert.equal(freshness[0]!.daysSinceUpdate, 16);
+  assert.ok(freshness[0]!.label.includes("16 days since verification"));
+
+  const outlook = getMoneyOutlook(migrated, simNow);
+  assert.equal(outlook.overallFreshness, "stale");
+  assert.equal(outlook.isConfirmedAvailable, false, "Stale accounts cannot be marked as confirmed available money");
+
+  const explanation = getOutlookExplanation(outlook);
+  assert.ok(explanation.includes("unverified"), "Outlook explanation must highlight unverified balance uncertainty");
+  assert.ok(explanation.includes("estimate based on recorded ledger entries"), "Must explicitly identify figure as estimate");
+
+  const mikaSafe = getMikaOutlookExplanation(migrated, "safe_to_spend", simNow);
+  assert.ok(mikaSafe.title.includes("Estimated"), "Mika title must specify estimated figure");
+  assert.ok(mikaSafe.detail?.includes("estimate based on your ledger"), "Mika detail must clearly state estimate");
+});
+
+test("Test 5C.16 — Commitment protection audit: partial coverage, credit card budget coverage, and zero double-counting", () => {
+  const simNow = "2026-10-21";
+  const state: State = blank();
+  state.payday = "2026-10-28";
+  state.paydaySchedule = {
+    frequency: "biweekly",
+    anchorDate: "2026-10-28",
+  };
+
+  state.accounts = [
+    {
+      id: "acc-checking",
+      name: "Checking",
+      type: "checking",
+      opening: 500000,
+      includeInSafeToSpend: true,
+      createdAt: simNow,
+      updatedAt: simNow,
+      lastVerifiedAt: simNow,
+    },
+    {
+      id: "acc-cc",
+      name: "Visa",
+      type: "credit",
+      opening: 0,
+      includeInSafeToSpend: false,
+      createdAt: simNow,
+      updatedAt: simNow,
+      lastVerifiedAt: simNow,
+    },
+  ];
+
+  // Category budget: Dining with $100 limit, $40 spent => $60 remaining
+  state.budgets = [
+    { id: "b-dining", category: "Dining", limit: 10000, color: "#e74c3c" },
+  ];
+  state.transactions = [
+    {
+      id: "tx-past-dining",
+      name: "Lunch",
+      amount: -4000,
+      category: "Dining",
+      date: "2026-10-15",
+      status: "cleared",
+      accountId: "acc-checking",
+    },
+  ];
+
+  // 1. Scheduled credit card transaction with partial budget coverage ($100 transaction, $60 remaining budget)
+  const schedCardTx: Transaction = {
+    id: "tx-sched-card",
+    name: "Fancy Dinner",
+    amount: -10000, // $100.00
+    category: "Dining",
+    date: "2026-10-25",
+    status: "scheduled",
+    accountId: "acc-cc",
+  };
+  state.transactions.unshift(schedCardTx);
+
+  // 2. Partially paid recurring bill: expected $150, paid $50 => remaining $100
+  const bill: Bill = {
+    id: "bill-electric",
+    name: "Electric Utility",
+    amount: 15000,
+    day: 26,
+    dueDate: "2026-10-26",
+    frequency: "monthly",
+    category: "Bills",
+  };
+  state.bills = [bill];
+  state.transactions.unshift({
+    id: "tx-part-bill",
+    name: "Partial Electric Payment",
+    amount: -5000,
+    category: "Bills",
+    date: "2026-10-20",
+    status: "cleared",
+    accountId: "acc-checking",
+    billId: bill.id,
+    billDueDate: "2026-10-26",
+  });
+
+  // 3. Linked scheduled transaction for another bill (ensures strict deduplication)
+  const billWater: Bill = {
+    id: "bill-water",
+    name: "City Water",
+    amount: 8000,
+    day: 27,
+    dueDate: "2026-10-27",
+    frequency: "monthly",
+    category: "Bills",
+  };
+  state.bills.push(billWater);
+  state.transactions.unshift({
+    id: "tx-sched-water",
+    name: "Water AutoPay",
+    amount: -8000,
+    category: "Bills",
+    date: "2026-10-27",
+    status: "scheduled",
+    accountId: "acc-checking",
+    billId: billWater.id,
+    billDueDate: "2026-10-27",
+  });
+
+  const summary = getBeforePaydayCommitments(state, simNow);
+
+  // Verify deduplication: Electric bill (1), Water bill + scheduled pair (1, not 2), Card dining (1) => 3 commitments
+  assert.equal(summary.commitments.length, 3, "Linked scheduled bill must be deduplicated with recurring bill");
+
+  // Verify partial bill commitment
+  const electricCommit = summary.commitments.find((c) => c.billId === bill.id);
+  assert.ok(electricCommit);
+  assert.equal(electricCommit.isPartialPayment, true);
+  assert.equal(electricCommit.paidAmount, 5000);
+  assert.equal(electricCommit.totalExpectedAmount, 15000);
+  assert.equal(electricCommit.amount, 10000, "Commitment amount must equal remaining unpaid portion");
+  assert.equal(electricCommit.coveredAmount, 10000);
+  assert.equal(electricCommit.uncoveredAmount, 0);
+  assert.equal(electricCommit.protectionStatus, "protected");
+
+  // Verify linked bill scheduled commitment
+  const waterCommit = summary.commitments.find((c) => c.billId === billWater.id);
+  assert.ok(waterCommit);
+  assert.equal(waterCommit.sourceType, "linked_bill_scheduled");
+  assert.equal(waterCommit.amount, 8000);
+  assert.equal(waterCommit.protectionStatus, "protected");
+
+  // Verify scheduled credit card transaction partial coverage
+  const cardCommit = summary.commitments.find((c) => c.scheduledTxId === schedCardTx.id);
+  assert.ok(cardCommit);
+  assert.equal(cardCommit.protectionStatus, "partial", "Card transaction exceeding remaining budget is partially covered");
+  assert.equal(cardCommit.amount, 10000);
+  assert.equal(cardCommit.coveredAmount, 6000, "Covered amount must equal remaining category budget");
+  assert.equal(cardCommit.uncoveredAmount, 4000, "Uncovered amount must equal excess card debt");
+  assert.ok(cardCommit.protectionReason.includes("Partially covered"));
+
+  // Verify summary totals reconciliation
+  assert.equal(summary.totalCommitmentsAmount, 28000); // 10000 + 8000 + 10000
+  assert.equal(summary.protectedCommitmentsAmount, 18000); // 10000 + 8000
+  assert.equal(summary.partiallyCoveredCommitmentsAmount, 10000); // card commit
+  assert.equal(summary.uncoveredCommitmentsAmount, 0);
+  assert.equal(
+    summary.totalCommitmentsAmount,
+    summary.protectedCommitmentsAmount + summary.partiallyCoveredCommitmentsAmount + summary.uncoveredCommitmentsAmount,
+    "Commitments breakdown must sum exactly to total commitments",
+  );
+});
+
+test("Test 5C.17 — Money Outlook exact reconciliation with totals() across negative raw Safe to Spend and credit protections", () => {
+  const simNow = "2026-10-21";
+  const state: State = blank();
+  state.payday = "2026-10-31";
+  state.paydaySchedule = {
+    frequency: "monthly",
+    anchorDate: "2026-10-31",
+  };
+
+  // Setup checking account with modest cash
+  state.accounts = [
+    {
+      id: "acc-main-checking",
+      name: "Main Checking",
+      type: "checking",
+      opening: 20000, // $200.00 recorded cash
+      includeInSafeToSpend: true,
+      createdAt: simNow,
+      updatedAt: simNow,
+      lastVerifiedAt: simNow,
+    },
+    {
+      id: "acc-credit-card",
+      name: "Sapphire Card",
+      type: "credit",
+      opening: 0,
+      includeInSafeToSpend: false,
+      minPayment: 3500, // $35.00 min payment
+      dueDay: 28,
+      createdAt: simNow,
+      updatedAt: simNow,
+      lastVerifiedAt: simNow,
+    },
+  ];
+
+  // Active savings pot: $100.00
+  state.pots = [
+    { id: "pot-1", name: "Emergency", target: 50000, saved: 10000 },
+  ];
+
+  // Active category budget: Groceries $150.00 limit, $0 spent
+  state.budgets = [
+    { id: "b-groceries", category: "Groceries", limit: 15000, color: "#277c78" },
+  ];
+
+  // Recurring bill due in cycle: $80.00
+  state.bills = [
+    {
+      id: "b-internet",
+      name: "Fiber Internet",
+      amount: 8000,
+      dueDate: "2026-10-25",
+      frequency: "monthly",
+      category: "Bills",
+    },
+  ];
+
+  // Add credit card purchase covered by budget => creates Ready to Pay
+  state.transactions = [
+    {
+      id: "tx-card-groceries",
+      name: "Grocery Run",
+      amount: -5000, // $50.00 on credit card
+      category: "Groceries",
+      date: "2026-10-21",
+      status: "cleared",
+      accountId: "acc-credit-card",
+    },
+  ];
+
+  const coreTotals = totals(state, simNow);
+  const outlook = getMoneyOutlook(state, simNow);
+
+  // Verify all outputs match totals() 1-to-1
+  assert.equal(outlook.cashBalance, coreTotals.balance);
+  assert.equal(outlook.pots, coreTotals.pots);
+  assert.equal(outlook.budgets, coreTotals.budgets);
+  assert.equal(outlook.bills, coreTotals.bills);
+  assert.equal(outlook.uncoveredScheduledExpenses, coreTotals.uncoveredScheduledExpenses);
+  assert.equal(outlook.totalReadyToPay, coreTotals.totalReadyToPay);
+  assert.equal(outlook.creditCardMinimums, coreTotals.creditCardMinimums);
+  assert.equal(outlook.rawSafe, coreTotals.rawSafe);
+  assert.equal(outlook.safe, coreTotals.safe);
+  assert.equal(outlook.shortfall, coreTotals.shortfall);
+
+  // Exact Invariant: cashBalance - totalProtections == rawSafe
+  const totalProt =
+    outlook.pots +
+    outlook.budgets +
+    outlook.bills +
+    outlook.uncoveredScheduledExpenses +
+    outlook.totalReadyToPay +
+    outlook.creditCardMinimums;
+  assert.equal(outlook.totalProtections, totalProt);
+  assert.equal(outlook.cashBalance - outlook.totalProtections, outlook.rawSafe);
+
+  // Verify negative raw Safe to Spend behavior
+  assert.ok(outlook.rawSafe < 0, "Cash ($200) is less than protections ($100 pot + $100 remaining budget + $80 bill + $50 readyToPay + $35 min)");
+  assert.equal(outlook.safe, 0, "Safe to Spend must clamp to $0.00 when in deficit");
+  assert.equal(outlook.hasShortfall, true);
+  assert.equal(outlook.shortfall, Math.abs(outlook.rawSafe));
+  assert.equal(outlook.reconciliationVerified, true);
+
+  // Verify credit card lump balance is NOT subtracted from checking cash
+  const ccBal = getAccountBalance(state.accounts[1]!, state);
+  assert.equal(ccBal, 5000, "Card has positive debt ledger balance ($50.00)");
+  assert.ok(
+    outlook.totalProtections < ccBal + totalProt,
+    "Card balance must not be deducted twice or as a lump sum",
+  );
+});
+
 
 
 

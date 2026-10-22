@@ -249,6 +249,12 @@ function viewCategoryInTransactions(catName: string) {
               Shortfall: -{{ money(moneyOutlook.shortfall) }}
             </span>
             <span
+              v-else-if="!moneyOutlook.isConfirmedAvailable"
+              class="outlook-freshness-pill freshness-stale"
+            >
+              Estimated Available
+            </span>
+            <span
               v-else
               class="outlook-available-pill"
             >
@@ -262,7 +268,9 @@ function viewCategoryInTransactions(catName: string) {
             {{
               moneyOutlook.hasShortfall
                 ? `Plan is short by ${money(moneyOutlook.shortfall)}`
-                : "Available for unbudgeted spending"
+                : !moneyOutlook.isConfirmedAvailable
+                  ? "Estimated unbudgeted spending (unverified balances)"
+                  : "Available for unbudgeted spending"
             }}
           </span>
         </div>
@@ -451,7 +459,13 @@ function viewCategoryInTransactions(catName: string) {
                   :class="`status-${commit.protectionStatus}`"
                   :title="commit.protectionReason"
                 >
-                  {{ commit.protectionStatus === 'protected' ? '✓ Protected' : 'Uncovered' }}
+                  {{
+                    commit.protectionStatus === 'protected'
+                      ? '✓ Protected'
+                      : commit.protectionStatus === 'partial'
+                        ? '◒ Partially Covered'
+                        : 'Uncovered'
+                  }}
                 </span>
                 <span
                   v-if="commit.sourceType === 'linked_bill_scheduled'"
@@ -476,7 +490,13 @@ function viewCategoryInTransactions(catName: string) {
               <!-- Reason / partial note -->
               <div class="commitment-subtext-row">
                 <span class="muted small">{{ commit.protectionReason }}</span>
-                <span v-if="commit.paymentDetails" class="commitment-partial-note small">
+                <span
+                  v-if="commit.protectionStatus === 'partial' && commit.coveredAmount !== undefined && commit.uncoveredAmount !== undefined"
+                  class="commitment-partial-note small"
+                >
+                  {{ money(commit.coveredAmount) }} covered · {{ money(commit.uncoveredAmount) }} uncovered
+                </span>
+                <span v-else-if="commit.paymentDetails" class="commitment-partial-note small">
                   {{ commit.paymentDetails }}
                 </span>
               </div>

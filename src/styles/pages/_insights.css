@@ -1518,6 +1518,12 @@
   border: 1px solid rgba(39, 124, 120, 0.2);
 }
 
+.commitment-status-pill.status-partial {
+  background: rgba(180, 100, 30, 0.1);
+  color: #9a5315;
+  border: 1px solid rgba(180, 100, 30, 0.25);
+}
+
 .commitment-status-pill.status-uncovered {
   background: rgba(98, 96, 112, 0.1);
   color: var(--color-muted, #626070);

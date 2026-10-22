@@ -668,6 +668,7 @@ export function useBudget() {
       archived: false,
       createdAt: today(),
       updatedAt: today(),
+      lastVerifiedAt: today(),
     };
     if (isCredit) {
       newAcc.creditLimit = accData.creditLimit ? Math.max(0, accData.creditLimit) : 0;
@@ -733,6 +734,7 @@ export function useBudget() {
     acc.opening = newBalanceCents - delta;
     acc.balance = newBalanceCents;
     acc.updatedAt = today();
+    acc.lastVerifiedAt = today();
 
     if (acc.id === "acc-default-checking") {
       state.value.opening = acc.opening;
