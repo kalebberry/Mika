@@ -104,6 +104,8 @@ import {
   getMonthComparison,
   getCategoryTrends,
   getSpendingHistory,
+  getInsightsReconciliation,
+  getTransactionInsightsStatus,
   type InsightsSpendingSummary,
   type CategorySpending,
   type ReportingPeriod,
@@ -111,6 +113,7 @@ import {
   type CategoryTrend,
   type MonthlyHistoryPoint,
   type SpendingHistorySummary,
+  type InsightsReconciliation,
 } from "../src/model.ts";
 import { useBudget } from "../src/composables/useBudget.ts";
 import {
@@ -14611,6 +14614,165 @@ test("Test 5B.10 — Financial invariants preserved: Safe to Spend, Ready to Pay
   assert.equal(afterTotals.totalReadyToPay, beforeTotals.totalReadyToPay, "Ready to Pay unchanged");
   assert.equal(afterTotals.safe, beforeTotals.safe, "Safe to Spend invariant 100% preserved");
 });
+
+test("Test 5B.11 — Partial-month comparison baseline consistency: dollar change, percentage change, and headline strictly use elapsed-day baseline", () => {
+  const state = blank();
+  const checking = state.accounts[0]!;
+  const simNow = "2026-10-18"; // October day 18 (ongoing month)
+
+  // September (preceding month):
+  // - Day 5: $80.00
+  // - Day 12: $120.00
+  // Total through Day 18 = $200.00 (prevSpentElapsed)
+  // - Day 25: $150.00
+  // Total full month = $350.00 (prevSpentFull)
+  state.transactions = [
+    { id: "tx-s1", name: "Sep Groceries 1", amount: -8000, category: "Groceries", date: "2026-09-05", status: "posted", accountId: checking.id },
+    { id: "tx-s2", name: "Sep Utilities", amount: -12000, category: "Utilities", date: "2026-09-12", status: "posted", accountId: checking.id },
+    { id: "tx-s3", name: "Sep Dining", amount: -15000, category: "Dining Out", date: "2026-09-25", status: "posted", accountId: checking.id },
+
+    // October (current month through Day 18):
+    // - Day 8: $100.00
+    // - Day 14: $160.00
+    // Total through Day 18 = $260.00 (selectedSpent)
+    { id: "tx-o1", name: "Oct Groceries", amount: -10000, category: "Groceries", date: "2026-10-08", status: "posted", accountId: checking.id },
+    { id: "tx-o2", name: "Oct Utilities", amount: -16000, category: "Utilities", date: "2026-10-14", status: "posted", accountId: checking.id },
+  ];
+
+  const comp = getMonthComparison(state, "2026-10", simNow);
+
+  // 1. Partial month identification
+  assert.equal(comp.isPartialMonth, true);
+  assert.equal(comp.elapsedDays, 18);
+  assert.equal(comp.comparisonType, "same_elapsed_days");
+
+  // 2. Spending values
+  assert.equal(comp.selectedSpent, 26000, "October spent through day 18 is $260.00");
+  assert.equal(comp.prevSpentElapsed, 20000, "September elapsed spent through day 18 is $200.00");
+  assert.equal(comp.prevSpentFull, 35000, "September full month total is $350.00");
+
+  // 3. Strict baseline consistency: comparisonBaseline MUST equal prevSpentElapsed
+  assert.equal(comp.comparisonBaseline, comp.prevSpentElapsed, "comparisonBaseline strictly matches elapsed-day baseline");
+
+  // 4. Dollar change MUST be computed against elapsed baseline ($260 - $200 = +$60.00)
+  assert.equal(comp.diffAmount, 6000, "diffAmount is +$60.00 ($260.00 - $200.00)");
+  assert.equal(comp.absDiffAmount, 6000);
+  // It must NOT be computed against prevSpentFull ($260 - $350 = -$90.00)
+  assert.notEqual(comp.diffAmount, comp.selectedSpent - comp.prevSpentFull, "diffAmount must NOT use full month total");
+
+  // 5. Percentage change MUST be computed against elapsed baseline ((260 - 200) / 200 = +30%)
+  assert.equal(comp.percentChange, 30, "percentChange is exactly +30% based on elapsed baseline");
+  // It must NOT be computed against prevSpentFull ((260 - 350) / 350 = -26%)
+  assert.notEqual(comp.percentChange, Math.round(((comp.selectedSpent - comp.prevSpentFull) / comp.prevSpentFull) * 100));
+
+  // 6. Explanatory headline MUST quote the exact elapsed dollar difference and elapsed percentage
+  assert.ok(
+    comp.headline.includes("Through day 18, recorded spending is $60.00 higher than at the same point in September (+30%)."),
+    "Headline strictly reports elapsed day difference and percentage",
+  );
+});
+
+test("Test 5B.12 — Category drill-down reconciliation with Insights totals: distinguishing non-contributing ledger activity", () => {
+  const state = blank();
+  const checking = state.accounts[0]!;
+  const simNow = "2026-10-18";
+
+  // Create mixed ledger activity for Groceries in October 2026:
+  // 1. Cleared qualifying purchase ($80.00) -> contributes
+  // 2. Pending qualifying purchase ($20.00) -> contributes
+  // 3. Store refund ($15.00) -> offsets qualifying purchases
+  // Expected Insights Net Spending: $80 + $20 - $15 = $85.00 (with 2 qualifying expense txs)
+  // 4. Scheduled transaction ($50.00) -> EXCLUDED from Insights
+  // 5. Future-dated transaction on Oct 25 ($40.00) -> EXCLUDED from Insights
+  // 6. Transfer categorized as Groceries ($30.00) -> EXCLUDED from Insights
+  state.transactions = [
+    { id: "tx-groc-cleared", name: "Supermarket Cleared", amount: -8000, category: "Groceries", date: "2026-10-05", status: "cleared", accountId: checking.id },
+    { id: "tx-groc-pending", name: "Bakery Pending", amount: -2000, category: "Groceries", date: "2026-10-12", status: "pending", accountId: checking.id },
+    { id: "tx-groc-refund", name: "Store Return", amount: 1500, category: "Groceries", date: "2026-10-14", status: "posted", accountId: checking.id },
+    { id: "tx-groc-sched", name: "Scheduled Meal Kit", amount: -5000, category: "Groceries", date: "2026-10-16", status: "scheduled", accountId: checking.id },
+    { id: "tx-groc-future", name: "Future Farm Box", amount: -4000, category: "Groceries", date: "2026-10-25", status: "cleared", accountId: checking.id },
+    { id: "tx-groc-transfer", name: "Internal Transfer", amount: -3000, category: "Groceries", date: "2026-10-10", status: "posted", accountId: checking.id, kind: "transfer", targetAccountId: "acc-savings" },
+  ];
+
+  // 1. Reconcile with getInsightsSpending
+  const reconciliation = getInsightsReconciliation(state, "2026-10", "Groceries", simNow);
+
+  assert.equal(reconciliation.insightsNetSpent, 8500, "Insights net spending is exactly $85.00 ($80 + $20 - $15)");
+  assert.equal(reconciliation.qualifyingCount, 2, "2 qualifying expense purchases (cleared + pending)");
+  assert.equal(reconciliation.totalLedgerCount, 6, "Total 6 ledger transactions in Groceries/Oct");
+  assert.equal(reconciliation.scheduledCount, 1, "1 scheduled transaction excluded");
+  assert.equal(reconciliation.futureCount, 1, "1 future-dated transaction excluded");
+  assert.equal(reconciliation.transferCount, 1, "1 transfer excluded");
+  assert.equal(reconciliation.refundCount, 1, "1 refund identified");
+  assert.equal(reconciliation.refundTotal, 1500, "Refund total is $15.00");
+  assert.equal(reconciliation.hasAdditionalActivity, true, "Correctly identifies additional non-contributing ledger activity");
+
+  // Summary explicitly mentions non-contributing and offsetting activity
+  assert.ok(reconciliation.reconciliationSummary.includes("1 scheduled transaction (excluded until confirmed)"));
+  assert.ok(reconciliation.reconciliationSummary.includes("1 future-dated transaction (excluded until date arrives)"));
+  assert.ok(reconciliation.reconciliationSummary.includes("1 transfer or debt payment (excluded from spending)"));
+  assert.ok(reconciliation.reconciliationSummary.includes("1 refund totaling $15.00 (offsets purchases)"));
+  assert.ok(reconciliation.reconciliationSummary.includes("contribute to the $85.00 Insights total"));
+
+  // 2. Verify individual transaction badges via getTransactionInsightsStatus
+  const statusCleared = getTransactionInsightsStatus(state.transactions[0]!, simNow);
+  assert.equal(statusCleared.status, "qualifying_expense");
+  assert.equal(statusCleared.badgeLabel, "Counts in Insights");
+
+  const statusPending = getTransactionInsightsStatus(state.transactions[1]!, simNow);
+  assert.equal(statusPending.status, "qualifying_expense");
+  assert.equal(statusPending.badgeLabel, "Counts in Insights (Pending)");
+
+  const statusRefund = getTransactionInsightsStatus(state.transactions[2]!, simNow);
+  assert.equal(statusRefund.status, "refund_offset");
+  assert.equal(statusRefund.badgeLabel, "Refund offset");
+
+  const statusSched = getTransactionInsightsStatus(state.transactions[3]!, simNow);
+  assert.equal(statusSched.status, "scheduled_excluded");
+  assert.equal(statusSched.badgeLabel, "Excluded · Scheduled");
+
+  const statusFuture = getTransactionInsightsStatus(state.transactions[4]!, simNow);
+  assert.equal(statusFuture.status, "future_excluded");
+  assert.equal(statusFuture.badgeLabel, "Excluded · Future-dated");
+
+  const statusTransfer = getTransactionInsightsStatus(state.transactions[5]!, simNow);
+  assert.equal(statusTransfer.status, "transfer_excluded");
+  assert.equal(statusTransfer.badgeLabel, "Excluded · Transfer / Repayment");
+});
+
+test("Test 5B.13 — Six-month chart and data table consistency", () => {
+  const state = demo();
+  const simNow = "2026-10-21";
+  const history = getSpendingHistory(state, "2026-10", 6, simNow);
+
+  // 1. Chart and table data consistency
+  assert.equal(history.months.length, 6, "Exactly 6 chronological months");
+  let sumCheck = 0;
+  let activeMonthCount = 0;
+
+  for (const point of history.months) {
+    // Each point matches getInsightsSpending for that month
+    const evalNow = point.month < "2026-10" ? `${point.month}-31` : simNow;
+    const directInsights = getInsightsSpending(state, point.month, evalNow);
+    assert.equal(point.totalSpent, directInsights.totalSpent, `Total spent matches for ${point.month}`);
+    assert.equal(point.transactionCount, directInsights.transactionCount, `Count matches for ${point.month}`);
+
+    sumCheck += point.totalSpent;
+    if (point.totalSpent > 0) activeMonthCount++;
+
+    // Scaling check: maxSpent month must be 100%, others proportional
+    if (history.maxSpent > 0) {
+      assert.equal(point.percentageOfMax, Math.round((point.totalSpent / history.maxSpent) * 100));
+    }
+  }
+
+  // 2. Summary stats consistency
+  assert.equal(history.totalSixMonthsSpent, sumCheck, "Total 6-month spending matches sum of month points");
+  if (activeMonthCount > 0) {
+    assert.equal(history.averageSpent, Math.round(sumCheck / activeMonthCount), "Monthly average matches across active months");
+  }
+});
+
 
 
 

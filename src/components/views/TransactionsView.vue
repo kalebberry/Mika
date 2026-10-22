@@ -16,6 +16,8 @@ const {
   statusFilter,
   monthFilter,
   availableMonths,
+  activeReconciliation,
+  getTransactionInsightsStatus,
   list,
   sum,
   postTransaction,
@@ -126,23 +128,45 @@ watch(targetedTransactionId, () => {
     <div
       v-if="monthFilter !== 'All' || category !== 'All'"
       class="active-drilldown-banner"
-      style="margin-bottom: 1.25rem; padding: 0.625rem 1rem; background: rgba(39, 124, 120, 0.08); border-radius: var(--radius-sm, 6px); display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; font-size: 0.85rem;"
+      style="margin-bottom: 1.25rem; padding: 0.875rem 1.125rem; background: rgba(39, 124, 120, 0.08); border-radius: var(--radius-md, 8px); border: 1px solid rgba(39, 124, 120, 0.2); display: flex; flex-direction: column; gap: 0.5rem;"
     >
-      <span>
-        Filtering:
-        <strong v-if="category !== 'All'">{{ category }}</strong>
-        <span v-if="category !== 'All' && monthFilter !== 'All'"> · </span>
-        <strong v-if="monthFilter !== 'All'">{{ formatMonthYear(monthFilter) }}</strong>
-        <span class="muted" style="margin-left: 0.5rem;">({{ list.length }} {{ list.length === 1 ? 'transaction' : 'transactions' }})</span>
-      </span>
-      <button
-        type="button"
-        class="text-link small"
-        @click="category = 'All'; monthFilter = 'All'"
-        style="font-size: 0.8125rem;"
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; font-size: 0.875rem; flex-wrap: wrap;">
+        <span>
+          Filtering:
+          <strong v-if="category !== 'All'">{{ category }}</strong>
+          <span v-if="category !== 'All' && monthFilter !== 'All'"> · </span>
+          <strong v-if="monthFilter !== 'All'">{{ formatMonthYear(monthFilter) }}</strong>
+          <span class="muted" style="margin-left: 0.5rem;">({{ list.length }} {{ list.length === 1 ? 'total transaction' : 'total transactions' }} in ledger)</span>
+        </span>
+        <button
+          type="button"
+          class="text-link small"
+          @click="category = 'All'; monthFilter = 'All'"
+          style="font-size: 0.8125rem;"
+        >
+          Reset filters ✕
+        </button>
+      </div>
+
+      <!-- Insights Reconciliation Box when drilling down category + month -->
+      <div
+        v-if="activeReconciliation"
+        class="reconciliation-info-box"
+        style="padding-top: 0.5rem; border-top: 1px solid rgba(39, 124, 120, 0.15); display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.8125rem;"
       >
-        Reset filters ✕
-      </button>
+        <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+          <span>
+            Insights Net Spending:
+            <strong style="color: var(--color-teal); font-size: 0.95rem;">{{ money(activeReconciliation.insightsNetSpent) }}</strong>
+          </span>
+          <span class="muted">
+            ({{ activeReconciliation.qualifyingCount }} qualifying {{ activeReconciliation.qualifyingCount === 1 ? 'expense' : 'expenses' }})
+          </span>
+        </div>
+        <p style="margin: 0.125rem 0 0; color: var(--color-muted); line-height: 1.4;">
+          {{ activeReconciliation.reconciliationSummary }}
+        </p>
+      </div>
     </div>
 
     <div class="table-wrap">
@@ -201,6 +225,30 @@ watch(targetedTransactionId, () => {
                       style="font-size: 0.7rem; font-weight: 600;"
                     >
                       {{ t.status === 'scheduled' ? 'Scheduled' : (t.status === 'pending' || t.status === 'posted') ? 'Pending' : 'Cleared' }}
+                    </span>
+                    <!-- Insights Reconciliation Badge in category drilldown -->
+                    <span
+                      v-if="monthFilter !== 'All' && category !== 'All'"
+                      class="badge insights-status-badge"
+                      :style="{
+                        fontSize: '0.675rem',
+                        fontWeight: 600,
+                        background:
+                          getTransactionInsightsStatus(t).status === 'qualifying_expense'
+                            ? 'rgba(39, 124, 120, 0.12)'
+                            : getTransactionInsightsStatus(t).status === 'refund_offset'
+                              ? 'rgba(38, 85, 166, 0.1)'
+                              : 'rgba(100, 100, 115, 0.12)',
+                        color:
+                          getTransactionInsightsStatus(t).status === 'qualifying_expense'
+                            ? 'var(--color-teal)'
+                            : getTransactionInsightsStatus(t).status === 'refund_offset'
+                              ? '#2655a6'
+                              : '#555462',
+                      }"
+                      :title="getTransactionInsightsStatus(t).explanation"
+                    >
+                      {{ getTransactionInsightsStatus(t).badgeLabel }}
                     </span>
                   </div>
                   <div style="font-size: 0.75rem; color: var(--color-muted); margin-top: 0.125rem;">

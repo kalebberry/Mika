@@ -73,11 +73,14 @@ import {
   getCategoryTrends,
   getSpendingHistory,
   getPreviousMonth,
+  getInsightsReconciliation,
+  getTransactionInsightsStatus,
   type InsightsSpendingSummary,
   type ReportingPeriod,
   type MonthComparison,
   type CategoryTrend,
   type SpendingHistorySummary,
+  type InsightsReconciliation,
 } from "../model.ts";
 import { money } from "../utils/format.ts";
 import { useToast } from "./useToast.ts";
@@ -123,6 +126,10 @@ const categoryTrends = computed(() =>
 const spendingHistory = computed(() =>
   getSpendingHistory(state.value, selectedInsightsMonth.value, 6),
 );
+const activeReconciliation = computed(() => {
+  if (category.value === "All" || monthFilter.value === "All") return null;
+  return getInsightsReconciliation(state.value, monthFilter.value, category.value);
+});
 export const isMobileMenuOpen = ref(false);
 
 const STORAGE_KEY = "budget-companion-v1";
@@ -158,9 +165,31 @@ try {
     "Your saved data could not be loaded. Demo data is shown; the previous browser data has not been overwritten.";
 }
 
+// Module-level reactive singleton state
+const state = ref<State>(initialData);
+const storageBlocked = ref(Boolean(initialWarning));
+const collapsed = ref(false);
+
+const search = ref("");
+const category = ref("All");
+const accountFilter = ref("All");
+const sort = ref("Latest");
+const statusFilter = ref<"All" | "Scheduled" | "Pending" | "Cleared">("All");
+const monthFilter = ref<string>("All");
+const targetedTransactionId = ref<string | null>(null);
+
 const getInitialPage = (): PageName => {
   if (typeof window !== "undefined" && window.location.hash) {
-    const h = window.location.hash.slice(1).toLowerCase();
+    const raw = window.location.hash.slice(1);
+    const [pathPart, queryPart] = raw.split("?");
+    const h = (pathPart || "").toLowerCase();
+    if (queryPart) {
+      const params = new URLSearchParams(queryPart);
+      const catParam = params.get("category");
+      const monthParam = params.get("month");
+      if (catParam) category.value = catParam;
+      if (monthParam) monthFilter.value = monthParam;
+    }
     if (h === "insights") return "Insights";
     if (h === "transactions") return "Transactions";
     if (h === "accounts") return "Accounts";
@@ -172,11 +201,7 @@ const getInitialPage = (): PageName => {
   return "Overview";
 };
 
-// Module-level reactive singleton state
-const state = ref<State>(initialData);
-const storageBlocked = ref(Boolean(initialWarning));
 const page = ref<PageName>(getInitialPage());
-const collapsed = ref(false);
 
 if (typeof window !== "undefined") {
   window.addEventListener("hashchange", () => {
@@ -184,19 +209,12 @@ if (typeof window !== "undefined") {
   });
   watch(page, (p) => {
     const slug = p === "Recurring Bills" ? "recurring-bills" : p.toLowerCase();
-    if (window.location.hash.slice(1).toLowerCase() !== slug) {
+    const currentHash = window.location.hash.slice(1).split("?")[0]?.toLowerCase();
+    if (currentHash !== slug) {
       window.location.hash = slug;
     }
   });
 }
-
-const search = ref("");
-const category = ref("All");
-const accountFilter = ref("All");
-const sort = ref("Latest");
-const statusFilter = ref<"All" | "Scheduled" | "Pending" | "Cleared">("All");
-const monthFilter = ref<string>("All");
-const targetedTransactionId = ref<string | null>(null);
 
 const sum = computed(() => totals(state.value));
 const month = computed(() => today().slice(0, 7));
@@ -1062,6 +1080,10 @@ export function useBudget() {
     spendingHistory,
     monthFilter,
     availableMonths,
+    activeReconciliation,
+    getTransactionInsightsStatus,
+    getInsightsReconciliation: (m: string, cat: string) =>
+      getInsightsReconciliation(state.value, m, cat),
     isMobileMenuOpen,
   };
 }

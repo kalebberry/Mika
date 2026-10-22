@@ -3193,6 +3193,165 @@ export function getSpendingHistory(
   };
 }
 
+export interface InsightsReconciliation {
+  category: string;
+  month: string;
+  periodLabel: string;
+  insightsNetSpent: number; // exact net spent from getInsightsSpending (clamped >= 0)
+  qualifyingCount: number; // count of qualifying expense transactions contributing
+  totalLedgerCount: number; // total transactions in list matching category and month
+  scheduledCount: number; // scheduled transactions in category/month (excluded from Insights)
+  futureCount: number; // future-dated transactions in category/month (excluded from Insights)
+  transferCount: number; // transfers/payments in category/month (excluded from Insights)
+  refundCount: number; // refunds in category/month (offsets purchases)
+  refundTotal: number; // total refund dollars offsetting purchases
+  grossExpenseTotal: number; // sum of qualifying negative purchase amounts
+  hasAdditionalActivity: boolean; // true if ledger contains scheduled, future, transfers, or refunds
+  reconciliationSummary: string; // clear explanatory sentence
+}
+
+export function getTransactionInsightsStatus(
+  t: Transaction,
+  now = today(),
+): {
+  status:
+    | "qualifying_expense"
+    | "refund_offset"
+    | "scheduled_excluded"
+    | "future_excluded"
+    | "transfer_excluded";
+  badgeLabel: string;
+  explanation: string;
+} {
+  if (t.status === "scheduled") {
+    return {
+      status: "scheduled_excluded",
+      badgeLabel: "Excluded · Scheduled",
+      explanation: "Scheduled transactions do not count toward Insights totals until posted or cleared.",
+    };
+  }
+  if (t.date > now) {
+    return {
+      status: "future_excluded",
+      badgeLabel: "Excluded · Future-dated",
+      explanation: "Future-dated transactions do not count toward Insights totals until their date arrives.",
+    };
+  }
+  if (t.kind === "transfer" || t.kind === "payment") {
+    return {
+      status: "transfer_excluded",
+      badgeLabel: "Excluded · Transfer / Repayment",
+      explanation: "Transfers and debt repayments are excluded from spending Insights.",
+    };
+  }
+  if (t.amount > 0) {
+    return {
+      status: "refund_offset",
+      badgeLabel: "Refund offset",
+      explanation: "Store refund offsetting recorded purchases within this category.",
+    };
+  }
+  return {
+    status: "qualifying_expense",
+    badgeLabel: t.status === "pending" ? "Counts in Insights (Pending)" : "Counts in Insights",
+    explanation: "Qualifying expense included in Insights spending totals.",
+  };
+}
+
+export function getInsightsReconciliation(
+  s: State,
+  monthStr: string,
+  categoryName: string,
+  now = today(),
+): InsightsReconciliation {
+  const periodLabel = formatMonthYear(monthStr);
+  const summary = getInsightsSpending(s, monthStr, now);
+
+  const matchedCategory = summary.categories.find(
+    (c) => c.name.toLowerCase() === categoryName.toLowerCase(),
+  );
+  const insightsNetSpent = matchedCategory ? matchedCategory.amount : 0;
+  const qualifyingCount = matchedCategory ? matchedCategory.count : 0;
+
+  const relevantTxs = (s.transactions || []).filter(
+    (t) =>
+      t.category &&
+      t.category.toLowerCase() === categoryName.toLowerCase() &&
+      t.date.startsWith(monthStr),
+  );
+
+  let scheduledCount = 0;
+  let futureCount = 0;
+  let transferCount = 0;
+  let refundCount = 0;
+  let refundTotal = 0;
+  let grossExpenseTotal = 0;
+
+  for (const t of relevantTxs) {
+    if (t.status === "scheduled") {
+      scheduledCount++;
+    } else if (t.date > now) {
+      futureCount++;
+    } else if (t.kind === "transfer" || t.kind === "payment") {
+      transferCount++;
+    } else if (t.amount > 0) {
+      refundCount++;
+      refundTotal += t.amount;
+    } else if (t.amount < 0 && (!t.status || isLedgerStatus(t.status)) && !t.isLegacyDebt) {
+      grossExpenseTotal += Math.abs(t.amount);
+    }
+  }
+
+  const hasAdditionalActivity =
+    scheduledCount > 0 || futureCount > 0 || transferCount > 0 || refundCount > 0;
+
+  const parts: string[] = [];
+  if (scheduledCount > 0) {
+    parts.push(
+      `${scheduledCount} scheduled ${scheduledCount === 1 ? "transaction" : "transactions"} (excluded until confirmed)`,
+    );
+  }
+  if (futureCount > 0) {
+    parts.push(
+      `${futureCount} future-dated ${futureCount === 1 ? "transaction" : "transactions"} (excluded until date arrives)`,
+    );
+  }
+  if (transferCount > 0) {
+    parts.push(
+      `${transferCount} ${transferCount === 1 ? "transfer or debt payment" : "transfers or debt payments"} (excluded from spending)`,
+    );
+  }
+  if (refundCount > 0) {
+    parts.push(
+      `${refundCount} ${refundCount === 1 ? "refund" : "refunds"} totaling ${formatSpendingMoney(refundTotal)} (offsets purchases)`,
+    );
+  }
+
+  let reconciliationSummary = "";
+  if (!hasAdditionalActivity) {
+    reconciliationSummary = `All ${relevantTxs.length} recorded ${relevantTxs.length === 1 ? "transaction" : "transactions"} directly contribute to the ${formatSpendingMoney(insightsNetSpent)} Insights total.`;
+  } else {
+    reconciliationSummary = `Ledger includes additional activity: ${parts.join("; ")}. Only qualifying completed expenses and offsets contribute to the ${formatSpendingMoney(insightsNetSpent)} Insights total.`;
+  }
+
+  return {
+    category: categoryName,
+    month: monthStr,
+    periodLabel,
+    insightsNetSpent,
+    qualifyingCount,
+    totalLedgerCount: relevantTxs.length,
+    scheduledCount,
+    futureCount,
+    transferCount,
+    refundCount,
+    refundTotal,
+    grossExpenseTotal,
+    hasAdditionalActivity,
+    reconciliationSummary,
+  };
+}
+
 export function dueDate(b: Bill, month: string) {
   const [y, m] = month.split("-").map(Number);
   return `${month}-${String(Math.min(b.day, new Date(y!, m!, 0).getDate())).padStart(2, "0")}`;

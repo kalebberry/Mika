@@ -903,9 +903,37 @@
 
   .category-breakdown-card,
   .month-comparison-card,
-  .spending-history-card,
   .category-trends-card {
     padding: 1.125rem 1rem;
+  }
+
+  .spending-history-card {
+    padding: 1.125rem 0.75rem;
+  }
+
+  .history-chart-wrapper {
+    padding: 1rem 0 0.5rem;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .history-bars-track {
+    min-width: 0;
+    width: 100%;
+    gap: 0.2rem;
+  }
+
+  .history-bar-col {
+    min-width: 0;
+    flex: 1 1 0;
+  }
+
+  .history-bar-amount {
+    font-size: 0.65rem;
+  }
+
+  .history-bar-slot {
+    max-width: 2rem;
   }
 
   .history-summary-footer {
@@ -914,18 +942,51 @@
   }
 }
 
-@media (max-width: 22.5rem) {
-  /* 360px and 320px ultra-compact phones */
+@media (max-width: 25rem) {
+  /* 400px down to 320px ultra-compact phones */
+  .spending-history-card {
+    padding: 1rem 0.5rem;
+  }
+
+  .history-chart-wrapper {
+    padding: 0.75rem 0 0.5rem;
+  }
+
+  .history-bars-track {
+    min-width: 0;
+    width: 100%;
+    gap: 0.15rem;
+    height: 11rem;
+  }
+
   .history-bar-col {
-    min-width: 2.25rem;
+    min-width: 0;
+    flex: 1 1 0;
+  }
+
+  .history-bar-slot {
+    max-width: 1.65rem;
+    height: 6.25rem;
   }
 
   .history-bar-amount {
-    font-size: 0.65rem;
+    font-size: 0.575rem;
+    margin-bottom: 0.2rem;
+    letter-spacing: -0.04em;
+  }
+
+  .history-bar-label {
+    font-size: 0.675rem;
+  }
+
+  .history-partial-pill,
+  .history-active-pill {
+    font-size: 0.525rem;
+    padding: 0.05rem 0.2rem;
   }
 
   .comparison-stat-value {
-    font-size: 1.4rem;
+    font-size: 1.35rem;
   }
 }
 
