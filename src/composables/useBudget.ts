@@ -69,8 +69,15 @@ import {
   uid,
   getReportingPeriods,
   getInsightsSpending,
+  getMonthComparison,
+  getCategoryTrends,
+  getSpendingHistory,
+  getPreviousMonth,
   type InsightsSpendingSummary,
   type ReportingPeriod,
+  type MonthComparison,
+  type CategoryTrend,
+  type SpendingHistorySummary,
 } from "../model.ts";
 import { money } from "../utils/format.ts";
 import { useToast } from "./useToast.ts";
@@ -101,6 +108,21 @@ const insightsSummary = computed(() =>
   getInsightsSpending(state.value, selectedInsightsMonth.value),
 );
 const reportingPeriods = computed(() => getReportingPeriods());
+const monthComparison = computed(() =>
+  getMonthComparison(state.value, selectedInsightsMonth.value),
+);
+const comparisonPrevSummary = computed(() =>
+  getInsightsSpending(
+    state.value,
+    getPreviousMonth(selectedInsightsMonth.value),
+  ),
+);
+const categoryTrends = computed(() =>
+  getCategoryTrends(insightsSummary.value, comparisonPrevSummary.value),
+);
+const spendingHistory = computed(() =>
+  getSpendingHistory(state.value, selectedInsightsMonth.value, 6),
+);
 export const isMobileMenuOpen = ref(false);
 
 const STORAGE_KEY = "budget-companion-v1";
@@ -136,17 +158,44 @@ try {
     "Your saved data could not be loaded. Demo data is shown; the previous browser data has not been overwritten.";
 }
 
+const getInitialPage = (): PageName => {
+  if (typeof window !== "undefined" && window.location.hash) {
+    const h = window.location.hash.slice(1).toLowerCase();
+    if (h === "insights") return "Insights";
+    if (h === "transactions") return "Transactions";
+    if (h === "accounts") return "Accounts";
+    if (h === "budgets") return "Budgets";
+    if (h === "pots") return "Pots";
+    if (h === "recurring-bills") return "Recurring Bills";
+    if (h === "settings") return "Settings";
+  }
+  return "Overview";
+};
+
 // Module-level reactive singleton state
 const state = ref<State>(initialData);
 const storageBlocked = ref(Boolean(initialWarning));
-const page = ref<PageName>("Overview");
+const page = ref<PageName>(getInitialPage());
 const collapsed = ref(false);
+
+if (typeof window !== "undefined") {
+  window.addEventListener("hashchange", () => {
+    page.value = getInitialPage();
+  });
+  watch(page, (p) => {
+    const slug = p === "Recurring Bills" ? "recurring-bills" : p.toLowerCase();
+    if (window.location.hash.slice(1).toLowerCase() !== slug) {
+      window.location.hash = slug;
+    }
+  });
+}
 
 const search = ref("");
 const category = ref("All");
 const accountFilter = ref("All");
 const sort = ref("Latest");
 const statusFilter = ref<"All" | "Scheduled" | "Pending" | "Cleared">("All");
+const monthFilter = ref<string>("All");
 const targetedTransactionId = ref<string | null>(null);
 
 const sum = computed(() => totals(state.value));
@@ -203,12 +252,25 @@ const categories = computed(() =>
   ),
 );
 
+const availableMonths = computed(() => {
+  const months = new Set<string>();
+  months.add(today().slice(0, 7));
+  months.add(getPreviousMonth(today().slice(0, 7)));
+  for (const t of state.value.transactions) {
+    if (t.date && t.date.length >= 7) {
+      months.add(t.date.slice(0, 7));
+    }
+  }
+  return Array.from(months).sort((a, b) => b.localeCompare(a));
+});
+
 const list = computed(() =>
   state.value.transactions
     .filter(
       (t) =>
         t.name.toLowerCase().includes(search.value.toLowerCase()) &&
         (category.value === "All" || t.category === category.value) &&
+        (monthFilter.value === "All" || t.date.startsWith(monthFilter.value)) &&
         (accountFilter.value === "All" ||
           t.accountId === accountFilter.value ||
           t.targetAccountId === accountFilter.value ||
@@ -994,6 +1056,12 @@ export function useBudget() {
     selectedInsightsMonth,
     insightsSummary,
     reportingPeriods,
+    monthComparison,
+    comparisonPrevSummary,
+    categoryTrends,
+    spendingHistory,
+    monthFilter,
+    availableMonths,
     isMobileMenuOpen,
   };
 }

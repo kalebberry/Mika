@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useBudget } from "../../composables/useBudget";
 import { money } from "../../utils/format";
 
@@ -8,9 +8,15 @@ const {
   selectedInsightsMonth,
   insightsSummary,
   reportingPeriods,
+  monthComparison,
+  categoryTrends,
+  spendingHistory,
+  monthFilter,
   page,
   category,
 } = useBudget();
+
+const showHistoryTable = ref(false);
 
 const periods = computed(() => [
   reportingPeriods.value.thisMonth,
@@ -23,6 +29,7 @@ function setPeriod(monthStr: string) {
 
 function viewCategoryInTransactions(catName: string) {
   category.value = catName;
+  monthFilter.value = selectedInsightsMonth.value;
   page.value = "Transactions";
 }
 </script>
@@ -58,7 +65,7 @@ function viewCategoryInTransactions(catName: string) {
       </div>
     </header>
 
-    <!-- Factual Observation Card (At most one concise observation based strictly on recorded data) -->
+    <!-- Factual Observation Card (Phase 5A) -->
     <section
       class="card observation-card"
       aria-label="Monthly spending observation"
@@ -72,7 +79,7 @@ function viewCategoryInTransactions(catName: string) {
       </div>
     </section>
 
-    <!-- Spending Summary Cards Grid -->
+    <!-- Primary Spending Summary Cards Grid -->
     <section class="insights-metrics-grid" aria-label="Spending summary metrics">
       <!-- Total Spending Card -->
       <div class="card metric-card metric-primary">
@@ -110,7 +117,227 @@ function viewCategoryInTransactions(catName: string) {
       </div>
     </section>
 
-    <!-- Category Breakdown Section -->
+    <!-- Phase 5B: Month-over-Month Comparison Card -->
+    <section
+      class="card month-comparison-card"
+      aria-labelledby="mom-comparison-heading"
+    >
+      <div class="section-card-header">
+        <div>
+          <div class="header-with-badge">
+            <h2 id="mom-comparison-heading">Month-over-Month Comparison</h2>
+            <span
+              v-if="monthComparison.isPartialMonth"
+              class="comparison-partial-badge"
+            >
+              Partial Month · Days 1–{{ monthComparison.elapsedDays }}
+            </span>
+          </div>
+          <p class="muted section-caption">
+            Comparing {{ monthComparison.selectedLabel }} with {{ monthComparison.prevLabel }}.
+          </p>
+        </div>
+      </div>
+
+      <!-- Factual Neutral Headline -->
+      <div class="comparison-headline-banner">
+        <span class="comparison-headline-icon" aria-hidden="true">📊</span>
+        <p class="comparison-headline-text">{{ monthComparison.headline }}</p>
+      </div>
+
+      <!-- Comparison Metrics Grid -->
+      <div class="comparison-stats-grid">
+        <!-- Selected Period Spending -->
+        <div class="comparison-stat-item">
+          <span class="comparison-stat-label">
+            {{ monthComparison.selectedLabel }}
+            <span v-if="monthComparison.isPartialMonth" class="sub-label">
+              (Days 1–{{ monthComparison.elapsedDays }})
+            </span>
+          </span>
+          <strong class="comparison-stat-value">{{ money(monthComparison.selectedSpent) }}</strong>
+          <span class="comparison-stat-subtext">
+            {{ monthComparison.isPartialMonth ? "Current elapsed spending" : "Full calendar month" }}
+          </span>
+        </div>
+
+        <!-- Preceding Period Spending -->
+        <div class="comparison-stat-item">
+          <span class="comparison-stat-label">
+            {{ monthComparison.prevLabel }}
+            <span v-if="monthComparison.isPartialMonth" class="sub-label">
+              (Days 1–{{ monthComparison.elapsedDays }})
+            </span>
+          </span>
+          <strong class="comparison-stat-value">{{ money(monthComparison.comparisonBaseline) }}</strong>
+          <span class="comparison-stat-subtext">
+            {{
+              monthComparison.isPartialMonth
+                ? `Full month was ${money(monthComparison.prevSpentFull)}`
+                : "Preceding calendar month"
+            }}
+          </span>
+        </div>
+
+        <!-- Dollar & Percentage Difference -->
+        <div class="comparison-stat-item comparison-diff-item">
+          <span class="comparison-stat-label">Difference</span>
+          <strong class="comparison-stat-value">
+            {{
+              monthComparison.diffAmount > 0
+                ? `+${money(monthComparison.diffAmount)}`
+                : monthComparison.diffAmount < 0
+                  ? `-${money(monthComparison.absDiffAmount)}`
+                  : "$0.00"
+            }}
+          </strong>
+          <span class="comparison-stat-subtext">
+            {{
+              monthComparison.percentChange !== null
+                ? `${monthComparison.percentChange > 0 ? `+${monthComparison.percentChange}%` : `${monthComparison.percentChange}%`} change`
+                : monthComparison.comparisonBaseline === 0 && monthComparison.selectedSpent === 0
+                  ? "No spending recorded"
+                  : "No prior baseline for percentage"
+            }}
+          </span>
+        </div>
+      </div>
+
+      <!-- Partial Month Informational Callout -->
+      <p v-if="monthComparison.isPartialMonth" class="comparison-coverage-note muted">
+        <span class="info-icon" aria-hidden="true">ℹ️</span>
+        <span>
+          <strong>Elapsed comparison:</strong> Because {{ monthComparison.selectedLabel }} is ongoing, the baseline uses the first {{ monthComparison.elapsedDays }} days of {{ monthComparison.prevLabel }} ({{ money(monthComparison.prevSpentElapsed) }}) for an equal elapsed comparison. The full previous month total was {{ money(monthComparison.prevSpentFull) }}.
+        </span>
+      </p>
+    </section>
+
+    <!-- Phase 5B: 6-Month Spending History Card -->
+    <section
+      class="card spending-history-card"
+      aria-labelledby="spending-history-heading"
+    >
+      <div class="section-card-header">
+        <div>
+          <h2 id="spending-history-heading">6-Month Spending History</h2>
+          <p class="muted section-caption">
+            Net recorded spending across the most recent six calendar months. Reuses verified spending rules from actual ledger entries.
+          </p>
+        </div>
+        <button
+          type="button"
+          class="history-table-toggle-btn"
+          @click="showHistoryTable = !showHistoryTable"
+          :aria-expanded="showHistoryTable"
+          aria-controls="spending-history-table-panel"
+        >
+          {{ showHistoryTable ? "Hide data table" : "Show data table equivalent" }}
+        </button>
+      </div>
+
+      <!-- Pure Accessible CSS Bar Chart -->
+      <div
+        class="history-chart-wrapper"
+        role="region"
+        aria-label="6-Month spending history bar chart"
+      >
+        <div class="history-bars-track">
+          <div
+            v-for="point in spendingHistory.months"
+            :key="point.month"
+            class="history-bar-col"
+            :class="{
+              'is-selected': point.month === selectedInsightsMonth,
+              'is-partial': point.isPartial,
+            }"
+          >
+            <!-- Amount Label on top -->
+            <span class="history-bar-amount">
+              {{ money(point.totalSpent) }}
+            </span>
+
+            <!-- Bar Track and Fill -->
+            <div
+              class="history-bar-slot"
+              role="img"
+              :aria-label="`${point.fullLabel}: ${money(point.totalSpent)} recorded spending${point.isPartial ? ' (partial month)' : ''}`"
+            >
+              <div
+                class="history-bar-fill"
+                :style="{
+                  height: `${point.totalSpent > 0 ? Math.max(point.percentageOfMax, 6) : 0}%`,
+                }"
+              />
+            </div>
+
+            <!-- Month Label Below -->
+            <div class="history-bar-meta">
+              <span class="history-bar-label">{{ point.shortLabel }}</span>
+              <span v-if="point.isPartial" class="history-partial-pill">Partial</span>
+              <span
+                v-else-if="point.month === selectedInsightsMonth"
+                class="history-active-pill"
+              >
+                Active
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Accessible Data Table Equivalent -->
+      <div
+        v-if="showHistoryTable"
+        id="spending-history-table-panel"
+        class="history-table-panel"
+      >
+        <table class="history-data-table" aria-label="Detailed 6-month spending numbers">
+          <thead>
+            <tr>
+              <th scope="col">Calendar Month</th>
+              <th scope="col">Status</th>
+              <th scope="col" class="align-right">Qualifying Expenses</th>
+              <th scope="col" class="align-right">Net Recorded Spending</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="point in spendingHistory.months"
+              :key="point.month"
+              :class="{ 'row-selected': point.month === selectedInsightsMonth }"
+            >
+              <td>
+                <strong>{{ point.fullLabel }}</strong>
+                <span v-if="point.month === selectedInsightsMonth" class="table-selected-tag">
+                  (Selected)
+                </span>
+              </td>
+              <td>
+                {{ point.isPartial ? "Partial month (in progress)" : "Full calendar month" }}
+              </td>
+              <td class="align-right">{{ point.transactionCount }}</td>
+              <td class="align-right">
+                <strong>{{ money(point.totalSpent) }}</strong>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- History Summary Footer -->
+      <div class="history-summary-footer">
+        <div class="history-summary-metric">
+          <span class="summary-metric-label">6-Month Total Spending</span>
+          <strong class="summary-metric-val">{{ money(spendingHistory.totalSixMonthsSpent) }}</strong>
+        </div>
+        <div class="history-summary-metric">
+          <span class="summary-metric-label">Monthly Average</span>
+          <strong class="summary-metric-val">{{ money(spendingHistory.averageSpent) }}</strong>
+        </div>
+      </div>
+    </section>
+
+    <!-- Phase 5A: Category Breakdown Section -->
     <section
       class="card category-breakdown-card"
       aria-labelledby="category-breakdown-heading"
@@ -181,14 +408,14 @@ function viewCategoryInTransactions(catName: string) {
             />
           </div>
 
-          <!-- Direct action to view transaction list in this category -->
+          <!-- Direct action to view transaction list in this category with preserved month -->
           <div class="category-action-row">
             <button
               type="button"
               class="text-link small"
               @click="viewCategoryInTransactions(cat.name)"
             >
-              View {{ cat.name }} transactions →
+              View {{ cat.name }} transactions in {{ insightsSummary.periodLabel }} →
             </button>
           </div>
         </div>
@@ -215,6 +442,101 @@ function viewCategoryInTransactions(catName: string) {
               ? `Recorded refunds equaled or exceeded purchases in ${insightsSummary.periodLabel}.`
               : `When you record purchases or bill payments in ${insightsSummary.periodLabel}, your category breakdown and proportional summaries will appear here.`
           }}
+        </p>
+      </div>
+    </section>
+
+    <!-- Phase 5B: Category Trends Section -->
+    <section
+      class="card category-trends-card"
+      aria-labelledby="category-trends-heading"
+    >
+      <div class="section-card-header">
+        <div>
+          <h2 id="category-trends-heading">Category Trends</h2>
+          <p class="muted section-caption">
+            Month-over-month category spending changes between {{ monthComparison.prevLabel }} and {{ monthComparison.selectedLabel }}, sorted by largest absolute dollar change.
+          </p>
+        </div>
+      </div>
+
+      <!-- Active Category Trends List -->
+      <div
+        v-if="categoryTrends.length > 0"
+        class="category-trends-list"
+        role="list"
+      >
+        <div
+          v-for="trend in categoryTrends"
+          :key="trend.name"
+          class="category-trend-item"
+          role="listitem"
+        >
+          <div class="trend-main-row">
+            <div class="trend-category-identity">
+              <span
+                class="category-swatch"
+                :style="{ backgroundColor: trend.color }"
+                aria-hidden="true"
+              />
+              <span class="trend-category-name">{{ trend.name }}</span>
+              
+              <!-- Neutral Status Badges -->
+              <span
+                class="trend-status-badge"
+                :class="`status-${trend.status}`"
+              >
+                {{
+                  trend.status === 'new'
+                    ? 'New'
+                    : trend.status === 'no_spending'
+                      ? 'No spending this month'
+                      : trend.status === 'increased'
+                        ? 'Increased'
+                        : trend.status === 'decreased'
+                          ? 'Decreased'
+                          : 'Unchanged'
+                }}
+              </span>
+            </div>
+
+            <!-- Spending Comparison Numbers -->
+            <div class="trend-amounts-area">
+              <div class="trend-amount-comparison">
+                <span class="muted small">
+                  {{ money(trend.prevAmount) }} → {{ money(trend.selectedAmount) }}
+                </span>
+                <strong class="trend-diff-amount">
+                  {{ trend.changeText }}
+                </strong>
+              </div>
+            </div>
+          </div>
+
+          <!-- Drill-down link preserving category + month -->
+          <div class="trend-action-row">
+            <button
+              type="button"
+              class="text-link small"
+              @click="viewCategoryInTransactions(trend.name)"
+            >
+              View {{ trend.name }} transactions in {{ insightsSummary.periodLabel }} →
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Empty State -->
+      <div
+        v-else
+        class="insights-empty-state"
+        role="region"
+        aria-label="No category trends recorded"
+      >
+        <span class="empty-icon" aria-hidden="true">🌱</span>
+        <h3>No category spending changes recorded</h3>
+        <p class="muted">
+          No qualifying expenses were recorded in either {{ monthComparison.selectedLabel }} or {{ monthComparison.prevLabel }}.
         </p>
       </div>
     </section>

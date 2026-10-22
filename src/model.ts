@@ -2689,6 +2689,95 @@ export function formatMonthYear(monthStr: string): string {
   });
 }
 
+export function formatShortMonth(monthStr: string, includeYear = false): string {
+  if (!monthStr || !monthStr.includes("-")) return "";
+  const [y, m] = monthStr.split("-").map(Number);
+  if (!y || !m) return monthStr;
+  const date = new Date(Date.UTC(y, m - 1, 1, 12, 0, 0));
+  const shortM = date.toLocaleDateString("en-US", {
+    month: "short",
+    timeZone: "UTC",
+  });
+  if (includeYear) {
+    const yr2 = String(y).slice(-2);
+    return `${shortM} '${yr2}`;
+  }
+  return shortM;
+}
+
+export function formatFullMonthName(monthStr: string): string {
+  if (!monthStr || !monthStr.includes("-")) return "";
+  const [y, m] = monthStr.split("-").map(Number);
+  if (!y || !m) return monthStr;
+  const date = new Date(Date.UTC(y, m - 1, 1, 12, 0, 0));
+  return date.toLocaleDateString("en-US", {
+    month: "long",
+    timeZone: "UTC",
+  });
+}
+
+export function getRecentMonths(targetMonth: string, count = 6): string[] {
+  const list: string[] = [];
+  let cur = targetMonth;
+  for (let i = 0; i < count; i++) {
+    list.unshift(cur);
+    cur = getPreviousMonth(cur);
+  }
+  return list;
+}
+
+export interface MonthComparison {
+  selectedMonth: string; // "2026-10"
+  selectedLabel: string; // "October 2026"
+  selectedSpent: number; // integer cents
+  prevMonth: string; // "2026-09"
+  prevLabel: string; // "September 2026"
+  prevSpentFull: number; // full previous month total
+  prevSpentElapsed: number; // same elapsed days in previous month
+  comparisonBaseline: number; // amount being compared against
+  diffAmount: number; // selectedSpent - comparisonBaseline
+  absDiffAmount: number;
+  percentChange: number | null; // null when baseline is 0
+  isPartialMonth: boolean;
+  elapsedDays: number;
+  daysInMonth: number;
+  comparisonType: "full_month" | "same_elapsed_days";
+  headline: string;
+  hasPriorData: boolean;
+}
+
+export interface CategoryTrend {
+  name: string;
+  color: string;
+  selectedAmount: number;
+  prevAmount: number;
+  diffAmount: number;
+  absDiffAmount: number;
+  percentChange: number | null;
+  status: "increased" | "decreased" | "unchanged" | "new" | "no_spending";
+  changeText: string;
+  selectedCount: number;
+  prevCount: number;
+}
+
+export interface MonthlyHistoryPoint {
+  month: string; // "2026-10"
+  shortLabel: string; // "Oct"
+  fullLabel: string; // "October 2026"
+  totalSpent: number; // integer cents
+  transactionCount: number;
+  isCurrentMonth: boolean;
+  isPartial: boolean;
+  percentageOfMax: number; // 0-100
+}
+
+export interface SpendingHistorySummary {
+  months: MonthlyHistoryPoint[];
+  maxSpent: number;
+  averageSpent: number;
+  totalSixMonthsSpent: number;
+}
+
 export function getReportingPeriods(now = today()): {
   thisMonth: ReportingPeriod;
   lastMonth: ReportingPeriod;
@@ -2857,6 +2946,250 @@ export function getInsightsSpending(
     largestCategory,
     categories: activeCategories,
     observation,
+  };
+}
+
+function formatSpendingMoney(cents: number): string {
+  const normalized = Math.round(cents);
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
+    (normalized === 0 ? 0 : normalized) / 100,
+  );
+}
+
+export function getMonthComparison(
+  s: State,
+  selectedMonth = today().slice(0, 7),
+  now = today(),
+): MonthComparison {
+  const currentMonth = now.slice(0, 7);
+  const isCurrentMonth = selectedMonth === currentMonth;
+
+  const [y, m] = selectedMonth.split("-").map(Number);
+  const daysInSelectedMonth = new Date(y!, m!, 0).getDate();
+  const currentDay = Number(now.slice(8, 10));
+
+  const isPartialMonth = isCurrentMonth && currentDay < daysInSelectedMonth;
+  const elapsedDays = isPartialMonth ? currentDay : daysInSelectedMonth;
+  const daysInMonth = daysInSelectedMonth;
+
+  const prevMonth = getPreviousMonth(selectedMonth);
+  const selectedLabel = formatMonthYear(selectedMonth);
+  const prevLabel = formatMonthYear(prevMonth);
+
+  const [prevY, prevM] = prevMonth.split("-").map(Number);
+  const daysInPrevMonth = new Date(prevY!, prevM!, 0).getDate();
+
+  const selectedSummary = getInsightsSpending(s, selectedMonth, now);
+  const selectedSpent = selectedSummary.totalSpent;
+
+  // Previous month full total: evaluate at end of previous month
+  const prevEndOfMonth = `${prevMonth}-${String(daysInPrevMonth).padStart(2, "0")}`;
+  const prevSummaryFull = getInsightsSpending(s, prevMonth, prevEndOfMonth);
+  const prevSpentFull = prevSummaryFull.totalSpent;
+
+  // If partial month, calculate elapsed portion in previous month
+  const clampedDay = Math.min(elapsedDays, daysInPrevMonth);
+  const prevElapsedCutoff = `${prevMonth}-${String(clampedDay).padStart(2, "0")}`;
+  const prevSummaryElapsed = getInsightsSpending(s, prevMonth, prevElapsedCutoff);
+  const prevSpentElapsed = prevSummaryElapsed.totalSpent;
+
+  const comparisonType: "full_month" | "same_elapsed_days" = isPartialMonth
+    ? "same_elapsed_days"
+    : "full_month";
+  const comparisonBaseline = isPartialMonth ? prevSpentElapsed : prevSpentFull;
+
+  const diffAmount = selectedSpent - comparisonBaseline;
+  const absDiffAmount = Math.abs(diffAmount);
+
+  const percentChange =
+    comparisonBaseline > 0
+      ? Math.round(((selectedSpent - comparisonBaseline) / comparisonBaseline) * 100)
+      : null;
+
+  const hasPriorData = prevSpentFull > 0 || prevSummaryFull.transactionCount > 0;
+
+  // Neutral, factual headline
+  let headline = "";
+  const fullSel = formatFullMonthName(selectedMonth);
+  const fullPrev = formatFullMonthName(prevMonth);
+
+  if (comparisonBaseline === 0 && selectedSpent === 0) {
+    headline = isPartialMonth
+      ? `No spending recorded through day ${elapsedDays} in ${fullSel} or ${fullPrev}.`
+      : `No spending recorded in ${fullSel} or ${fullPrev}.`;
+  } else if (comparisonBaseline === 0 && selectedSpent > 0) {
+    headline = isPartialMonth
+      ? `Recorded spending is ${formatSpendingMoney(selectedSpent)} through day ${elapsedDays}. No spending was recorded at this point in ${fullPrev}.`
+      : `Recorded spending is ${formatSpendingMoney(selectedSpent)}. No spending was recorded in ${fullPrev} for comparison.`;
+  } else if (diffAmount > 0) {
+    const pctStr = percentChange !== null ? ` (+${percentChange}%)` : "";
+    headline = isPartialMonth
+      ? `Through day ${elapsedDays}, recorded spending is ${formatSpendingMoney(absDiffAmount)} higher than at the same point in ${fullPrev}${pctStr}.`
+      : `Spending increased by ${formatSpendingMoney(absDiffAmount)} compared with ${fullPrev}${pctStr}.`;
+  } else if (diffAmount < 0) {
+    const pctStr = percentChange !== null ? ` (${percentChange}%)` : "";
+    headline = isPartialMonth
+      ? `Through day ${elapsedDays}, recorded spending is ${formatSpendingMoney(absDiffAmount)} lower than at the same point in ${fullPrev}${pctStr}.`
+      : `Spending decreased by ${formatSpendingMoney(absDiffAmount)} compared with ${fullPrev}${pctStr}.`;
+  } else {
+    headline = isPartialMonth
+      ? `Through day ${elapsedDays}, recorded spending is identical to the same point in ${fullPrev}.`
+      : `Recorded spending is unchanged compared with ${fullPrev}.`;
+  }
+
+  return {
+    selectedMonth,
+    selectedLabel,
+    selectedSpent,
+    prevMonth,
+    prevLabel,
+    prevSpentFull,
+    prevSpentElapsed,
+    comparisonBaseline,
+    diffAmount,
+    absDiffAmount,
+    percentChange,
+    isPartialMonth,
+    elapsedDays,
+    daysInMonth,
+    comparisonType,
+    headline,
+    hasPriorData,
+  };
+}
+
+export function getCategoryTrends(
+  selectedSummary: InsightsSpendingSummary,
+  prevSummary: InsightsSpendingSummary,
+): CategoryTrend[] {
+  const catNames = new Set<string>();
+  for (const c of selectedSummary.categories) {
+    catNames.add(c.name);
+  }
+  for (const c of prevSummary.categories) {
+    catNames.add(c.name);
+  }
+
+  const trends: CategoryTrend[] = [];
+
+  for (const name of catNames) {
+    const selCat = selectedSummary.categories.find(
+      (c) => c.name.toLowerCase() === name.toLowerCase(),
+    );
+    const prevCat = prevSummary.categories.find(
+      (c) => c.name.toLowerCase() === name.toLowerCase(),
+    );
+
+    const selectedAmount = selCat ? selCat.amount : 0;
+    const prevAmount = prevCat ? prevCat.amount : 0;
+    const selectedCount = selCat ? selCat.count : 0;
+    const prevCount = prevCat ? prevCat.count : 0;
+    const color = selCat?.color || prevCat?.color || "#277c78";
+
+    const diffAmount = selectedAmount - prevAmount;
+    const absDiffAmount = Math.abs(diffAmount);
+
+    let status: CategoryTrend["status"];
+    let percentChange: number | null = null;
+    let changeText = "";
+
+    if (prevAmount === 0 && selectedAmount > 0) {
+      status = "new";
+      changeText = `+${formatSpendingMoney(selectedAmount)} (New)`;
+    } else if (selectedAmount === 0 && prevAmount > 0) {
+      status = "no_spending";
+      percentChange = -100;
+      changeText = `-${formatSpendingMoney(prevAmount)} (-100%)`;
+    } else if (diffAmount > 0) {
+      status = "increased";
+      percentChange = Math.round(((selectedAmount - prevAmount) / prevAmount) * 100);
+      changeText = `+${formatSpendingMoney(diffAmount)} (+${percentChange}%)`;
+    } else if (diffAmount < 0) {
+      status = "decreased";
+      percentChange = Math.round(((selectedAmount - prevAmount) / prevAmount) * 100);
+      changeText = `-${formatSpendingMoney(absDiffAmount)} (${percentChange}%)`;
+    } else {
+      status = "unchanged";
+      percentChange = 0;
+      changeText = `$0.00 (Unchanged)`;
+    }
+
+    trends.push({
+      name,
+      color,
+      selectedAmount,
+      prevAmount,
+      diffAmount,
+      absDiffAmount,
+      percentChange,
+      status,
+      changeText,
+      selectedCount,
+      prevCount,
+    });
+  }
+
+  // Sort by absolute dollar change descending, then alphabetically by name
+  trends.sort((a, b) => {
+    if (b.absDiffAmount !== a.absDiffAmount) {
+      return b.absDiffAmount - a.absDiffAmount;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  return trends;
+}
+
+export function getSpendingHistory(
+  s: State,
+  targetMonth = today().slice(0, 7),
+  count = 6,
+  now = today(),
+): SpendingHistorySummary {
+  const monthList = getRecentMonths(targetMonth, count);
+  const currentMonth = now.slice(0, 7);
+
+  const points: MonthlyHistoryPoint[] = [];
+
+  for (const m of monthList) {
+    const isCurrentMonth = m === currentMonth;
+    const [y, mNum] = m.split("-").map(Number);
+    const daysInM = new Date(y!, mNum!, 0).getDate();
+    const isPartial = isCurrentMonth && Number(now.slice(8, 10)) < daysInM;
+
+    // For past months, evaluate with now at month end to capture all settled transactions
+    const evalNow = m < currentMonth ? `${m}-${String(daysInM).padStart(2, "0")}` : now;
+    const summary = getInsightsSpending(s, m, evalNow);
+
+    points.push({
+      month: m,
+      shortLabel: formatShortMonth(m),
+      fullLabel: formatMonthYear(m),
+      totalSpent: summary.totalSpent,
+      transactionCount: summary.transactionCount,
+      isCurrentMonth,
+      isPartial,
+      percentageOfMax: 0,
+    });
+  }
+
+  const maxSpent = Math.max(0, ...points.map((p) => p.totalSpent));
+  for (const p of points) {
+    p.percentageOfMax = maxSpent > 0 ? Math.round((p.totalSpent / maxSpent) * 100) : 0;
+  }
+
+  const totalSixMonthsSpent = points.reduce((sum, p) => sum + p.totalSpent, 0);
+  const monthsWithSpending = points.filter((p) => p.totalSpent > 0);
+  const averageSpent =
+    monthsWithSpending.length > 0
+      ? Math.round(totalSixMonthsSpent / monthsWithSpending.length)
+      : 0;
+
+  return {
+    months: points,
+    maxSpent,
+    averageSpent,
+    totalSixMonthsSpent,
   };
 }
 

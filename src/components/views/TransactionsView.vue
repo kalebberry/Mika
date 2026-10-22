@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { watch, onMounted, nextTick } from "vue";
-import { colors, today } from "../../model";
+import { colors, today, formatMonthYear } from "../../model";
 import { money, date } from "../../utils/format";
 import { useBudget } from "../../composables/useBudget";
 import { useModal } from "../../composables/useModal";
@@ -14,6 +14,8 @@ const {
   accountFilter,
   accounts,
   statusFilter,
+  monthFilter,
+  availableMonths,
   list,
   sum,
   postTransaction,
@@ -103,12 +105,44 @@ watch(targetedTransactionId, () => {
         </select>
       </label>
       <label>
+        Period
+        <select v-model="monthFilter">
+          <option value="All">All months</option>
+          <option v-for="m in availableMonths" :key="m" :value="m">
+            {{ formatMonthYear(m) }}
+          </option>
+        </select>
+      </label>
+      <label>
         Category
         <select v-model="category">
           <option>All</option>
           <option v-for="c in categories" :key="c">{{ c }}</option>
         </select>
       </label>
+    </div>
+
+    <!-- Active Filter Indicator Banner (when navigated from Insights or filtered by Month / Category) -->
+    <div
+      v-if="monthFilter !== 'All' || category !== 'All'"
+      class="active-drilldown-banner"
+      style="margin-bottom: 1.25rem; padding: 0.625rem 1rem; background: rgba(39, 124, 120, 0.08); border-radius: var(--radius-sm, 6px); display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; font-size: 0.85rem;"
+    >
+      <span>
+        Filtering:
+        <strong v-if="category !== 'All'">{{ category }}</strong>
+        <span v-if="category !== 'All' && monthFilter !== 'All'"> · </span>
+        <strong v-if="monthFilter !== 'All'">{{ formatMonthYear(monthFilter) }}</strong>
+        <span class="muted" style="margin-left: 0.5rem;">({{ list.length }} {{ list.length === 1 ? 'transaction' : 'transactions' }})</span>
+      </span>
+      <button
+        type="button"
+        class="text-link small"
+        @click="category = 'All'; monthFilter = 'All'"
+        style="font-size: 0.8125rem;"
+      >
+        Reset filters ✕
+      </button>
     </div>
 
     <div class="table-wrap">

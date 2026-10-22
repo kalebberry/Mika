@@ -99,9 +99,18 @@ import {
   getReportingPeriods,
   getPreviousMonth,
   formatMonthYear,
+  formatShortMonth,
+  getRecentMonths,
+  getMonthComparison,
+  getCategoryTrends,
+  getSpendingHistory,
   type InsightsSpendingSummary,
   type CategorySpending,
   type ReportingPeriod,
+  type MonthComparison,
+  type CategoryTrend,
+  type MonthlyHistoryPoint,
+  type SpendingHistorySummary,
 } from "../src/model.ts";
 import { useBudget } from "../src/composables/useBudget.ts";
 import {
@@ -14235,6 +14244,374 @@ test("Test 5A.14 — Future-dated and scheduled transactions cannot enter curren
   assert.equal(insights.categories.length, 1);
   assert.equal(insights.categories[0]!.amount, 6000);
 });
+
+/* ==========================================================================
+   Phase 5B: Spending Trends Tests
+   ========================================================================== */
+
+test("Test 5B.1 — Month rollover and recent month sequence generation (including Jan to Dec rollover)", () => {
+  // 6-month rollback crossing calendar year boundary
+  const monthsCrossingYear = getRecentMonths("2026-03", 6);
+  assert.deepEqual(
+    monthsCrossingYear,
+    ["2025-10", "2025-11", "2025-12", "2026-01", "2026-02", "2026-03"],
+    "Rolls back 6 chronological calendar months crossing Jan-Dec boundary",
+  );
+
+  // Month labels
+  assert.equal(formatShortMonth("2026-10"), "Oct");
+  assert.equal(formatShortMonth("2026-10", true), "Oct '26");
+  assert.equal(formatShortMonth("2027-01"), "Jan");
+  assert.equal(formatShortMonth("2027-01", true), "Jan '27");
+
+  // Month comparison across year boundary
+  const state = blank();
+  state.transactions = [
+    { id: "tx-dec", name: "Holiday Gift", amount: -15000, category: "Gifts", date: "2026-12-20", status: "posted" },
+    { id: "tx-jan", name: "Gym Membership", amount: -5000, category: "Fitness", date: "2027-01-05", status: "posted" },
+  ];
+
+  const comp = getMonthComparison(state, "2027-01", "2027-01-31");
+  assert.equal(comp.selectedMonth, "2027-01");
+  assert.equal(comp.selectedLabel, "January 2027");
+  assert.equal(comp.prevMonth, "2026-12");
+  assert.equal(comp.prevLabel, "December 2026");
+  assert.equal(comp.selectedSpent, 5000);
+  assert.equal(comp.prevSpentFull, 15000);
+  assert.equal(comp.diffAmount, -10000);
+  assert.equal(comp.absDiffAmount, 10000);
+  assert.equal(comp.percentChange, -67);
+  assert.ok(comp.headline.includes("decreased by $100.00 compared with December (-67%)"));
+});
+
+test("Test 5B.2 — Month-over-month dollar and percentage comparisons (full months, increase and decrease)", () => {
+  const state = blank();
+  const checking = state.accounts[0]!;
+
+  // Baseline state: Aug = $200.00, Sep = $300.00 (Increase)
+  state.transactions = [
+    { id: "tx-aug", name: "Aug Groceries", amount: -20000, category: "Groceries", date: "2026-08-15", status: "posted", accountId: checking.id },
+    { id: "tx-sep", name: "Sep Groceries", amount: -30000, category: "Groceries", date: "2026-09-15", status: "posted", accountId: checking.id },
+  ];
+
+  // Evaluating September as completed month (now = 2026-10-21)
+  const compInc = getMonthComparison(state, "2026-09", "2026-10-21");
+  assert.equal(compInc.selectedSpent, 30000);
+  assert.equal(compInc.prevSpentFull, 20000);
+  assert.equal(compInc.comparisonBaseline, 20000);
+  assert.equal(compInc.diffAmount, 10000);
+  assert.equal(compInc.absDiffAmount, 10000);
+  assert.equal(compInc.percentChange, 50);
+  assert.equal(compInc.isPartialMonth, false);
+  assert.equal(compInc.comparisonType, "full_month");
+  assert.ok(compInc.headline.includes("increased by $100.00 compared with August (+50%)"));
+
+  // Decrease state: Sep = $150.00, Aug = $200.00
+  state.transactions = [
+    { id: "tx-aug-2", name: "Aug Groceries", amount: -20000, category: "Groceries", date: "2026-08-15", status: "posted", accountId: checking.id },
+    { id: "tx-sep-2", name: "Sep Groceries", amount: -15000, category: "Groceries", date: "2026-09-15", status: "posted", accountId: checking.id },
+  ];
+
+  const compDec = getMonthComparison(state, "2026-09", "2026-10-21");
+  assert.equal(compDec.selectedSpent, 15000);
+  assert.equal(compDec.prevSpentFull, 20000);
+  assert.equal(compDec.diffAmount, -5000);
+  assert.equal(compDec.absDiffAmount, 5000);
+  assert.equal(compDec.percentChange, -25);
+  assert.ok(compDec.headline.includes("decreased by $50.00 compared with August (-25%)"));
+});
+
+test("Test 5B.3 — Zero baseline handling: avoids division by zero, neutral non-misleading indicators", () => {
+  const state = blank();
+
+  // Case A: Previous month has zero spending, selected month has $120.00 spending
+  state.transactions = [
+    { id: "tx-sep", name: "Sep Expense", amount: -12000, category: "Shopping", date: "2026-09-10", status: "posted" },
+  ];
+
+  const compZeroBase = getMonthComparison(state, "2026-09", "2026-10-21");
+  assert.equal(compZeroBase.selectedSpent, 12000);
+  assert.equal(compZeroBase.comparisonBaseline, 0);
+  assert.equal(compZeroBase.diffAmount, 12000);
+  assert.equal(compZeroBase.percentChange, null, "Percent change is null when baseline is 0 (avoids +Infinity% or division by zero)");
+  assert.ok(
+    compZeroBase.headline.includes("No spending was recorded in August for comparison"),
+    "Headline clearly states absence of prior baseline without misleading percentage",
+  );
+
+  // Case B: Both previous month and selected month have zero spending
+  state.transactions = [];
+  const compBothZero = getMonthComparison(state, "2026-09", "2026-10-21");
+  assert.equal(compBothZero.selectedSpent, 0);
+  assert.equal(compBothZero.comparisonBaseline, 0);
+  assert.equal(compBothZero.diffAmount, 0);
+  assert.equal(compBothZero.percentChange, null);
+  assert.equal(compBothZero.headline, "No spending recorded in September or August.");
+});
+
+test("Test 5B.4 — Partial-month like-for-like elapsed day comparison vs full previous month", () => {
+  const state = blank();
+  const checking = state.accounts[0]!;
+  const simNow = "2026-10-15"; // October day 15 (incomplete month)
+
+  state.transactions = [
+    // September spending: $100 before day 15, $150 after day 15 -> Full September = $250
+    { id: "tx-sep-early", name: "Sep Early Groceries", amount: -10000, category: "Groceries", date: "2026-09-05", status: "posted", accountId: checking.id },
+    { id: "tx-sep-late", name: "Sep Late Utilities", amount: -15000, category: "Utilities", date: "2026-09-22", status: "posted", accountId: checking.id },
+
+    // October spending: $120 on day 10
+    { id: "tx-oct", name: "Oct Groceries", amount: -12000, category: "Groceries", date: "2026-10-10", status: "posted", accountId: checking.id },
+  ];
+
+  const comp = getMonthComparison(state, "2026-10", simNow);
+  assert.equal(comp.isPartialMonth, true, "October is correctly identified as a partial month");
+  assert.equal(comp.elapsedDays, 15, "Elapsed days is 15");
+  assert.equal(comp.daysInMonth, 31, "Total days in October is 31");
+  assert.equal(comp.comparisonType, "same_elapsed_days");
+
+  // Selected spent through day 15
+  assert.equal(comp.selectedSpent, 12000, "October spent through day 15 is $120.00");
+
+  // Previous month elapsed (Sep 1–15) vs full (Sep 1–30)
+  assert.equal(comp.prevSpentElapsed, 10000, "September spent through day 15 is $100.00 (like-for-like elapsed)");
+  assert.equal(comp.prevSpentFull, 25000, "Full September spent was $250.00");
+  assert.equal(comp.comparisonBaseline, 10000, "Uses elapsed baseline ($100.00) for fair comparison");
+
+  // Difference: $120 - $100 = +$20 (+20%)
+  assert.equal(comp.diffAmount, 2000);
+  assert.equal(comp.absDiffAmount, 2000);
+  assert.equal(comp.percentChange, 20);
+  assert.ok(
+    comp.headline.includes("Through day 15, recorded spending is $20.00 higher than at the same point in September (+20%)."),
+    "Neutral factual headline reflects elapsed comparison",
+  );
+});
+
+test("Test 5B.5 — 6-Month spending history: chronological ordering, percentageOfMax scaling, averages, and empty months", () => {
+  const state = blank();
+  const simNow = "2026-10-21";
+
+  // Target: October 2026 -> 6 months are May, Jun, Jul, Aug, Sep, Oct
+  state.transactions = [
+    { id: "tx-jun", name: "June Dining", amount: -5000, category: "Dining", date: "2026-06-15", status: "posted" },
+    { id: "tx-aug", name: "August Vacation", amount: -20000, category: "Travel", date: "2026-08-10", status: "posted" },
+    { id: "tx-oct", name: "October Groceries", amount: -10000, category: "Groceries", date: "2026-10-10", status: "posted" },
+  ];
+
+  const history = getSpendingHistory(state, "2026-10", 6, simNow);
+  assert.equal(history.months.length, 6, "Contains exactly 6 months");
+  assert.deepEqual(
+    history.months.map((m) => m.month),
+    ["2026-05", "2026-06", "2026-07", "2026-08", "2026-09", "2026-10"],
+    "Months are in strict chronological order",
+  );
+
+  // Check individual month totals and max scaling
+  const [may, jun, jul, aug, sep, oct] = history.months;
+  assert.equal(may!.totalSpent, 0);
+  assert.equal(may!.percentageOfMax, 0);
+
+  assert.equal(jun!.totalSpent, 5000);
+  assert.equal(jun!.percentageOfMax, 25, "5000 / 20000 = 25%");
+
+  assert.equal(jul!.totalSpent, 0);
+  assert.equal(jul!.percentageOfMax, 0);
+
+  assert.equal(aug!.totalSpent, 20000);
+  assert.equal(aug!.percentageOfMax, 100, "Peak month scales to 100%");
+
+  assert.equal(sep!.totalSpent, 0);
+  assert.equal(sep!.percentageOfMax, 0);
+
+  assert.equal(oct!.totalSpent, 10000);
+  assert.equal(oct!.percentageOfMax, 50, "10000 / 20000 = 50%");
+  assert.equal(oct!.isCurrentMonth, true);
+  assert.equal(oct!.isPartial, true);
+
+  // Aggregate stats
+  assert.equal(history.maxSpent, 20000, "Max spending is $200.00");
+  assert.equal(history.totalSixMonthsSpent, 35000, "Total spending is $350.00");
+  // Active months with spending: Jun ($50), Aug ($200), Oct ($100) = 3 months
+  assert.equal(history.averageSpent, Math.round(35000 / 3), "Average across active months ($116.67)");
+});
+
+test("Test 5B.6 — Category trends: month-over-month changes, newly active categories, and sorting by absolute dollar change", () => {
+  const state = blank();
+
+  // September spending:
+  // - Groceries: $200
+  // - Dining: $100
+  // - Utilities: $80
+  // October spending:
+  // - Groceries: $250 (+$50)
+  // - Dining: $30 (-$70)
+  // - Utilities: $0 (-$80, no_spending)
+  // - Gadgets: $300 (+$300, new)
+  state.transactions = [
+    { id: "tx-s1", name: "Sep Groceries", amount: -20000, category: "Groceries", date: "2026-09-10", status: "posted" },
+    { id: "tx-s2", name: "Sep Dining", amount: -10000, category: "Dining", date: "2026-09-15", status: "posted" },
+    { id: "tx-s3", name: "Sep Electric", amount: -8000, category: "Utilities", date: "2026-09-20", status: "posted" },
+
+    { id: "tx-o1", name: "Oct Groceries", amount: -25000, category: "Groceries", date: "2026-10-05", status: "posted" },
+    { id: "tx-o2", name: "Oct Dining", amount: -3000, category: "Dining", date: "2026-10-10", status: "posted" },
+    { id: "tx-o3", name: "Oct Tech", amount: -30000, category: "Gadgets", date: "2026-10-12", status: "posted" },
+  ];
+
+  const octSummary = getInsightsSpending(state, "2026-10", "2026-10-21");
+  const sepSummary = getInsightsSpending(state, "2026-09", "2026-09-30");
+
+  const trends = getCategoryTrends(octSummary, sepSummary);
+
+  // Total categories: 4 (Gadgets, Utilities, Dining, Groceries)
+  assert.equal(trends.length, 4);
+
+  // Verifying sorting by absDiffAmount descending:
+  // 1. Gadgets: |+300| = $300
+  // 2. Utilities: |-80| = $80
+  // 3. Dining: |-70| = $70
+  // 4. Groceries: |+50| = $50
+  assert.equal(trends[0]!.name, "Gadgets");
+  assert.equal(trends[0]!.diffAmount, 30000);
+  assert.equal(trends[0]!.absDiffAmount, 30000);
+  assert.equal(trends[0]!.status, "new");
+  assert.ok(trends[0]!.changeText.includes("(New)"));
+
+  assert.equal(trends[1]!.name, "Utilities");
+  assert.equal(trends[1]!.diffAmount, -8000);
+  assert.equal(trends[1]!.absDiffAmount, 8000);
+  assert.equal(trends[1]!.status, "no_spending");
+  assert.equal(trends[1]!.percentChange, -100);
+
+  assert.equal(trends[2]!.name, "Dining");
+  assert.equal(trends[2]!.diffAmount, -7000);
+  assert.equal(trends[2]!.absDiffAmount, 7000);
+  assert.equal(trends[2]!.status, "decreased");
+  assert.equal(trends[2]!.percentChange, -70);
+
+  assert.equal(trends[3]!.name, "Groceries");
+  assert.equal(trends[3]!.diffAmount, 5000);
+  assert.equal(trends[3]!.absDiffAmount, 5000);
+  assert.equal(trends[3]!.status, "increased");
+  assert.equal(trends[3]!.percentChange, 25);
+});
+
+test("Test 5B.7 — Cross-account refund offsetting and clamped net zero spending in trends", () => {
+  const state = blank();
+  const checking = state.accounts[0]!;
+  const card: Account = {
+    id: "acc-cc-5b7",
+    name: "Credit Card",
+    type: "credit",
+    opening: 0,
+    includeInSafeToSpend: false,
+    createdAt: "2026-09-01",
+    updatedAt: "2026-09-01",
+  };
+  state.accounts.push(card);
+
+  // In September: Electronics had $100 purchase on Card, and $100 refund to Checking
+  // Net spending is $0 (clamped).
+  // In October: Electronics has $50 purchase on Checking.
+  state.transactions = [
+    { id: "tx-s-cc", name: "Gadget", amount: -10000, category: "Electronics", date: "2026-09-05", status: "posted", accountId: card.id },
+    { id: "tx-s-ref", name: "Refund to Checking", amount: 10000, category: "Electronics", date: "2026-09-08", status: "posted", accountId: checking.id },
+    { id: "tx-o-chk", name: "Cables", amount: -5000, category: "Electronics", date: "2026-10-05", status: "posted", accountId: checking.id },
+  ];
+
+  const sepSum = getInsightsSpending(state, "2026-09", "2026-09-30");
+  const octSum = getInsightsSpending(state, "2026-10", "2026-10-21");
+
+  assert.equal(sepSum.totalSpent, 0, "September net spending is $0 due to cross-account offset");
+  assert.equal(octSum.totalSpent, 5000, "October net spending is $50.00");
+
+  const trends = getCategoryTrends(octSum, sepSum);
+  assert.equal(trends.length, 1);
+  assert.equal(trends[0]!.name, "Electronics");
+  assert.equal(trends[0]!.prevAmount, 0, "Previous amount was $0 net");
+  assert.equal(trends[0]!.selectedAmount, 5000);
+  assert.equal(trends[0]!.status, "new");
+});
+
+test("Test 5B.8 — Pending, scheduled, and future-dated transaction filtering in MoM and history", () => {
+  const state = blank();
+  const simNow = "2026-10-18";
+
+  state.transactions = [
+    // Real past transaction ($60)
+    { id: "tx-past", name: "Gas", amount: -6000, category: "Transport", date: "2026-10-10", status: "posted" },
+    // Real pending transaction ($15) -> included
+    { id: "tx-pending", name: "Coffee", amount: -1500, category: "Dining", date: "2026-10-12", status: "pending" },
+    // Scheduled transaction on or before simNow -> excluded
+    { id: "tx-sched-past", name: "Scheduled Bill", amount: -5000, category: "Utilities", date: "2026-10-15", status: "scheduled" },
+    // Future cleared transaction (after simNow) -> excluded
+    { id: "tx-future-clr", name: "Future Cleared", amount: -10000, category: "Shopping", date: "2026-10-25", status: "cleared" },
+  ];
+
+  const mom = getMonthComparison(state, "2026-10", simNow);
+  // Total should be $60 + $15 = $75.00 (7500 cents). Scheduled and future are strictly excluded.
+  assert.equal(mom.selectedSpent, 7500);
+
+  const history = getSpendingHistory(state, "2026-10", 6, simNow);
+  const octPoint = history.months.find((m) => m.month === "2026-10")!;
+  assert.equal(octPoint.totalSpent, 7500);
+  assert.equal(octPoint.transactionCount, 2);
+});
+
+test("Test 5B.9 — Transaction drill-down navigation: preserves both category and monthFilter in ledger view", () => {
+  const b = useBudget();
+  const simNow = "2026-10-21";
+
+  b.state.value.transactions = [
+    { id: "tx-sep-groc", name: "Sep Market", amount: -4000, category: "Groceries", date: "2026-09-12", status: "posted" },
+    { id: "tx-oct-groc-1", name: "Oct Market 1", amount: -6000, category: "Groceries", date: "2026-10-05", status: "posted" },
+    { id: "tx-oct-groc-2", name: "Oct Market 2", amount: -3500, category: "Groceries", date: "2026-10-14", status: "posted" },
+    { id: "tx-oct-dining", name: "Oct Restaurant", amount: -8000, category: "Dining Out", date: "2026-10-08", status: "posted" },
+  ];
+
+  // Drill down from Insights into "Groceries" for October 2026
+  b.category.value = "Groceries";
+  b.monthFilter.value = "2026-10";
+
+  // List must contain ONLY the two October Groceries transactions
+  assert.equal(b.list.value.length, 2);
+  assert.ok(b.list.value.every((t) => t.category === "Groceries" && t.date.startsWith("2026-10")));
+
+  // Switching monthFilter to September 2026 while preserving category
+  b.monthFilter.value = "2026-09";
+  assert.equal(b.list.value.length, 1);
+  assert.equal(b.list.value[0]!.id, "tx-sep-groc");
+
+  // Resetting filters
+  b.category.value = "All";
+  b.monthFilter.value = "All";
+  assert.equal(b.list.value.length, 4, "Resetting filters shows all transactions");
+});
+
+test("Test 5B.10 — Financial invariants preserved: Safe to Spend, Ready to Pay, and bill protection remain pure", () => {
+  const state = demo();
+  const beforeTotals = totals(state, "2026-10-21");
+
+  // Compute all Phase 5B functions
+  const comp = getMonthComparison(state, "2026-10", "2026-10-21");
+  const octSummary = getInsightsSpending(state, "2026-10", "2026-10-21");
+  const sepSummary = getInsightsSpending(state, "2026-09", "2026-09-30");
+  const trends = getCategoryTrends(octSummary, sepSummary);
+  const history = getSpendingHistory(state, "2026-10", 6, "2026-10-21");
+
+  assert.ok(comp.selectedSpent > 0);
+  assert.ok(trends.length > 0);
+  assert.equal(history.months.length, 6);
+
+  // Invariant verification
+  const afterTotals = totals(state, "2026-10-21");
+  assert.equal(afterTotals.balance, beforeTotals.balance, "Balance unchanged");
+  assert.equal(afterTotals.pots, beforeTotals.pots, "Pots unchanged");
+  assert.equal(afterTotals.budgets, beforeTotals.budgets, "Budgets unchanged");
+  assert.equal(afterTotals.bills, beforeTotals.bills, "Bills unchanged");
+  assert.equal(afterTotals.totalReadyToPay, beforeTotals.totalReadyToPay, "Ready to Pay unchanged");
+  assert.equal(afterTotals.safe, beforeTotals.safe, "Safe to Spend invariant 100% preserved");
+});
+
 
 
 
