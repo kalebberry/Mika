@@ -5282,6 +5282,7 @@ test("Test 3A.2.5 — Covered versus uncovered credit-card bill purchases", () =
 
   // Scenario A: Budget-covered bill purchase on credit card
   const stateCovered: State = blank();
+  stateCovered.payday = "2026-10-31";
   stateCovered.accounts = [
     {
       id: "acc-checking",
@@ -5352,6 +5353,7 @@ test("Test 3A.2.5 — Covered versus uncovered credit-card bill purchases", () =
 
   // Scenario B: Uncovered (unbudgeted) bill purchase on credit card
   const stateUncovered: State = blank();
+  stateUncovered.payday = "2026-10-31";
   stateUncovered.accounts = [
     {
       id: "acc-checking",
@@ -5740,6 +5742,7 @@ test("Test 3A.2.13 — More than 60 months of legitimate unpaid occurrences", ()
 test("Test 3A.2.14 — Safe to Spend and Covered Credit parity under occurrence matching", () => {
   const simulatedToday = "2026-10-16";
   const state: State = blank();
+  state.payday = "2026-10-31";
   state.accounts = [
     {
       id: "acc-checking",
@@ -14606,22 +14609,25 @@ test("Test 5B.9 — Transaction drill-down navigation: preserves both category a
 });
 
 test("Test 5B.10 — Financial invariants preserved: Safe to Spend, Ready to Pay, and bill protection remain pure", () => {
+  const simNow = today();
+  const currentMonth = simNow.slice(0, 7);
+  const prevMonth = getPreviousMonth(currentMonth);
   const state = demo();
-  const beforeTotals = totals(state, "2026-10-21");
+  const beforeTotals = totals(state, simNow);
 
   // Compute all Phase 5B functions
-  const comp = getMonthComparison(state, "2026-10", "2026-10-21");
-  const octSummary = getInsightsSpending(state, "2026-10", "2026-10-21");
-  const sepSummary = getInsightsSpending(state, "2026-09", "2026-09-30");
-  const trends = getCategoryTrends(octSummary, sepSummary);
-  const history = getSpendingHistory(state, "2026-10", 6, "2026-10-21");
+  const comp = getMonthComparison(state, currentMonth, simNow);
+  const currentSummary = getInsightsSpending(state, currentMonth, simNow);
+  const prevSummary = getInsightsSpending(state, prevMonth, `${prevMonth}-28`);
+  const trends = getCategoryTrends(currentSummary, prevSummary);
+  const history = getSpendingHistory(state, currentMonth, 6, simNow);
 
   assert.ok(comp.selectedSpent > 0);
   assert.ok(trends.length > 0);
   assert.equal(history.months.length, 6);
 
   // Invariant verification
-  const afterTotals = totals(state, "2026-10-21");
+  const afterTotals = totals(state, simNow);
   assert.equal(afterTotals.balance, beforeTotals.balance, "Balance unchanged");
   assert.equal(afterTotals.pots, beforeTotals.pots, "Pots unchanged");
   assert.equal(afterTotals.budgets, beforeTotals.budgets, "Budgets unchanged");
