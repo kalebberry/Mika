@@ -33,6 +33,7 @@ function viewCategoryInTransactions(catName: string) {
     <header class="insights-intro-header">
       <p class="insights-subtitle">
         Understand your money at your own pace.
+        <span class="insights-pending-tag">Includes pending transactions.</span>
       </p>
       
       <!-- Reporting Period Selector -->
@@ -78,7 +79,7 @@ function viewCategoryInTransactions(catName: string) {
         <span class="metric-label">Total Recorded Spending</span>
         <strong class="metric-value">{{ money(insightsSummary.totalSpent) }}</strong>
         <span class="metric-subtext">
-          {{ insightsSummary.periodLabel }}
+          {{ insightsSummary.periodLabel }} · Includes pending transactions
         </span>
       </div>
 
@@ -100,6 +101,9 @@ function viewCategoryInTransactions(catName: string) {
         <span class="metric-subtext" v-if="insightsSummary.largestCategory">
           {{ money(insightsSummary.largestCategory.amount) }} ({{ insightsSummary.largestCategory.percentage }}% of total)
         </span>
+        <span class="metric-subtext" v-else-if="insightsSummary.transactionCount > 0">
+          Fully offset by refunds
+        </span>
         <span class="metric-subtext" v-else>
           No category spending
         </span>
@@ -115,7 +119,7 @@ function viewCategoryInTransactions(catName: string) {
         <div>
           <h2 id="category-breakdown-heading">Category Breakdown</h2>
           <p class="muted breakdown-caption">
-            Qualifying expenses grouped by category, sorted highest first. Excludes transfers and credit card debt repayments.
+            Qualifying expenses grouped by category, sorted highest first. Includes pending transactions; excludes transfers and credit card debt repayments.
           </p>
         </div>
         <span
@@ -198,9 +202,19 @@ function viewCategoryInTransactions(catName: string) {
         aria-label="No spending recorded"
       >
         <span class="empty-icon" aria-hidden="true">🌱</span>
-        <h3>No spending recorded for this period yet</h3>
+        <h3>
+          {{
+            insightsSummary.transactionCount > 0
+              ? "No net spending recorded for this period"
+              : "No spending recorded for this period yet"
+          }}
+        </h3>
         <p class="muted">
-          When you record purchases or bill payments in {{ insightsSummary.periodLabel }}, your category breakdown and proportional summaries will appear here.
+          {{
+            insightsSummary.transactionCount > 0
+              ? `Recorded refunds equaled or exceeded purchases in ${insightsSummary.periodLabel}.`
+              : `When you record purchases or bill payments in ${insightsSummary.periodLabel}, your category breakdown and proportional summaries will appear here.`
+          }}
         </p>
       </div>
     </section>

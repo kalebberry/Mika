@@ -13889,7 +13889,7 @@ test("Test 5A.1 — Calendar-month boundaries and reporting period resolution", 
     { id: "tx-nov-01", name: "Early Nov", amount: -5000, category: "Groceries", date: "2026-11-01", status: "posted" },
   ];
 
-  const octInsights = getInsightsSpending(state, "2026-10");
+  const octInsights = getInsightsSpending(state, "2026-10", "2026-10-31");
   assert.equal(octInsights.totalSpent, 7000, "Includes exact October transactions ($30 + $40 = $70.00)");
   assert.equal(octInsights.transactionCount, 2, "2 qualifying transactions in October");
 
@@ -14008,7 +14008,7 @@ test("Test 5A.4 — Credit-card purchases counted correctly as qualifying expens
   assert.equal(elecCat!.percentage, 68, "Electronics is 68% of total spending");
 });
 
-test("Test 5A.5 — Refund and reversal treatment: offsets purchases within category, isolated by account type", () => {
+test("Test 5A.5 — Refund and reversal treatment: offsets purchases within category across all owned accounts", () => {
   const state = blank();
   const checking = state.accounts[0]!;
 
@@ -14126,6 +14126,114 @@ test("Test 5A.10 — Financial invariants preserved: Safe to Spend and existing 
   assert.equal(afterTotals.bills, beforeTotals.bills, "Bills invariant preserved");
   assert.equal(afterTotals.totalReadyToPay, beforeTotals.totalReadyToPay, "Credit payment reserve invariant preserved");
   assert.equal(afterTotals.safe, beforeTotals.safe, "Safe to Spend invariant strictly preserved to the penny");
+});
+
+test("Test 5A.11 — Cross-account refund offsetting: credit-card purchase refunded to checking and vice versa", () => {
+  const state = blank();
+  const checking = state.accounts[0]!;
+  const creditCard: Account = {
+    id: "acc-credit-refund-test",
+    name: "Visa Platinum",
+    type: "credit",
+    opening: 0,
+    includeInSafeToSpend: false,
+    createdAt: "2026-10-01",
+    updatedAt: "2026-10-01",
+  };
+  state.accounts.push(creditCard);
+
+  state.transactions = [
+    // 1. Credit Card purchase ($150) in Electronics, store refund ($150) credited back to Checking
+    { id: "tx-cc-elec", name: "BestBuy Laptop Accessory", amount: -15000, category: "Electronics", date: "2026-10-05", status: "posted", accountId: creditCard.id },
+    { id: "tx-chk-elec-ref", name: "BestBuy Store Return to Debit", amount: 15000, category: "Electronics", date: "2026-10-07", status: "posted", accountId: checking.id },
+
+    // 2. Checking purchase ($80) in Home, merchant refund ($30) credited to Credit Card
+    { id: "tx-chk-home", name: "Home Goods Table Lamp", amount: -8000, category: "Home", date: "2026-10-08", status: "posted", accountId: checking.id },
+    { id: "tx-cc-home-ref", name: "Home Goods Partial Refund", amount: 3000, category: "Home", date: "2026-10-10", status: "posted", accountId: creditCard.id },
+  ];
+
+  const insights = getInsightsSpending(state, "2026-10", "2026-10-21");
+
+  // Electronics: $150 on CC - $150 to Checking = $0 net spent
+  // Home: $80 on Checking - $30 to CC = $50 net spent
+  assert.equal(insights.totalSpent, 5000, "Total recorded spending is $50.00 after cross-account refund offsets");
+  assert.equal(insights.categories.length, 1, "Only Home appears in active category breakdown");
+  assert.equal(insights.categories[0]!.name, "Home");
+  assert.equal(insights.categories[0]!.amount, 5000);
+  assert.equal(insights.categories[0]!.percentage, 100);
+});
+
+test("Test 5A.12 — Consistency when refunds exceed purchases (category totals, transaction counts, observations)", () => {
+  const state = blank();
+  const checking = state.accounts[0]!;
+
+  // Scenario A: One category over-refunded, another category with positive spending
+  state.transactions = [
+    { id: "tx-food", name: "Weekly Groceries", amount: -12000, category: "Groceries", date: "2026-10-05", status: "posted", accountId: checking.id },
+    { id: "tx-app-buy", name: "Shoes", amount: -4000, category: "Clothing", date: "2026-10-06", status: "posted", accountId: checking.id },
+    { id: "tx-app-ref", name: "Return Shoes & Previous Jacket", amount: 9000, category: "Clothing", date: "2026-10-08", status: "posted", accountId: checking.id },
+  ];
+
+  const insightsA = getInsightsSpending(state, "2026-10", "2026-10-21");
+  assert.equal(insightsA.totalSpent, 12000, "Groceries spending is $120.00; Clothing over-refund does not reduce Groceries");
+  assert.equal(insightsA.transactionCount, 2, "2 expense purchases recorded");
+  assert.equal(insightsA.categories.length, 1, "Clothing net is $0, so only Groceries is active");
+  assert.equal(insightsA.largestCategory?.name, "Groceries");
+  assert.equal(insightsA.observation, "Groceries is your only recorded spending category this month.");
+
+  // Scenario B: Entire period has refunds exceeding purchases across all categories
+  const stateB = blank();
+  stateB.transactions = [
+    { id: "tx-buy-only", name: "Shirt", amount: -3500, category: "Clothing", date: "2026-10-02", status: "posted" },
+    { id: "tx-ref-large", name: "Return Sept Coat", amount: 15000, category: "Clothing", date: "2026-10-04", status: "posted" },
+  ];
+
+  const insightsB = getInsightsSpending(stateB, "2026-10", "2026-10-21");
+  assert.equal(insightsB.totalSpent, 0, "Total net spending is $0.00");
+  assert.equal(insightsB.transactionCount, 1, "1 expense purchase recorded");
+  assert.equal(insightsB.categories.length, 0, "Zero active categories");
+  assert.equal(insightsB.largestCategory, null, "No largest category when net spending is 0");
+  assert.equal(insightsB.observation, "Recorded refunds offset all spending this month.", "Clear, factual explanation of refund offset");
+});
+
+test("Test 5A.13 — Pending transactions are included in Insights totals alongside cleared and posted", () => {
+  const state = blank();
+  state.transactions = [
+    { id: "tx-posted", name: "Gas Station", amount: -4500, category: "Transport", date: "2026-10-10", status: "posted" },
+    { id: "tx-cleared", name: "Pharmacy", amount: -2500, category: "Health", date: "2026-10-12", status: "cleared" },
+    { id: "tx-pending", name: "Coffee Shop Pending", amount: -600, category: "Dining Out", date: "2026-10-15", status: "pending" },
+  ];
+
+  const insights = getInsightsSpending(state, "2026-10", "2026-10-21");
+  assert.equal(insights.totalSpent, 7600, "Includes posted ($45), cleared ($25), and pending ($6) = $76.00");
+  assert.equal(insights.transactionCount, 3, "All 3 transactions counted");
+  assert.equal(insights.categories.length, 3, "All 3 categories represented");
+});
+
+test("Test 5A.14 — Future-dated and scheduled transactions cannot enter current spending totals prematurely", () => {
+  const state = blank();
+  const simNow = "2026-10-21";
+
+  state.transactions = [
+    // Real past transaction within month
+    { id: "tx-valid", name: "Hardware Store", amount: -6000, category: "Home", date: "2026-10-18", status: "posted" },
+
+    // Future-dated transactions later this month (must be excluded regardless of status)
+    { id: "tx-future-cleared", name: "Future Cleared", amount: -10000, category: "Home", date: "2026-10-25", status: "cleared" },
+    { id: "tx-future-pending", name: "Future Pending", amount: -8000, category: "Home", date: "2026-10-26", status: "pending" },
+    { id: "tx-future-posted", name: "Future Posted", amount: -5000, category: "Home", date: "2026-10-28", status: "posted" },
+    { id: "tx-future-sched", name: "Future Scheduled", amount: -15000, category: "Home", date: "2026-10-29", status: "scheduled" },
+
+    // Past-dated transaction marked scheduled (must be excluded because status is scheduled)
+    { id: "tx-past-sched", name: "Past Scheduled Bill", amount: -4000, category: "Utilities", date: "2026-10-15", status: "scheduled" },
+  ];
+
+  const insights = getInsightsSpending(state, "2026-10", simNow);
+
+  assert.equal(insights.totalSpent, 6000, "Only the transaction on or before simNow ($60.00) is counted");
+  assert.equal(insights.transactionCount, 1, "Only 1 valid transaction counted");
+  assert.equal(insights.categories.length, 1);
+  assert.equal(insights.categories[0]!.amount, 6000);
 });
 
 

@@ -2714,8 +2714,9 @@ export function getReportingPeriods(now = today()): {
 export function getInsightsSpending(
   s: State,
   month = today().slice(0, 7),
+  now = today(),
 ): InsightsSpendingSummary {
-  const targetMonth = month || today().slice(0, 7);
+  const targetMonth = month || now.slice(0, 7);
   const periodLabel = formatMonthYear(targetMonth);
 
   if (!s || !Array.isArray(s.transactions)) {
@@ -2733,13 +2734,15 @@ export function getInsightsSpending(
   // 1. Filter qualifying transactions in this calendar month
   // Qualifying rules:
   // - Valid ledger status: pending, cleared, or posted (and legacy !status)
-  // - Exclude scheduled / future transactions
-  // - Exclude legacy debt migration transactions
-  // - Exclude non-standard transaction kinds (transfers and credit card debt repayments)
+  // - Strict future-date prevention: t.date <= now (cannot enter current spending prematurely even if marked pending/cleared)
+  // - Exclude scheduled transactions: t.status !== "scheduled"
+  // - Exclude legacy debt migration transactions: !t.isLegacyDebt
+  // - Exclude non-standard transaction kinds: transfers and credit card debt repayments
   // - Exclude non-expense category groupings (Income, Transfer, Payment)
   const qualifyingTransactions = s.transactions.filter(
     (t) =>
       t.status !== "scheduled" &&
+      t.date <= now &&
       (!t.status || isLedgerStatus(t.status)) &&
       !t.isLegacyDebt &&
       (t.kind === "standard" || !t.kind) &&
@@ -2764,15 +2767,24 @@ export function getInsightsSpending(
     }
   }
 
-  // 3. Calculate category spending using established spent() net-spending semantics
+  // 3. Calculate category spending with full cross-account refund offsetting.
+  // Within a category, refunds offset purchases across all owned accounts (e.g., a credit card purchase refunded to checking).
+  // Net spending is clamped >= 0 so refunds in excess of purchases do not produce negative spending.
   const categoryBreakdown: CategorySpending[] = [];
 
   for (const catName of categoryNames) {
-    const catSpent = spent(s, catName, targetMonth);
-    const catExpenseCount = expenseTxList.filter(
-      (t) =>
-        t.category.toLowerCase() === catName.toLowerCase() && t.amount < 0,
-    ).length;
+    const catTxs = expenseTxList.filter(
+      (t) => t.category.trim().toLowerCase() === catName.toLowerCase(),
+    );
+    const catPurchases = catTxs
+      .filter((t) => t.amount < 0)
+      .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+    const catRefunds = catTxs
+      .filter((t) => t.amount > 0)
+      .reduce((sum, t) => sum + t.amount, 0);
+
+    const catSpent = Math.max(0, catPurchases - catRefunds);
+    const catExpenseCount = catTxs.filter((t) => t.amount < 0).length;
 
     if (catSpent > 0 || catExpenseCount > 0) {
       // Find budget color or assign deterministic theme color
@@ -2823,7 +2835,7 @@ export function getInsightsSpending(
     activeCategories.length > 0 ? activeCategories[0]! : null;
 
   // Generate one concise, factual, nonjudgmental observation
-  const isCurrent = targetMonth === today().slice(0, 7);
+  const isCurrent = targetMonth === now.slice(0, 7);
   const timeContext = isCurrent ? "this month" : "last month";
 
   let observation = "No spending recorded for this period yet.";
@@ -2833,6 +2845,8 @@ export function getInsightsSpending(
     } else {
       observation = `${largestCategory.name} is your largest recorded spending category ${timeContext}, accounting for ${largestCategory.percentage}% of your spending.`;
     }
+  } else if (transactionCount > 0 && totalSpent === 0) {
+    observation = `Recorded refunds offset all spending ${timeContext}.`;
   }
 
   return {

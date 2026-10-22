@@ -2068,18 +2068,36 @@ Before implementing calculations, the ledger semantics were explicitly audited a
 
 ## 4. Test Suite & Verification Results
 
-All **262 tests passing** (`npm test`), 0 failures, 0 skips:
+All **266 tests passing** (`npm test`), 0 failures, 0 skips:
 - **Test 5A.1**: Calendar-month boundaries, leap years, year rollbacks (`Jan -> Dec`), and reporting period resolution.
 - **Test 5A.2**: Category aggregation, proportional calculations, and highest-first sorting.
 - **Test 5A.3**: Transfers and credit-card debt repayments strictly excluded (zero double-counting).
 - **Test 5A.4**: Credit-card purchases counted correctly as qualifying expenses.
-- **Test 5A.5**: Refund and reversal treatment: offsets purchases within category, isolated by account type, clamped $\ge 0$.
+- **Test 5A.5**: Refund and reversal treatment: offsets purchases within category across all owned accounts, clamped $\ge 0$.
 - **Test 5A.6**: Future and scheduled transactions strictly excluded from spending.
 - **Test 5A.7**: Empty state and zero-spending period handling.
 - **Test 5A.8**: Reporting period switching across isolated calendar months.
 - **Test 5A.9**: Factual observations grounded strictly in recorded data.
 - **Test 5A.10**: Financial invariants preserved: Safe to Spend, totals, and existing ledger pure to the penny.
-- Production build: `vue-tsc -b && vite build` built cleanly in 2.10s with 0 errors.
+- **Test 5A.11**: Cross-account refund offsetting: credit-card purchase refunded to checking and vice versa.
+- **Test 5A.12**: Consistency when refunds exceed purchases (category totals, transaction counts, observations).
+- **Test 5A.13**: Pending transactions are included in Insights totals alongside cleared and posted.
+- **Test 5A.14**: Future-dated and scheduled transactions cannot enter current spending totals prematurely.
+- Production build: `vue-tsc -b && vite build` built cleanly with 0 errors.
+
+## 5. Financial Accuracy Review & Invariants Audit
+
+1. **Cross-Account Refund Offsetting**:
+   - In budgeting envelopes, `spent()` uses account-type isolation so credit statement credits cannot inflate cash envelope reserves.
+   - In spending insights, categories span across all owned accounts. `getInsightsSpending()` calculates net spending as $\max(0, \sum \text{purchases} - \sum \text{refunds})$ per category across all accounts. A credit card purchase refunded to checking (or vice versa) correctly offsets to $0 net spending.
+   - `spent()` remains 100% untouched, ensuring Safe to Spend invariants are preserved.
+2. **Consistency When Refunds Exceed Purchases**:
+   - When refunds exceed purchases in a category, net spending is clamped at $0.00 and does not reduce other categories.
+   - When refunds equal or exceed purchases across the entire month, the observation clearly states: *"Recorded refunds offset all spending this month."* and the breakdown displays a calm informative empty state explaining that refunds offset purchases.
+3. **Pending Transactions Transparency**:
+   - Pending transactions are included in Insights totals. The UI explicitly discloses this in the header subtitle (`Includes pending transactions.`), the Total Recorded Spending card, and the Category Breakdown caption.
+4. **Future-Dated & Scheduled Transaction Safeguard**:
+   - Any transaction with `date > now` is strictly excluded from current spending totals, regardless of whether it was imported as `cleared`, `pending`, or `posted`. Scheduled transactions (`status === "scheduled"`) are also strictly excluded.
 
 
 

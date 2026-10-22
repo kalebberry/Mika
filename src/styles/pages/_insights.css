@@ -30,6 +30,26 @@
   letter-spacing: -0.01em;
 }
 
+.insights-pending-tag {
+  display: inline-block;
+  font-size: 0.825rem;
+  font-weight: 600;
+  color: var(--color-teal, #277c78);
+  margin-left: 0.4rem;
+  padding: 0.15rem 0.45rem;
+  background: rgba(39, 124, 120, 0.08);
+  border-radius: var(--radius-sm, 6px);
+}
+
+@media (max-width: 37.5rem) {
+  .insights-pending-tag {
+    display: block;
+    width: fit-content;
+    margin-left: 0;
+    margin-top: 0.35rem;
+  }
+}
+
 /* Period Selector Group */
 .period-selector-group {
   display: inline-flex;
