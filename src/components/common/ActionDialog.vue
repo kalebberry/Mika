@@ -24,6 +24,7 @@ const {
   getAccountTransactionCount,
   getAccountDeletionBlockReason,
   toggleArchiveAccount,
+  pendingRestorePreview,
 } = useBudget();
 const {
   dialogRef,
@@ -32,6 +33,7 @@ const {
   error,
   resetChoice,
   resetConfirmed,
+  restoreConfirmed,
   payMethod,
   form,
   open,
@@ -234,6 +236,11 @@ function cancelStartFresh() {
   page.value = "Settings";
 }
 
+function cancelRestoreBackup() {
+  close();
+  page.value = "Settings";
+}
+
 const isColorFieldVisible = computed(() =>
   ["Add budget", "Edit budget", "Add pot"].includes(mode.value),
 );
@@ -400,6 +407,84 @@ function onDateInput() {
           @click="cancelStartFresh"
         >
           Cancel and return to Settings
+        </button>
+      </template>
+
+      <template v-if="mode === 'Restore backup' && pendingRestorePreview">
+        <p class="muted">
+          Review the contents of your backup before restoring. Restoring will replace your current browser records.
+        </p>
+
+        <div class="restore-preview-summary">
+          <div class="restore-preview-grid">
+            <div class="restore-stat">
+              <span class="restore-stat-label">Accounts</span>
+              <strong class="restore-stat-val">{{ pendingRestorePreview.accountCount }}</strong>
+            </div>
+            <div class="restore-stat">
+              <span class="restore-stat-label">Transactions</span>
+              <strong class="restore-stat-val">{{ pendingRestorePreview.transactionCount }}</strong>
+            </div>
+            <div class="restore-stat">
+              <span class="restore-stat-label">Budgets</span>
+              <strong class="restore-stat-val">{{ pendingRestorePreview.budgetCount }}</strong>
+            </div>
+            <div class="restore-stat">
+              <span class="restore-stat-label">Pots</span>
+              <strong class="restore-stat-val">{{ pendingRestorePreview.potCount }}</strong>
+            </div>
+            <div class="restore-stat">
+              <span class="restore-stat-label">Recurring Bills</span>
+              <strong class="restore-stat-val">{{ pendingRestorePreview.billCount }}</strong>
+            </div>
+            <div class="restore-stat">
+              <span class="restore-stat-label">Safe to Spend</span>
+              <strong class="restore-stat-val">{{ money(pendingRestorePreview.safeToSpend) }}</strong>
+            </div>
+          </div>
+
+          <div v-if="pendingRestorePreview.earliestDate && pendingRestorePreview.latestDate" class="restore-date-range">
+            <small class="muted">
+              📅 Transaction range: <strong>{{ pendingRestorePreview.earliestDate }}</strong> to <strong>{{ pendingRestorePreview.latestDate }}</strong>
+            </small>
+          </div>
+
+          <div v-if="pendingRestorePreview.exportedAt" class="restore-date-range">
+            <small class="muted">
+              🕒 Exported on: <strong>{{ new Date(pendingRestorePreview.exportedAt).toLocaleString() }}</strong> (schema v{{ pendingRestorePreview.schemaVersion }})
+            </small>
+          </div>
+
+          <div v-if="pendingRestorePreview.warnings && pendingRestorePreview.warnings.length" class="restore-warnings-box">
+            <div v-for="(w, idx) in pendingRestorePreview.warnings" :key="idx" class="restore-warning-item">
+              <span class="warning-icon" aria-hidden="true">ℹ️</span>
+              <small>{{ w }}</small>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout warning-callout">
+          <span class="callout-icon" aria-hidden="true">⚠️</span>
+          <small>
+            <strong>Warning:</strong> Restoring this backup will replace your current local dataset. A rollback snapshot of your current data will be saved automatically before replacing.
+          </small>
+        </div>
+
+        <button class="secondary" type="button" @click="backup">
+          Download current data first ↓
+        </button>
+
+        <label class="reset-confirm">
+          <input type="checkbox" v-model="restoreConfirmed" />
+          <span>I understand my current browser dataset will be replaced by this backup.</span>
+        </label>
+
+        <button
+          type="button"
+          class="text-link"
+          @click="cancelRestoreBackup"
+        >
+          Cancel and keep current data
         </button>
       </template>
 
@@ -1367,28 +1452,31 @@ function onDateInput() {
         v-else
         class="primary full"
         :class="{
-          danger: mode.startsWith('Delete') || mode === 'Start fresh',
+          danger: mode.startsWith('Delete') || mode === 'Start fresh' || mode === 'Restore backup',
         }"
         type="submit"
+        :disabled="mode === 'Restore backup' && !restoreConfirmed"
       >
         {{
-          mode === "Start fresh"
-            ? "Confirm and start fresh"
-            : mode === "Delete account"
-              ? "Confirm permanent deletion"
-              : mode === "Reserve for payment"
-                ? (form.reserveAction === "release" ? "Release to Safe to Spend" : "Assign to Payment Reserve")
-                : mode.startsWith("Delete")
-                  ? "Confirm removal"
-                  : mode === "Adjust balance"
-                    ? "Update balance"
-                    : mode === "Settle bill" || (mode === "Pay bill" && payMethod === "settled")
-                      ? "Confirm settlement"
-                      : mode === "Pay bill"
-                        ? "Confirm payment"
-                        : mode.startsWith("Edit")
-                          ? "Save changes"
-                          : "Save"
+          mode === "Restore backup"
+            ? "Replace and restore backup"
+            : mode === "Start fresh"
+              ? "Confirm and start fresh"
+              : mode === "Delete account"
+                ? "Confirm permanent deletion"
+                : mode === "Reserve for payment"
+                  ? (form.reserveAction === "release" ? "Release to Safe to Spend" : "Assign to Payment Reserve")
+                  : mode.startsWith("Delete")
+                    ? "Confirm removal"
+                    : mode === "Adjust balance"
+                      ? "Update balance"
+                      : mode === "Settle bill" || (mode === "Pay bill" && payMethod === "settled")
+                        ? "Confirm settlement"
+                        : mode === "Pay bill"
+                          ? "Confirm payment"
+                          : mode.startsWith("Edit")
+                            ? "Save changes"
+                            : "Save"
         }}
       </button>
     </form>
@@ -1760,5 +1848,71 @@ function onDateInput() {
   border-radius: var(--radius-sm, 6px);
   padding: 0.875rem 1rem;
   margin-bottom: 0.875rem;
+}
+
+.restore-preview-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin: 0.75rem 0;
+  padding: 0.85rem;
+  background: var(--color-surface-subtle, #f8f8fa);
+  border: 1px solid var(--color-border, #ededf2);
+  border-radius: var(--radius-sm, 6px);
+}
+
+.restore-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+}
+
+@media (max-width: 480px) {
+  .restore-preview-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.restore-stat {
+  display: flex;
+  flex-direction: column;
+  padding: 0.4rem 0.5rem;
+  background: var(--color-surface, #ffffff);
+  border: 1px solid var(--color-border, #ededf2);
+  border-radius: 4px;
+}
+
+.restore-stat-label {
+  font-size: 0.75rem;
+  color: var(--color-text-muted, #666);
+}
+
+.restore-stat-val {
+  font-size: 0.95rem;
+  color: var(--color-text, #201f24);
+  font-weight: 600;
+}
+
+.restore-date-range {
+  margin-top: 0.2rem;
+}
+
+.restore-warnings-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.25rem;
+  padding: 0.5rem;
+  background: rgba(180, 83, 9, 0.08);
+  border-left: 3px solid #b45309;
+  border-radius: 4px;
+}
+
+.restore-warning-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  font-size: 0.8125rem;
+  color: #78350f;
 }
 </style>

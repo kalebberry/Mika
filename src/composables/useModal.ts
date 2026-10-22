@@ -54,6 +54,7 @@ const selected = ref("");
 const error = ref("");
 const resetChoice = ref<"keep" | "all">("keep");
 const resetConfirmed = ref(false);
+const restoreConfirmed = ref(false);
 const focusBefore = ref<HTMLElement | null>(null);
 const payMethod = ref<"transaction" | "settled">("transaction");
 
@@ -113,6 +114,10 @@ export function useModal() {
     sort,
     search,
     navigateToTransaction,
+    createRollbackSnapshot,
+    confirmRestore,
+    cancelRestore,
+    saveCurrentStateToStorage,
   } = useBudget();
   const { toast } = useToast();
   const { showCompanion } = useCompanion();
@@ -125,6 +130,9 @@ export function useModal() {
     if (m === "Start fresh") {
       resetChoice.value = state.value.demo ? "all" : "keep";
       resetConfirmed.value = false;
+    }
+    if (m === "Restore backup") {
+      restoreConfirmed.value = false;
     }
     mode.value = m;
     selected.value = id;
@@ -423,6 +431,9 @@ export function useModal() {
   }
 
   function close() {
+    if (mode.value === "Restore backup") {
+      cancelRestore();
+    }
     try {
       dialogRef.value?.close();
     } catch {}
@@ -987,8 +998,21 @@ export function useModal() {
         error.value = "Confirm that you understand what will be cleared.";
         return;
       }
+      createRollbackSnapshot();
       storageBlocked.value = false;
       state.value = resetWorkspace(state.value, resetChoice.value === "keep");
+      saveCurrentStateToStorage(state.value);
+      page.value = "Overview";
+    } else if (mode.value === "Restore backup") {
+      if (!restoreConfirmed.value) {
+        error.value = "Confirm that you understand your current data will be replaced.";
+        return;
+      }
+      const ok = confirmRestore();
+      if (!ok) {
+        error.value = "Failed to restore backup.";
+        return;
+      }
       page.value = "Overview";
     } else if (mode.value === "Delete transaction") {
       state.value.transactions = state.value.transactions.filter(
@@ -1156,6 +1180,7 @@ export function useModal() {
     error,
     resetChoice,
     resetConfirmed,
+    restoreConfirmed,
     payMethod,
     form,
     lastUsedExpenseCategory,

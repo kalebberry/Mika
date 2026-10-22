@@ -6128,3 +6128,206 @@ export function resetWorkspace(current: State, keepPlan: boolean): State {
   }
   return fresh;
 }
+
+export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_BACKUP_FORMAT_VERSION = 1;
+
+export interface BackupEnvelope {
+  app: "mika-budget";
+  formatVersion: number;
+  schemaVersion: number;
+  exportedAt: string;
+  metadata: {
+    transactionCount: number;
+    accountCount: number;
+    budgetCount: number;
+    potCount: number;
+    billCount: number;
+    earliestTransactionDate?: string;
+    latestTransactionDate?: string;
+  };
+  data: State;
+}
+
+export interface RestorePreview {
+  valid: boolean;
+  error?: string;
+  isLegacyRaw: boolean;
+  schemaVersion: number;
+  formatVersion?: number;
+  exportedAt?: string;
+  accountCount: number;
+  transactionCount: number;
+  budgetCount: number;
+  potCount: number;
+  billCount: number;
+  earliestDate?: string;
+  latestDate?: string;
+  totalCashBalance: number;
+  totalReadyToPay: number;
+  safeToSpend: number;
+  rawShortfall: number;
+  warnings: string[];
+}
+
+export function exportBackup(state: State): string {
+  const dates = (state.transactions || [])
+    .map((t) => t.date)
+    .filter((d): d is string => isValidDateString(d))
+    .sort();
+  const earliestTransactionDate = dates[0];
+  const latestTransactionDate = dates[dates.length - 1];
+
+  const envelope: BackupEnvelope = {
+    app: "mika-budget",
+    formatVersion: CURRENT_BACKUP_FORMAT_VERSION,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    exportedAt: new Date().toISOString(),
+    metadata: {
+      transactionCount: (state.transactions || []).length,
+      accountCount: (state.accounts || []).length,
+      budgetCount: (state.budgets || []).length,
+      potCount: (state.pots || []).length,
+      billCount: (state.bills || []).length,
+      earliestTransactionDate,
+      latestTransactionDate,
+    },
+    data: JSON.parse(JSON.stringify(state)),
+  };
+
+  return JSON.stringify(envelope, null, 2);
+}
+
+export function validateAndPreviewBackup(
+  rawJsonOrObj: string | unknown,
+  now = today(),
+): { valid: boolean; preview?: RestorePreview; stateToRestore?: State; error?: string } {
+  let parsed: any;
+  if (typeof rawJsonOrObj === "string") {
+    try {
+      parsed = JSON.parse(rawJsonOrObj);
+    } catch {
+      return {
+        valid: false,
+        error: "The selected file is not valid JSON. Please choose a valid Mika Budget backup file.",
+      };
+    }
+  } else {
+    parsed = rawJsonOrObj;
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    return {
+      valid: false,
+      error: "The selected file is empty or does not contain a valid JSON object.",
+    };
+  }
+
+  const isEnvelope = Boolean(
+    parsed.app === "mika-budget" && parsed.data && typeof parsed.data === "object",
+  );
+  const rawState = isEnvelope ? parsed.data : parsed;
+
+  if (!rawState || typeof rawState !== "object") {
+    return {
+      valid: false,
+      error: "The backup file does not contain valid budget state data.",
+    };
+  }
+
+  // Version check
+  const formatVersion = isEnvelope ? Number(parsed.formatVersion) || 1 : undefined;
+  if (formatVersion !== undefined && formatVersion > CURRENT_BACKUP_FORMAT_VERSION) {
+    return {
+      valid: false,
+      error: `This backup uses a newer format (format v${formatVersion}). Please update Mika Budget to restore this file.`,
+    };
+  }
+
+  const schemaVersion = Number(
+    isEnvelope
+      ? parsed.schemaVersion || rawState.version
+      : rawState.version,
+  ) || 1;
+
+  if (schemaVersion > CURRENT_SCHEMA_VERSION) {
+    return {
+      valid: false,
+      error: `This backup was created with a newer version of Mika Budget (schema v${schemaVersion}). Please update Mika Budget to restore this file.`,
+    };
+  }
+
+  // Check required collections
+  if (
+    !Array.isArray(rawState.transactions) &&
+    !Array.isArray(rawState.budgets) &&
+    !Array.isArray(rawState.pots) &&
+    !Array.isArray(rawState.bills)
+  ) {
+    return {
+      valid: false,
+      error: "The file does not match the Mika Budget backup format (missing required collections: transactions, budgets, pots, or bills).",
+    };
+  }
+
+  // Migrate state deterministically
+  const stateToRestore = migrateState(rawState, now);
+
+  // Check reference integrity & generate helpful warnings
+  const warnings: string[] = [];
+  if (!isEnvelope) {
+    warnings.push(
+      `Restoring from legacy un-enveloped format (schema v${schemaVersion}). The file will be upgraded to schema v${CURRENT_SCHEMA_VERSION}.`,
+    );
+  }
+
+  const knownAccountIds = new Set((stateToRestore.accounts || []).map((a) => a.id));
+  let unlinkedTxCount = 0;
+  for (const t of stateToRestore.transactions || []) {
+    if (t.accountId && !knownAccountIds.has(t.accountId)) {
+      unlinkedTxCount++;
+    }
+  }
+  if (unlinkedTxCount > 0) {
+    warnings.push(
+      `${unlinkedTxCount} transaction${unlinkedTxCount === 1 ? "" : "s"} referenced unlisted account IDs and will be attributed to Primary Checking.`,
+    );
+  }
+
+  const dates = (stateToRestore.transactions || [])
+    .map((t) => t.date)
+    .filter((d): d is string => isValidDateString(d))
+    .sort();
+  const earliestDate = dates[0];
+  const latestDate = dates[dates.length - 1];
+
+  // Recompute financial values through authoritative engine
+  const t = totals(stateToRestore, now);
+
+  const preview: RestorePreview = {
+    valid: true,
+    isLegacyRaw: !isEnvelope,
+    schemaVersion,
+    formatVersion,
+    exportedAt: isEnvelope && typeof parsed.exportedAt === "string" ? parsed.exportedAt : undefined,
+    accountCount: (stateToRestore.accounts || []).length,
+    transactionCount: (stateToRestore.transactions || []).length,
+    budgetCount: (stateToRestore.budgets || []).length,
+    potCount: (stateToRestore.pots || []).length,
+    billCount: (stateToRestore.bills || []).length,
+    earliestDate,
+    latestDate,
+    totalCashBalance: t.balance,
+    totalReadyToPay: t.totalReadyToPay,
+    safeToSpend: t.safe,
+    rawShortfall: t.shortfall,
+    warnings,
+  };
+
+  return {
+    valid: true,
+    preview,
+    stateToRestore,
+  };
+}
+

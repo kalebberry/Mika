@@ -23,6 +23,10 @@ const {
   currentPayday,
   backup,
   importBackup,
+  storageHealth,
+  prepareRestoreFromFile,
+  restoreRollbackSnapshot,
+  downloadCorruptData,
 } = useBudget();
 
 const {
@@ -35,6 +39,16 @@ const {
 } = useCompanion();
 
 const { open } = useModal();
+
+async function onImportFileSelected(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0];
+  if (!file) return;
+  const res = await prepareRestoreFromFile(file);
+  if (res.success) {
+    open("Restore backup");
+  }
+  (e.target as HTMLInputElement).value = "";
+}
 
 function initDraft(): PaydaySchedule {
   const sched = state.value.paydaySchedule;
@@ -658,28 +672,77 @@ function handleRemoveOverride(idOrDate: string) {
             Data Storage & Privacy
           </h2>
         </div>
+
+        <!-- Storage Health Status Banner -->
+        <div
+          v-if="storageHealth.status === 'quota_exceeded'"
+          class="storage-banner quota-banner"
+          role="alert"
+        >
+          <span class="banner-icon" aria-hidden="true">⚠️</span>
+          <div class="banner-content">
+            <strong>Storage Quota Exceeded</strong>
+            <p>Your browser storage limit has been reached. New changes cannot be saved locally. Export a backup immediately to prevent data loss.</p>
+          </div>
+          <button type="button" class="primary sm" @click="backup">
+            Export backup now
+          </button>
+        </div>
+
+        <div
+          v-else-if="storageHealth.hasCorruptedStash"
+          class="storage-banner recovery-banner"
+          role="alert"
+        >
+          <span class="banner-icon" aria-hidden="true">⚠️</span>
+          <div class="banner-content">
+            <strong>Recovery Mode Active</strong>
+            <p>Previous browser data could not be parsed safely. Your original unparsed data is preserved so nothing is overwritten. You can download the raw data below.</p>
+          </div>
+          <button type="button" class="secondary sm" @click="downloadCorruptData">
+            Download raw data (.json)
+          </button>
+        </div>
+
+        <div
+          v-else-if="storageHealth.status === 'concurrency_warning'"
+          class="storage-banner concurrency-banner"
+          role="alert"
+        >
+          <span class="banner-icon" aria-hidden="true">ℹ️</span>
+          <div class="banner-content">
+            <strong>Multi-Tab Sync Notice</strong>
+            <p>{{ storageHealth.errorMessage || 'Storage was modified from another browser tab.' }}</p>
+          </div>
+        </div>
+
+        <div v-else class="storage-health-indicator" role="status">
+          <span class="health-dot active" aria-hidden="true">●</span>
+          <span><strong>Local Browser Storage: Active & Healthy</strong></span>
+        </div>
+
         <p class="muted settings-desc">
-          Your financial details are stored 100% locally in your browser
-          storage. Zero tracking and no external servers.
+          Your financial details are stored 100% locally on this device in browser storage. Zero tracking and no external servers.
         </p>
+
         <div class="settings-data-actions">
           <div class="data-action-item">
             <div>
               <strong>Export Backup</strong>
               <p class="muted">
-                Download a complete JSON file of all your transactions, budgets,
-                pots, and bills.
+                Download a complete, versioned JSON backup containing all accounts, transactions, budgets, pots, and bills.
               </p>
             </div>
             <button type="button" class="secondary" @click="backup">
               Download backup ↓
             </button>
           </div>
+
           <div class="data-action-item">
             <div>
-              <strong>Import Backup</strong>
+              <strong>Import & Restore Backup</strong>
               <p class="muted">
-                Restore your budget data from an exported JSON file.
+                Preview and safely restore your budget records from an exported backup. A rollback snapshot of your current data is saved automatically.
               </p>
             </div>
             <label class="secondary file-upload-btn">
@@ -687,18 +750,49 @@ function handleRemoveOverride(idOrDate: string) {
               <input
                 type="file"
                 accept=".json"
-                @change="importBackup"
+                @change="onImportFileSelected"
                 class="sr-only"
+                aria-label="Upload backup JSON file to restore"
               />
             </label>
           </div>
+
+          <!-- Rollback Snapshot Item -->
+          <div v-if="storageHealth.hasRollbackSnapshot" class="data-action-item rollback-item">
+            <div>
+              <strong>Undo Last Restore / Rollback</strong>
+              <p class="muted">
+                Restore the automatic rollback snapshot taken before your last restore or reset{{ storageHealth.rollbackTimestamp ? ` (${new Date(storageHealth.rollbackTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })})` : '' }}.
+              </p>
+            </div>
+            <button type="button" class="secondary" @click="restoreRollbackSnapshot">
+              Restore rollback snapshot ↺
+            </button>
+          </div>
+
+          <!-- Raw Corrupted Stash Item (if exists) -->
+          <div v-if="storageHealth.hasCorruptedStash" class="data-action-item corrupt-stash-item">
+            <div>
+              <strong>Download Raw Unparseable Data</strong>
+              <p class="muted">
+                Export the preserved raw storage string that failed loading during startup for manual recovery or inspection.
+              </p>
+            </div>
+            <button type="button" class="secondary" @click="downloadCorruptData">
+              Download raw data (.json)
+            </button>
+          </div>
         </div>
+
+        <p class="muted settings-desc storage-educational-note">
+          🔒 <strong>Browser Storage Durability:</strong> Local browser storage is specific to this browser and profile. Private browsing mode, clearing your browser website data, or switching devices will not retain your records. Download regular backups to keep your financial records permanently safe.
+        </p>
+
         <div class="reset-settings">
           <div>
             <h3>Need a fresh start?</h3>
             <p class="muted">
-              Restart anytime. You can keep your budgets and recurring bills or
-              clear everything.
+              Restart anytime. You can keep your budgets and recurring bills or clear everything. A rollback snapshot is saved before reset.
             </p>
           </div>
           <button

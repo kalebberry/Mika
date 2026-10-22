@@ -1,4 +1,4 @@
-import { ref, computed, watch } from "vue";
+import { ref, reactive, computed, watch } from "vue";
 import {
   type State,
   type Bill,
@@ -11,6 +11,12 @@ import {
   totals,
   spent,
   migrateState,
+  exportBackup,
+  validateAndPreviewBackup,
+  type BackupEnvelope,
+  type RestorePreview,
+  CURRENT_SCHEMA_VERSION,
+  CURRENT_BACKUP_FORMAT_VERSION,
   getFollowingPayday,
   getCurrentPayday,
   validatePaydaySchedule,
@@ -158,42 +164,88 @@ const outlookExplanation = computed(() =>
 
 export const isMobileMenuOpen = ref(false);
 
-const STORAGE_KEY = "budget-companion-v1";
+export const STORAGE_KEY = "budget-companion-v1";
+export const STORAGE_BACKUP_KEY = "budget-companion-v1-backup";
+export const STORAGE_CORRUPT_KEY = "budget-companion-v1-corrupt";
+
+export interface StorageHealth {
+  status: "healthy" | "quota_exceeded" | "blocked" | "concurrency_warning";
+  errorMessage: string;
+  lastSavedAt: string | null;
+  saveRevision: number;
+  hasRollbackSnapshot: boolean;
+  rollbackTimestamp: string | null;
+  hasCorruptedStash: boolean;
+}
 
 let initialData = demo();
 let initialWarning = "";
+let initialHasCorrupt = false;
+let initialHasRollback = false;
+let initialRollbackTimestamp: string | null = null;
+let initialBlocked = false;
 
-try {
-  if (typeof localStorage !== "undefined") {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (
-        (parsed.version === 1 ||
-          parsed.version === 2 ||
-          parsed.version === 3 ||
-          parsed.version === 4 ||
-          parsed.version === 5) &&
-        Array.isArray(parsed.transactions) &&
-        Array.isArray(parsed.pots) &&
-        Array.isArray(parsed.bills) &&
-        Array.isArray(parsed.budgets) &&
-        Number.isFinite(parsed.opening)
-      ) {
-        initialData = migrateState(parsed);
-      } else {
-        throw new Error("Invalid schema");
+if (typeof localStorage !== "undefined") {
+  // Check if corrupted stash exists
+  const corruptRaw = localStorage.getItem(STORAGE_CORRUPT_KEY);
+  if (corruptRaw) {
+    initialHasCorrupt = true;
+  }
+
+  // Check if rollback snapshot exists
+  const backupRaw = localStorage.getItem(STORAGE_BACKUP_KEY);
+  if (backupRaw) {
+    initialHasRollback = true;
+    try {
+      const parsedBackup = JSON.parse(backupRaw);
+      if (parsedBackup && parsedBackup.timestamp) {
+        initialRollbackTimestamp = parsedBackup.timestamp;
       }
+    } catch {
+      // ignore
     }
   }
-} catch {
-  initialWarning =
-    "Your saved data could not be loaded. Demo data is shown; the previous browser data has not been overwritten.";
+
+  // Load primary storage
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (raw) {
+    try {
+      const validation = validateAndPreviewBackup(raw);
+      if (validation.valid && validation.stateToRestore) {
+        initialData = validation.stateToRestore;
+      } else {
+        localStorage.setItem(STORAGE_CORRUPT_KEY, raw);
+        initialHasCorrupt = true;
+        initialBlocked = true;
+        initialWarning =
+          validation.error ||
+          "Your saved data could not be loaded safely. Demo data is shown in read-only mode so your original browser data is preserved. Download your raw data in Settings to inspect or recover.";
+      }
+    } catch {
+      localStorage.setItem(STORAGE_CORRUPT_KEY, raw);
+      initialHasCorrupt = true;
+      initialBlocked = true;
+      initialWarning =
+        "Your saved data could not be loaded. Demo data is shown in read-only mode; your original browser data has been preserved for recovery in Settings.";
+    }
+  }
 }
 
 // Module-level reactive singleton state
 const state = ref<State>(initialData);
-const storageBlocked = ref(Boolean(initialWarning));
+const storageBlocked = ref(initialBlocked);
+export const storageHealth = reactive<StorageHealth>({
+  status: initialBlocked ? "blocked" : "healthy",
+  errorMessage: initialWarning,
+  lastSavedAt: null,
+  saveRevision: 0,
+  hasRollbackSnapshot: initialHasRollback,
+  rollbackTimestamp: initialRollbackTimestamp,
+  hasCorruptedStash: initialHasCorrupt,
+});
+
+export const pendingRestorePreview = ref<RestorePreview | null>(null);
+export const pendingRestoreState = ref<State | null>(null);
 const collapsed = ref(false);
 
 const search = ref("");
@@ -425,22 +477,78 @@ watch(
   { deep: true },
 );
 
+export function saveCurrentStateToStorage(stateToSave: State): { success: boolean; error?: string } {
+  if (storageBlocked.value || typeof localStorage === "undefined") {
+    return {
+      success: false,
+      error: "Storage is currently blocked to prevent overwriting unrecovered data.",
+    };
+  }
+  try {
+    const raw = JSON.stringify(stateToSave);
+    localStorage.setItem(STORAGE_KEY, raw);
+    storageHealth.saveRevision++;
+    storageHealth.lastSavedAt = new Date().toISOString();
+    if (
+      storageHealth.status === "quota_exceeded" ||
+      storageHealth.status === "concurrency_warning"
+    ) {
+      storageHealth.status = "healthy";
+      storageHealth.errorMessage = "";
+    }
+    return { success: true };
+  } catch (err: any) {
+    const isQuota = err?.name === "QuotaExceededError";
+    storageHealth.status = "quota_exceeded";
+    storageHealth.errorMessage = isQuota
+      ? "Storage quota exceeded. Your changes cannot be saved locally."
+      : (err?.message || "Storage write failure.");
+    const { toast } = useToast();
+    toast(
+      isQuota
+        ? "Storage quota exceeded: changes cannot be saved in this browser. Export a backup before closing."
+        : "Storage write failed: changes cannot be saved in this browser. Export a backup before closing.",
+    );
+    return { success: false, error: storageHealth.errorMessage };
+  }
+}
+
 // Watch state changes for local storage persistence
 watch(
   state,
   () => {
-    if (storageBlocked.value || typeof localStorage === "undefined") return;
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.value));
-    } catch {
-      const { toast } = useToast();
-      toast(
-        "Changes could not be saved in this browser. Export a backup before closing.",
-      );
-    }
+    saveCurrentStateToStorage(state.value);
   },
   { deep: true },
 );
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e: StorageEvent) => {
+    if (e.key === STORAGE_KEY && e.newValue) {
+      try {
+        const validation = validateAndPreviewBackup(e.newValue);
+        if (validation.valid && validation.stateToRestore) {
+          const currentJson = JSON.stringify(state.value);
+          const newJson = JSON.stringify(validation.stateToRestore);
+          if (currentJson !== newJson) {
+            state.value = validation.stateToRestore;
+            settingsBalance.value = String(totals(state.value).balance / 100);
+            settingsPayday.value = state.value.payday;
+            settingsFollowingPayday.value = getFollowingPayday(state.value);
+            storageHealth.lastSavedAt = new Date().toISOString();
+            storageHealth.saveRevision++;
+            const { toast } = useToast();
+            toast("Budget updated with changes from another browser tab.");
+          }
+        }
+      } catch {
+        storageHealth.status = "concurrency_warning";
+        storageHealth.errorMessage =
+          "Another browser tab saved changes that could not be parsed automatically.";
+      }
+    }
+  });
+}
 
 export function useBudget() {
   const { toast } = useToast();
@@ -514,9 +622,80 @@ export function useBudget() {
     return true;
   }
 
+  function createRollbackSnapshot(): boolean {
+    if (typeof localStorage === "undefined") return false;
+    try {
+      const timestamp = new Date().toISOString();
+      const payload = JSON.stringify({
+        timestamp,
+        state: state.value,
+      });
+      localStorage.setItem(STORAGE_BACKUP_KEY, payload);
+      storageHealth.hasRollbackSnapshot = true;
+      storageHealth.rollbackTimestamp = timestamp;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function restoreRollbackSnapshot(): boolean {
+    if (typeof localStorage === "undefined") return false;
+    try {
+      const raw = localStorage.getItem(STORAGE_BACKUP_KEY);
+      if (!raw) {
+        toast("No rollback snapshot found.");
+        return false;
+      }
+      const parsed = JSON.parse(raw);
+      const stateObj = parsed?.state || parsed;
+      const validation = validateAndPreviewBackup(stateObj);
+      if (!validation.valid || !validation.stateToRestore) {
+        toast("Rollback snapshot could not be validated.");
+        return false;
+      }
+      // Unblock storage if blocked
+      storageBlocked.value = false;
+      storageHealth.status = "healthy";
+      storageHealth.errorMessage = "";
+
+      state.value = validation.stateToRestore;
+      saveCurrentStateToStorage(state.value);
+      settingsBalance.value = String(totals(state.value).balance / 100);
+      settingsPayday.value = state.value.payday;
+      settingsFollowingPayday.value = getFollowingPayday(state.value);
+      toast("Previous rollback snapshot restored successfully.");
+      return true;
+    } catch {
+      toast("Failed to restore rollback snapshot.");
+      return false;
+    }
+  }
+
+  function downloadCorruptData(): void {
+    if (typeof localStorage === "undefined") return;
+    const raw =
+      localStorage.getItem(STORAGE_CORRUPT_KEY) ||
+      localStorage.getItem(STORAGE_KEY) ||
+      "";
+    if (!raw) {
+      toast("No raw unparseable data found in storage.");
+      return;
+    }
+    const blob = new Blob([raw], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `mika-corrupted-raw-backup-${today()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast("Raw unparseable data downloaded.");
+  }
+
   function backup() {
+    const json = exportBackup(state.value);
     const url = URL.createObjectURL(
-      new Blob([JSON.stringify(state.value, null, 2)], {
+      new Blob([json], {
         type: "application/json",
       }),
     );
@@ -528,34 +707,81 @@ export function useBudget() {
     toast("Backup downloaded.");
   }
 
-  function importBackup(e: Event) {
+  async function prepareRestoreFromFile(
+    file: File,
+  ): Promise<{ success: boolean; preview?: RestorePreview; error?: string }> {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const text = event.target?.result as string;
+          const validation = validateAndPreviewBackup(text);
+          if (
+            !validation.valid ||
+            !validation.preview ||
+            !validation.stateToRestore
+          ) {
+            const err =
+              validation.error || "File does not match budget backup format.";
+            toast(err);
+            resolve({ success: false, error: err });
+            return;
+          }
+          pendingRestorePreview.value = validation.preview;
+          pendingRestoreState.value = validation.stateToRestore;
+          resolve({ success: true, preview: validation.preview });
+        } catch {
+          const err = "Failed to read or parse backup file.";
+          toast(err);
+          resolve({ success: false, error: err });
+        }
+      };
+      reader.onerror = () => {
+        const err = "Could not read the selected file.";
+        toast(err);
+        resolve({ success: false, error: err });
+      };
+      reader.readAsText(file);
+    });
+  }
+
+  function confirmRestore(): boolean {
+    if (!pendingRestoreState.value) {
+      toast("No restore data prepared.");
+      return false;
+    }
+    // Automatically create a rollback snapshot of current data before replacement!
+    createRollbackSnapshot();
+
+    // Unblock storage if previously blocked
+    storageBlocked.value = false;
+    storageHealth.status = "healthy";
+    storageHealth.errorMessage = "";
+
+    state.value = pendingRestoreState.value;
+    saveCurrentStateToStorage(state.value);
+    settingsBalance.value = String(totals(state.value).balance / 100);
+    settingsPayday.value = state.value.payday;
+    settingsFollowingPayday.value = getFollowingPayday(state.value);
+
+    pendingRestorePreview.value = null;
+    pendingRestoreState.value = null;
+
+    toast("Backup restored successfully.");
+    return true;
+  }
+
+  function cancelRestore(): void {
+    pendingRestorePreview.value = null;
+    pendingRestoreState.value = null;
+  }
+
+  async function importBackup(e: Event) {
     const file = (e.target as HTMLInputElement).files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const parsed = JSON.parse(event.target?.result as string);
-        if (
-          parsed &&
-          typeof parsed === "object" &&
-          Array.isArray(parsed.transactions) &&
-          Array.isArray(parsed.budgets) &&
-          Array.isArray(parsed.pots) &&
-          Array.isArray(parsed.bills)
-        ) {
-          state.value = migrateState(parsed);
-          settingsBalance.value = String(totals(state.value).balance / 100);
-          settingsPayday.value = state.value.payday;
-          settingsFollowingPayday.value = getFollowingPayday(state.value);
-          toast("Backup restored successfully.");
-        } else {
-          toast("File does not match budget backup format.");
-        }
-      } catch {
-        toast("Failed to read or parse backup file.");
-      }
-    };
-    reader.readAsText(file);
+    const res = await prepareRestoreFromFile(file);
+    (e.target as HTMLInputElement).value = "";
+    return res;
   }
 
   function postTransaction(id: string, targetStatus: "pending" | "cleared" = "cleared") {
@@ -1003,6 +1229,15 @@ export function useBudget() {
     removeScheduleOverride,
     backup,
     importBackup,
+    storageHealth,
+    pendingRestorePreview,
+    prepareRestoreFromFile,
+    confirmRestore,
+    cancelRestore,
+    createRollbackSnapshot,
+    restoreRollbackSnapshot,
+    downloadCorruptData,
+    saveCurrentStateToStorage,
     postTransaction,
     toggleProtectBill,
     settleBill,

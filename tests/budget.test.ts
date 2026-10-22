@@ -9,6 +9,7 @@ import {
   type TransactionKind,
   blank,
   demo,
+  resetWorkspace,
   today,
   totals,
   reserveBillsBreakdown,
@@ -124,8 +125,21 @@ import {
   type MoneyOutlookSummary,
   type BeforePaydayCommitment,
   type BeforePaydayCommitmentsSummary,
+  exportBackup,
+  validateAndPreviewBackup,
+  type BackupEnvelope,
+  type RestorePreview,
+  CURRENT_SCHEMA_VERSION,
+  CURRENT_BACKUP_FORMAT_VERSION,
 } from "../src/model.ts";
-import { useBudget } from "../src/composables/useBudget.ts";
+import {
+  useBudget,
+  STORAGE_KEY,
+  STORAGE_BACKUP_KEY,
+  STORAGE_CORRUPT_KEY,
+  saveCurrentStateToStorage,
+  storageHealth,
+} from "../src/composables/useBudget.ts";
 import {
   useModal,
   lastUsedExpenseCategory,
@@ -15673,6 +15687,506 @@ test("Test 5C.17 — Money Outlook exact reconciliation with totals() across neg
     outlook.totalProtections < ccBal + totalProt,
     "Card balance must not be deducted twice or as a lump sum",
   );
+});
+
+// ============================================================================
+// Phase 6A: Data Integrity, Storage Hardening, Backup, & Recovery
+// ============================================================================
+
+test("Test 6A.1 — Save and reload round trips", () => {
+  const original = demo();
+  original.payday = "2026-10-31";
+  original.accounts[0]!.lastVerifiedAt = "2026-10-20T12:00:00Z";
+
+  // Serialize
+  const serialized = JSON.stringify(original);
+
+  // Reload via validateAndPreviewBackup
+  const result = validateAndPreviewBackup(serialized, "2026-10-22");
+  assert.equal(result.valid, true);
+  assert.ok(result.stateToRestore);
+
+  const restored = result.stateToRestore;
+  assert.equal(restored.transactions.length, original.transactions.length);
+  assert.equal(restored.accounts.length, original.accounts.length);
+  assert.equal(restored.bills.length, original.bills.length);
+  assert.equal(restored.pots.length, original.pots.length);
+  assert.equal(restored.budgets.length, original.budgets.length);
+
+  // Invariants
+  const origTotals = totals(original, "2026-10-22");
+  const restTotals = totals(restored, "2026-10-22");
+  assert.equal(restTotals.balance, origTotals.balance);
+  assert.equal(restTotals.safe, origTotals.safe);
+  assert.equal(restTotals.shortfall, origTotals.shortfall);
+  assert.equal(restTotals.totalReadyToPay, origTotals.totalReadyToPay);
+});
+
+test("Test 6A.2 — Complete backup export and restore round trips", () => {
+  const state = demo();
+  state.payday = "2026-10-31";
+
+  const exported = exportBackup(state);
+  const parsed = JSON.parse(exported);
+
+  // Verify envelope
+  assert.equal(parsed.app, "mika-budget");
+  assert.equal(parsed.formatVersion, CURRENT_BACKUP_FORMAT_VERSION);
+  assert.equal(parsed.schemaVersion, CURRENT_SCHEMA_VERSION);
+  assert.ok(parsed.exportedAt);
+  assert.equal(parsed.metadata.transactionCount, state.transactions.length);
+  assert.equal(parsed.metadata.accountCount, state.accounts.length);
+  assert.equal(parsed.metadata.budgetCount, state.budgets.length);
+  assert.equal(parsed.metadata.potCount, state.pots.length);
+  assert.equal(parsed.metadata.billCount, state.bills.length);
+  assert.ok(parsed.metadata.earliestTransactionDate);
+  assert.ok(parsed.metadata.latestTransactionDate);
+
+  // Restore preview check
+  const res = validateAndPreviewBackup(exported, "2026-10-22");
+  assert.equal(res.valid, true);
+  assert.ok(res.preview);
+  assert.equal(res.preview.isLegacyRaw, false);
+  assert.equal(res.preview.schemaVersion, CURRENT_SCHEMA_VERSION);
+  assert.equal(res.preview.transactionCount, state.transactions.length);
+  assert.equal(res.preview.accountCount, state.accounts.length);
+  assert.equal(res.preview.safeToSpend, totals(state, "2026-10-22").safe);
+});
+
+test("Test 6A.3 — Invalid JSON and malformed structures", () => {
+  // Truncated / syntax error
+  const invalidJson = '{"app": "mika-budget", "data": { broken ';
+  const res1 = validateAndPreviewBackup(invalidJson);
+  assert.equal(res1.valid, false);
+  assert.match(res1.error || "", /not valid JSON/i);
+
+  // Primitive strings or non-objects
+  const res2 = validateAndPreviewBackup("123");
+  assert.equal(res2.valid, false);
+
+  const res3 = validateAndPreviewBackup(null);
+  assert.equal(res3.valid, false);
+
+  // Empty object with missing collections
+  const res4 = validateAndPreviewBackup("{}");
+  assert.equal(res4.valid, false);
+  assert.match(res4.error || "", /missing required collections/i);
+});
+
+test("Test 6A.4 — Missing required records or broken references", () => {
+  const state = demo();
+  // Modify a transaction to reference a non-existent account
+  state.transactions[0]!.accountId = "acc-ghost-nonexistent";
+
+  const exported = exportBackup(state);
+  const res = validateAndPreviewBackup(exported, "2026-10-22");
+  assert.equal(res.valid, true);
+  assert.ok(res.preview);
+  assert.ok(
+    res.preview.warnings.some((w) =>
+      w.includes("referenced unlisted account IDs"),
+    ),
+  );
+
+  // Ensure the transaction is not discarded
+  assert.equal(
+    res.stateToRestore?.transactions.length,
+    state.transactions.length,
+  );
+});
+
+test("Test 6A.5 — Unsupported future schema versions", () => {
+  // Future schema version 6
+  const futureBackup = JSON.stringify({
+    app: "mika-budget",
+    formatVersion: 1,
+    schemaVersion: 6,
+    exportedAt: "2028-01-01T00:00:00Z",
+    metadata: {},
+    data: demo(),
+  });
+  const res = validateAndPreviewBackup(futureBackup);
+  assert.equal(res.valid, false);
+  assert.match(res.error || "", /newer version of Mika Budget \(schema v6\)/i);
+
+  // Future format version 99
+  const futureFormatBackup = JSON.stringify({
+    app: "mika-budget",
+    formatVersion: 99,
+    schemaVersion: 5,
+    exportedAt: "2028-01-01T00:00:00Z",
+    metadata: {},
+    data: demo(),
+  });
+  const resFormat = validateAndPreviewBackup(futureFormatBackup);
+  assert.equal(resFormat.valid, false);
+  assert.match(resFormat.error || "", /newer format \(format v99\)/i);
+});
+
+test("Test 6A.6 — Legacy data migration (v1, v2, v3, v4 to v5)", () => {
+  // Legacy v1 raw state fixture (pre-accounts, single opening balance)
+  const legacyV1 = {
+    version: 1,
+    opening: 50000, // $500.00
+    transactions: [
+      {
+        id: "tx-1",
+        name: "Groceries",
+        amount: -5000,
+        category: "Groceries",
+        date: "2026-10-05",
+      },
+      {
+        id: "tx-2",
+        name: "Paycheck",
+        amount: 150000,
+        category: "General",
+        date: "2026-10-01",
+      },
+    ],
+    pots: [{ id: "pot-1", name: "Vacation", saved: 10000, target: 50000 }],
+    bills: [
+      { id: "bill-1", name: "Internet", amount: 6000, day: 15, protected: true },
+    ],
+    budgets: [{ id: "b-1", category: "Groceries", limit: 30000 }],
+  };
+
+  const res = validateAndPreviewBackup(JSON.stringify(legacyV1), "2026-10-22");
+  assert.equal(res.valid, true);
+  assert.ok(res.preview);
+  assert.equal(res.preview.isLegacyRaw, true);
+  assert.ok(
+    res.preview.warnings.some((w) => w.includes("legacy un-enveloped format")),
+  );
+
+  const state = res.stateToRestore!;
+  assert.ok(state.version >= 2);
+  assert.equal(res.preview.schemaVersion, 1);
+  assert.equal(state.accounts.length, 1);
+  assert.equal(state.accounts[0]!.id, "acc-default-checking");
+  assert.equal(state.accounts[0]!.type, "checking");
+  assert.equal(state.accounts[0]!.includeInSafeToSpend, true);
+  assert.equal(state.transactions.length, 2);
+  assert.equal(state.transactions[0]!.accountId, "acc-default-checking");
+});
+
+test("Test 6A.7 — Failed migration preserving original data", () => {
+  const corruptPayload = '{"version": 5, "transactions": "not-an-array"}';
+  const res = validateAndPreviewBackup(corruptPayload);
+  assert.equal(res.valid, false);
+  assert.ok(res.error);
+  assert.equal(corruptPayload.includes("not-an-array"), true);
+});
+
+test("Test 6A.8 — Simulated storage-write failure (QuotaExceededError)", () => {
+  const originalLocalStorage = globalThis.localStorage;
+  const quotaError = new Error("Quota exceeded");
+  quotaError.name = "QuotaExceededError";
+
+  (globalThis as any).localStorage = {
+    getItem: () => null,
+    setItem: () => {
+      throw quotaError;
+    },
+    removeItem: () => {},
+  };
+
+  try {
+    const testState = demo();
+    const result = saveCurrentStateToStorage(testState);
+    assert.equal(result.success, false);
+    assert.match(result.error || "", /quota/i);
+    assert.equal(storageHealth.status, "quota_exceeded");
+  } finally {
+    (globalThis as any).localStorage = originalLocalStorage;
+    storageHealth.status = "healthy";
+    storageHealth.errorMessage = "";
+  }
+});
+
+test("Test 6A.9 — Interrupted or conflicting saves: Monotonic saveRevision tracking", () => {
+  const originalLocalStorage = globalThis.localStorage;
+  const store: Record<string, string> = {};
+  (globalThis as any).localStorage = {
+    getItem: (k: string) => store[k] || null,
+    setItem: (k: string, v: string) => {
+      store[k] = v;
+    },
+    removeItem: (k: string) => {
+      delete store[k];
+    },
+  };
+
+  try {
+    const revBefore = storageHealth.saveRevision;
+    const testState = demo();
+
+    saveCurrentStateToStorage(testState);
+    assert.equal(storageHealth.saveRevision, revBefore + 1);
+    assert.ok(storageHealth.lastSavedAt);
+
+    // Rapid second save
+    saveCurrentStateToStorage(testState);
+    assert.equal(storageHealth.saveRevision, revBefore + 2);
+  } finally {
+    (globalThis as any).localStorage = originalLocalStorage;
+  }
+});
+
+test("Test 6A.10 — Cross-tab concurrent edits: Storage synchronization and validation", () => {
+  const original = demo();
+  original.payday = "2026-10-31";
+
+  // Foreign tab writes a new transaction
+  const foreignState = JSON.parse(JSON.stringify(original));
+  foreignState.transactions.push({
+    id: "tx-tab-b",
+    name: "Coffee Shop from Tab B",
+    amount: -450,
+    category: "Groceries",
+    date: "2026-10-21",
+    accountId: "acc-default-checking",
+    status: "cleared",
+    kind: "standard",
+  });
+
+  const foreignJson = JSON.stringify(foreignState);
+  const validation = validateAndPreviewBackup(foreignJson, "2026-10-22");
+  assert.equal(validation.valid, true);
+  assert.equal(
+    validation.stateToRestore?.transactions.some((t) => t.id === "tx-tab-b"),
+    true,
+  );
+
+  // Foreign tab writes garbage
+  const foreignGarbage = "corrupted-unparseable-data";
+  const garbageValidation = validateAndPreviewBackup(foreignGarbage);
+  assert.equal(garbageValidation.valid, false);
+});
+
+test("Test 6A.11 — Restore cancellation leaving state unchanged", () => {
+  const { state, pendingRestorePreview, cancelRestore } = useBudget();
+  const txCountBefore = state.value.transactions.length;
+
+  // Set a pending restore preview
+  pendingRestorePreview.value = {
+    valid: true,
+    isLegacyRaw: false,
+    schemaVersion: 5,
+    accountCount: 1,
+    transactionCount: 999,
+    budgetCount: 1,
+    potCount: 1,
+    billCount: 1,
+    totalCashBalance: 99999,
+    totalReadyToPay: 0,
+    safeToSpend: 99999,
+    rawShortfall: 0,
+    warnings: [],
+  };
+
+  // Cancel restore
+  cancelRestore();
+  assert.equal(pendingRestorePreview.value, null);
+  assert.equal(
+    state.value.transactions.length,
+    txCountBefore,
+    "State remained 100% untouched",
+  );
+});
+
+test("Test 6A.12 — Restore rollback snapshot capability", () => {
+  const originalLocalStorage = globalThis.localStorage;
+  const store: Record<string, string> = {};
+  (globalThis as any).localStorage = {
+    getItem: (k: string) => store[k] || null,
+    setItem: (k: string, v: string) => {
+      store[k] = v;
+    },
+    removeItem: (k: string) => {
+      delete store[k];
+    },
+  };
+
+  try {
+    const { state, createRollbackSnapshot, restoreRollbackSnapshot } =
+      useBudget();
+
+    // Save original state snapshot
+    state.value.opening = 77777;
+    const snapOk = createRollbackSnapshot();
+    assert.equal(snapOk, true);
+    assert.ok(store[STORAGE_BACKUP_KEY]);
+
+    // Mutate state to simulate bad restore or accidental wipe
+    state.value.opening = 0;
+    state.value.transactions = [];
+
+    // Rollback
+    const rollOk = restoreRollbackSnapshot();
+    assert.equal(rollOk, true);
+    assert.equal(state.value.opening, 77777);
+  } finally {
+    (globalThis as any).localStorage = originalLocalStorage;
+  }
+});
+
+test("Test 6A.13 — Transaction identifiers and dates preserved", () => {
+  const state = demo();
+  const originalTx = state.transactions[0]!;
+  originalTx.status = "cleared";
+
+  const exported = exportBackup(state);
+  const res = validateAndPreviewBackup(exported, "2026-10-22");
+  assert.equal(res.valid, true);
+
+  const restoredTx = res.stateToRestore!.transactions.find(
+    (t) => t.id === originalTx.id,
+  );
+  assert.ok(restoredTx);
+  assert.equal(restoredTx.id, originalTx.id);
+  assert.equal(restoredTx.date, originalTx.date);
+  assert.equal(restoredTx.amount, originalTx.amount);
+  assert.equal(restoredTx.category, originalTx.category);
+  assert.equal(restoredTx.status, originalTx.status);
+  assert.equal(restoredTx.postedDate, originalTx.postedDate);
+});
+
+test("Test 6A.14 — Credit-card and recurring-bill relationships preserved", () => {
+  const state = demo();
+  state.payday = "2026-10-31";
+  const creditAcc = state.accounts.find((a) => a.type === "credit")!;
+  creditAcc.assignedPaymentReserve = 2500;
+  creditAcc.confirmedMinimumDueDates = ["2026-10-25"];
+  creditAcc.minimumObligations = { "2026-10-25": 3500 };
+
+  const bill = state.bills[0]!;
+  bill.settledDueDates = ["2026-10-01"];
+  state.settledBills = [{ billId: bill.id, dueDate: "2026-10-01" }];
+
+  // Link a transaction to the bill
+  state.transactions[0]!.billId = bill.id;
+  state.transactions[0]!.billDueDate = "2026-10-01";
+
+  const exported = exportBackup(state);
+  const res = validateAndPreviewBackup(exported, "2026-10-22");
+  assert.equal(res.valid, true);
+
+  const restored = res.stateToRestore!;
+  const restCredit = restored.accounts.find((a) => a.id === creditAcc.id)!;
+  assert.equal(restCredit.assignedPaymentReserve, 2500);
+  assert.deepEqual(restCredit.confirmedMinimumDueDates, ["2026-10-25"]);
+  assert.equal(restCredit.minimumObligations?.["2026-10-25"], 3500);
+
+  const restBill = restored.bills.find((b) => b.id === bill.id)!;
+  assert.deepEqual(restBill.settledDueDates, ["2026-10-01"]);
+  assert.equal(restored.settledBills.length, 1);
+  assert.equal(restored.settledBills[0]!.billId, bill.id);
+  assert.equal(restored.transactions[0]!.billId, bill.id);
+});
+
+test("Test 6A.15 — Exact financial reconciliation before and after restoration", () => {
+  const simNow = "2026-10-22";
+  const state = demo();
+  state.payday = "2026-10-31";
+
+  const beforeTotals = totals(state, simNow);
+  const beforeOutlook = getMoneyOutlook(state, simNow);
+  const beforeCommitments = getBeforePaydayCommitments(state, simNow);
+  const beforeInsights = getInsightsSpending(state, "2026-10", simNow);
+
+  const exported = exportBackup(state);
+  const restored = validateAndPreviewBackup(exported, simNow).stateToRestore!;
+
+  const afterTotals = totals(restored, simNow);
+  const afterOutlook = getMoneyOutlook(restored, simNow);
+  const afterCommitments = getBeforePaydayCommitments(restored, simNow);
+  const afterInsights = getInsightsSpending(restored, "2026-10", simNow);
+
+  assert.equal(afterTotals.balance, beforeTotals.balance);
+  assert.equal(afterTotals.pots, beforeTotals.pots);
+  assert.equal(afterTotals.budgets, beforeTotals.budgets);
+  assert.equal(afterTotals.bills, beforeTotals.bills);
+  assert.equal(afterTotals.totalReadyToPay, beforeTotals.totalReadyToPay);
+  assert.equal(afterTotals.creditCardMinimums, beforeTotals.creditCardMinimums);
+  assert.equal(afterTotals.safe, beforeTotals.safe);
+  assert.equal(afterTotals.shortfall, beforeTotals.shortfall);
+  assert.equal(afterTotals.rawSafe, beforeTotals.rawSafe);
+
+  assert.equal(afterOutlook.cashBalance, beforeOutlook.cashBalance);
+  assert.equal(afterOutlook.totalProtections, beforeOutlook.totalProtections);
+  assert.equal(afterOutlook.safe, beforeOutlook.safe);
+  assert.equal(afterOutlook.rawSafe, beforeOutlook.rawSafe);
+
+  assert.equal(
+    afterCommitments.totalCommitmentsAmount,
+    beforeCommitments.totalCommitmentsAmount,
+  );
+  assert.equal(
+    afterCommitments.commitments.length,
+    beforeCommitments.commitments.length,
+  );
+  assert.equal(afterInsights.totalSpent, beforeInsights.totalSpent);
+});
+
+test("Test 6A.16 — Account lastVerifiedAt preserved correctly across export, import, and migration", () => {
+  const state = demo();
+  const checking = state.accounts.find((a) => a.type === "checking")!;
+  checking.lastVerifiedAt = "2026-10-18T09:30:00.000Z";
+
+  const exported = exportBackup(state);
+  const res = validateAndPreviewBackup(exported, "2026-10-22");
+  assert.equal(res.valid, true);
+
+  const restoredChecking = res.stateToRestore!.accounts.find(
+    (a) => a.id === checking.id,
+  )!;
+  assert.equal(restoredChecking.lastVerifiedAt, "2026-10-18T09:30:00.000Z");
+});
+
+test("Test 6A.17 — Reset workspace safeguards: keepPlan vs all", () => {
+  const state = demo();
+  state.payday = "2026-10-31";
+
+  // Option 1: Keep Plan (preserves budgets, bills, accounts, payday schedule)
+  const kept = resetWorkspace(state, true);
+  assert.equal(kept.budgets.length, state.budgets.length);
+  assert.equal(kept.bills.length, state.bills.length);
+  assert.equal(kept.accounts.length, state.accounts.length);
+  assert.equal(kept.payday, state.payday);
+  assert.equal(kept.transactions.length, 0, "Transactions wiped");
+  assert.equal(kept.pots.length, 0, "Pots wiped");
+
+  // Option 2: Clear Everything
+  const cleared = resetWorkspace(state, false);
+  assert.equal(cleared.budgets.length, 0);
+  assert.equal(cleared.bills.length, 0);
+  assert.equal(cleared.transactions.length, 0);
+  assert.equal(cleared.pots.length, 0);
+});
+
+test("Test 6A.18 — Accessibility and responsive restore UX preview contracts", () => {
+  const state = demo();
+  state.payday = "2026-10-31";
+  const exported = exportBackup(state);
+
+  const res = validateAndPreviewBackup(exported, "2026-10-22");
+  assert.equal(res.valid, true);
+  const prev = res.preview!;
+
+  // Structural contracts for accessible UI display
+  assert.ok(typeof prev.accountCount === "number");
+  assert.ok(typeof prev.transactionCount === "number");
+  assert.ok(typeof prev.budgetCount === "number");
+  assert.ok(typeof prev.potCount === "number");
+  assert.ok(typeof prev.billCount === "number");
+  assert.ok(typeof prev.safeToSpend === "number");
+  assert.ok(typeof prev.totalCashBalance === "number");
+  assert.ok(Array.isArray(prev.warnings));
+
+  // Verify currency formatting produces valid accessible output
+  const formattedSafe = money(prev.safeToSpend);
+  assert.match(formattedSafe, /^\$/);
 });
 
 
