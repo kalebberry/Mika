@@ -169,9 +169,8 @@ export const uid = () => crypto.randomUUID();
 
 export function addDays(dateStr: string, days: number): string {
   const [y, m, d] = dateStr.split("-").map(Number);
-  const date = new Date(y!, m! - 1, d!);
-  date.setDate(date.getDate() + days);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  const date = new Date(Date.UTC(y!, m! - 1, d! + days));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
 }
 
 export function daysBetween(dateA: string, dateB: string): number {
@@ -1114,6 +1113,13 @@ export function getAccountLedgerDelta(account: Account, s: State): number {
       } else if (kind === "payment") {
         if (t.targetAccountId === account.id) {
           delta -= absAmt; // Payment to this card reduces debt owed
+        }
+      } else if (kind === "transfer") {
+        if (t.accountId === account.id) {
+          delta += absAmt; // Outflow / cash advance from credit card increases debt
+        }
+        if (t.targetAccountId === account.id) {
+          delta -= absAmt; // Inflow to credit card reduces debt
         }
       }
     } else {
@@ -3355,11 +3361,12 @@ export function getInsightsReconciliation(
 
 export function dueDate(b: Bill, month: string) {
   const [y, m] = month.split("-").map(Number);
-  return `${month}-${String(Math.min(b.day, new Date(y!, m!, 0).getDate())).padStart(2, "0")}`;
+  const maxDays = getDaysInMonth(y!, m!);
+  return `${month}-${String(Math.min(b.day, maxDays)).padStart(2, "0")}`;
 }
 
 export function getBillDueDate(b: Bill, year: number, month: number): string {
-  const daysInMonth = new Date(year, month, 0).getDate();
+  const daysInMonth = getDaysInMonth(year, month);
   const clampedDay = Math.min(Math.max(1, b.day || 1), daysInMonth);
   return `${year}-${String(month).padStart(2, "0")}-${String(clampedDay).padStart(2, "0")}`;
 }
@@ -5033,10 +5040,15 @@ export function totals(s: State, now = today()) {
       .reduce((n, t) => n + t.amount, 0),
   );
 
-  const pots = s.pots.reduce((n, p) => n + p.saved, 0);
+  const pots = s.pots.reduce((n, p) => n + Math.max(0, p.saved || 0), 0);
   const budgets = s.budgets.reduce(
     (n, b) =>
-      n + Math.max(0, b.limit - spent(s, b.category, now.slice(0, 7))),
+      n +
+      Math.max(
+        0,
+        (Number.isFinite(b.limit) ? b.limit : 0) -
+          spent(s, b.category, now.slice(0, 7)),
+      ),
     0,
   );
   const billBreakdown = reserveBillsBreakdown(s, now);
@@ -5462,7 +5474,7 @@ export function getBeforePaydayCommitments(
 
   const billBreakdown = reserveBillsBreakdown(s, validNow);
   const eligibleBillDetails = (billBreakdown.details || []).filter(
-    (d) => d.dueDate >= validNow && d.dueDate <= currentPaydayEnd && d.amount > 0,
+    (d) => d.dueDate <= currentPaydayEnd && d.amount > 0,
   );
 
   const scheduledTxs = s.transactions.filter(
@@ -5485,8 +5497,8 @@ export function getBeforePaydayCommitments(
       continue;
     }
 
-    // Check for linked scheduled transaction
-    const matchingSched = scheduledTxs.find((t) => {
+    // Check for linked scheduled transaction(s)
+    const matchingScheds = scheduledTxs.filter((t) => {
       if (t.billId === detail.bill.id) {
         const targetDue =
           t.billDueDate && isValidDateString(t.billDueDate)
@@ -5502,12 +5514,24 @@ export function getBeforePaydayCommitments(
       ? `${formatSpendingMoney(occStatus.paidAmount)} paid of ${formatSpendingMoney(occStatus.expectedAmount)} — ${formatSpendingMoney(occStatus.remainingAmount)} remaining`
       : undefined;
 
-    if (matchingSched) {
-      consumedScheduledTxIds.add(matchingSched.id);
+    if (matchingScheds.length > 0) {
+      for (const ms of matchingScheds) {
+        consumedScheduledTxIds.add(ms.id);
+      }
+      const primarySched = matchingScheds[0]!;
+      const schedName =
+        matchingScheds.length === 1
+          ? `${detail.bill.name} (Scheduled: ${primarySched.name})`
+          : `${detail.bill.name} (${matchingScheds.length} scheduled installments)`;
+      const earliestDate = matchingScheds.reduce(
+        (earliest, ms) => (ms.date < earliest ? ms.date : earliest),
+        primarySched.date,
+      );
+
       commitments.push({
         id: `commit-bill-${detail.bill.id}-${detail.dueDate}`,
-        name: `${detail.bill.name} (Scheduled: ${matchingSched.name})`,
-        date: matchingSched.date <= detail.dueDate ? matchingSched.date : detail.dueDate,
+        name: schedName,
+        date: earliestDate <= detail.dueDate ? earliestDate : detail.dueDate,
         amount: occStatus.remainingAmount,
         sourceType: "linked_bill_scheduled",
         protectionStatus: "protected",
@@ -5519,8 +5543,8 @@ export function getBeforePaydayCommitments(
         coveredAmount: occStatus.remainingAmount,
         uncoveredAmount: 0,
         billId: detail.bill.id,
-        scheduledTxId: matchingSched.id,
-        category: matchingSched.category || "Bills",
+        scheduledTxId: primarySched.id,
+        category: primarySched.category || "Bills",
         paymentDetails: paidDesc,
       });
     } else {
@@ -5719,6 +5743,13 @@ export function getOutlookExplanation(outlook: MoneyOutlookSummary): string {
 export function migrateState(raw: any, now = today()): State {
   if (!raw || typeof raw !== "object") {
     return blank();
+  }
+
+  // Support envelope objects ({ app: "mika-budget", data: State } or { state: State })
+  if (raw.app === "mika-budget" && raw.data && typeof raw.data === "object") {
+    raw = raw.data;
+  } else if (raw.state && typeof raw.state === "object") {
+    raw = raw.state;
   }
 
   const hasCoveredCredit = raw.version === 4 || raw.version === 5;
@@ -6016,7 +6047,7 @@ export function migrateState(raw: any, now = today()): State {
         a.type === "savings" || a.type === "credit" ? a.type : "checking";
 
       const opening = isPrimaryChecking
-        ? rawOpening
+        ? (a.opening !== undefined && Number.isFinite(Number(a.opening)) ? Number(a.opening) : rawOpening)
         : a.opening !== undefined
           ? Number(a.opening)
           : a.balance !== undefined
