@@ -1,7 +1,7 @@
 {
   "version": 2,
   "demo": false,
-  "opening": 723344,
+  "opening": 500000,
   "payday": "2026-10-21",
   "followingPayday": "2026-11-04",
   "paydaySchedule": {
@@ -14,43 +14,43 @@
   "transactions": [],
   "budgets": [
     {
-      "id": "df132679-31ea-4013-864d-50fca1292848",
-      "name": "Electricity ( Envergy )",
-      "category": "Electricity",
+      "id": "synthetic-budget-util",
+      "name": "Utilities",
+      "category": "Utilities",
       "limit": 20000,
       "color": "#277c78"
     },
     {
-      "id": "5ee1a2a7-b428-4a18-b52d-4fd028d2e2eb",
+      "id": "synthetic-budget-subs",
       "name": "Subscriptions",
       "category": "Subscriptions",
       "limit": 15000,
       "color": "#82c9d7"
     },
     {
-      "id": "f8266186-450e-4fff-a153-566d4cbc126f",
+      "id": "synthetic-budget-groc",
       "name": "Groceries",
       "category": "Groceries",
-      "limit": 15000,
+      "limit": 25000,
       "color": "#626070"
     },
     {
-      "id": "9589eb33-9be5-4dfb-95d5-a6dc430efc5e",
-      "name": "Dinning Out",
+      "id": "synthetic-budget-dine",
+      "name": "Dining Out",
       "category": "Dining Out",
       "limit": 15000,
       "color": "#f2cdac"
     },
     {
-      "id": "ecb34ac5-f015-4a59-a33a-1183ea3bfdfb",
-      "name": "Transportation ( Gas )",
-      "category": "Transport",
+      "id": "synthetic-budget-tran",
+      "name": "Transportation",
+      "category": "Transportation",
       "limit": 10000,
       "color": "#826cb0"
     },
     {
-      "id": "d5ffbd10-573d-4bf8-9085-467a123ce9b9",
-      "name": "Entertainment and hobbies",
+      "id": "synthetic-budget-ent",
+      "name": "Entertainment",
       "category": "Entertainment",
       "limit": 15000,
       "color": "#597c7c"
@@ -58,125 +58,117 @@
   ],
   "pots": [
     {
-      "id": "8741bda8-ac67-4653-be74-d9d7799d5441",
-      "name": "Youmacon",
+      "id": "synthetic-pot-vacation",
+      "name": "Vacation Fund",
       "saved": 50000,
-      "target": 50000,
+      "target": 100000,
       "color": "#277c78"
     },
     {
-      "id": "1e116dad-b9b2-41a4-b33a-eef8f2200eda",
-      "name": "Emergency Fund",
+      "id": "synthetic-pot-emergency",
+      "name": "Emergency Reserve",
       "saved": 100000,
-      "target": 100000,
+      "target": 200000,
       "color": "#82c9d7"
     }
   ],
   "bills": [
     {
-      "id": "da5b8dad-2614-4519-8774-c51119a40bd2",
-      "name": "Rent",
-      "amount": 130100,
+      "id": "synthetic-bill-housing",
+      "name": "Housing Payment",
+      "amount": 120000,
       "day": 1,
       "protected": true,
       "settledDueDates": [
         "2026-10-01"
-      ]
+      ],
+      "trackingStartDate": "2026-10-01"
     },
     {
-      "id": "84c8a5bd-5998-4f00-9bb1-ae0aa6f8d97d",
-      "name": "Gym",
-      "amount": 5999,
+      "id": "synthetic-bill-gym",
+      "name": "Fitness Membership",
+      "amount": 5000,
       "day": 22,
       "protected": true,
-      "settledDueDates": []
+      "settledDueDates": [],
+      "trackingStartDate": "2026-10-01"
     },
     {
-      "id": "3e1b56c3-c264-4cb1-9d83-5867e9c864dd",
-      "name": "Cricket Wireless",
-      "amount": 5500,
+      "id": "synthetic-bill-mobile",
+      "name": "Mobile Wireless",
+      "amount": 5000,
       "day": 20,
       "protected": true,
-      "settledDueDates": []
+      "settledDueDates": [
+        "2026-10-20"
+      ],
+      "trackingStartDate": "2026-10-01"
     },
     {
-      "id": "ffd698b5-0069-49cb-9060-6632ae6cc513",
-      "name": "State Farm",
-      "amount": 13143,
+      "id": "synthetic-bill-insurance",
+      "name": "Auto Insurance",
+      "amount": 12000,
       "day": 4,
       "protected": true,
       "settledDueDates": [
         "2026-10-04"
-      ]
+      ],
+      "trackingStartDate": "2026-10-01"
     },
     {
-      "id": "be4b9d6d-d29a-44d2-b7e1-1605bd1988d5",
-      "name": "Google Fiber",
-      "amount": 3060,
+      "id": "synthetic-bill-internet",
+      "name": "Internet Service",
+      "amount": 4000,
       "day": 13,
       "protected": true,
       "settledDueDates": [
         "2026-10-13"
-      ]
+      ],
+      "trackingStartDate": "2026-10-01"
     }
   ],
   "settledBills": [
     {
-      "billId": "da5b8dad-2614-4519-8774-c51119a40bd2",
+      "billId": "synthetic-bill-housing",
       "dueDate": "2026-10-01",
       "settledAt": "2026-10-13"
     },
     {
-      "billId": "ffd698b5-0069-49cb-9060-6632ae6cc513",
+      "billId": "synthetic-bill-insurance",
       "dueDate": "2026-10-04",
       "settledAt": "2026-10-13"
     },
     {
-      "billId": "be4b9d6d-d29a-44d2-b7e1-1605bd1988d5",
+      "billId": "synthetic-bill-internet",
       "dueDate": "2026-10-13",
       "settledAt": "2026-10-13"
+    },
+    {
+      "billId": "synthetic-bill-mobile",
+      "dueDate": "2026-10-20",
+      "settledAt": "2026-10-21"
     }
   ],
   "accounts": [
     {
       "id": "acc-default-checking",
-      "name": "Primary Checking",
+      "name": "Sample Primary Checking",
       "type": "checking",
-      "opening": 723344,
+      "opening": 500000,
       "includeInSafeToSpend": true,
       "archived": false,
       "createdAt": "2026-10-14",
       "updatedAt": "2026-10-14"
     },
     {
-      "id": "94fdb9ea-920b-4ed0-a0f9-09eb0c0a1e7f",
-      "name": "Sofi Credit Card",
+      "id": "synthetic-acc-credit",
+      "name": "Sample Rewards Card",
       "type": "credit",
-      "opening": 28994,
+      "opening": 25000,
       "includeInSafeToSpend": false,
       "archived": false,
       "createdAt": "2026-10-14",
-      "updatedAt": "2026-10-15",
-      "balance": 28994,
-      "creditLimit": 100000,
-      "assignedPaymentReserve": 0,
-      "paymentReservations": [],
-      "coveredCreditBaselineAt": "2026-10-15"
-    },
-    {
-      "id": "6dd87858-a2d3-49a8-b921-078c16b2f750",
-      "name": "PayPal Credit Card",
-      "type": "credit",
-      "opening": 101687,
-      "includeInSafeToSpend": false,
-      "archived": false,
-      "createdAt": "2026-10-14",
-      "updatedAt": "2026-10-14",
-      "balance": 101687,
-      "creditLimit": 330000,
-      "assignedPaymentReserve": 0,
-      "paymentReservations": [],
-      "coveredCreditBaselineAt": "2026-10-15"
+      "updatedAt": "2026-10-14"
     }
   ]
 }

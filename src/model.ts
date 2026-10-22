@@ -2972,7 +2972,7 @@ export function getMonthComparison(
   const isCurrentMonth = selectedMonth === currentMonth;
 
   const [y, m] = selectedMonth.split("-").map(Number);
-  const daysInSelectedMonth = new Date(y!, m!, 0).getDate();
+  const daysInSelectedMonth = getDaysInMonth(y!, m!);
   const currentDay = Number(now.slice(8, 10));
 
   const isPartialMonth = isCurrentMonth && currentDay < daysInSelectedMonth;
@@ -2984,7 +2984,7 @@ export function getMonthComparison(
   const prevLabel = formatMonthYear(prevMonth);
 
   const [prevY, prevM] = prevMonth.split("-").map(Number);
-  const daysInPrevMonth = new Date(prevY!, prevM!, 0).getDate();
+  const daysInPrevMonth = getDaysInMonth(prevY!, prevM!);
 
   const selectedSummary = getInsightsSpending(s, selectedMonth, now);
   const selectedSpent = selectedSummary.totalSpent;
@@ -3161,7 +3161,7 @@ export function getSpendingHistory(
   for (const m of monthList) {
     const isCurrentMonth = m === currentMonth;
     const [y, mNum] = m.split("-").map(Number);
-    const daysInM = new Date(y!, mNum!, 0).getDate();
+    const daysInM = getDaysInMonth(y!, mNum!);
     const isPartial = isCurrentMonth && Number(now.slice(8, 10)) < daysInM;
 
     // For past months, evaluate with now at month end to capture all settled transactions
@@ -5746,10 +5746,33 @@ export function migrateState(raw: any, now = today()): State {
   }
 
   // Support envelope objects ({ app: "mika-budget", data: State } or { state: State })
-  if (raw.app === "mika-budget" && raw.data && typeof raw.data === "object") {
+  if (raw.app === "mika-budget") {
+    const formatVersion = Number(raw.formatVersion) || 1;
+    if (formatVersion > CURRENT_BACKUP_FORMAT_VERSION) {
+      throw new Error(
+        `Cannot migrate backup envelope with unsupported future format version v${formatVersion} (current format is v${CURRENT_BACKUP_FORMAT_VERSION}).`,
+      );
+    }
+    const schemaVersion = Number(raw.schemaVersion) || 1;
+    if (schemaVersion > CURRENT_SCHEMA_VERSION) {
+      throw new Error(
+        `Cannot migrate backup envelope with unsupported future schema version v${schemaVersion} (current schema is v${CURRENT_SCHEMA_VERSION}).`,
+      );
+    }
+    if (!raw.data || typeof raw.data !== "object") {
+      throw new Error(
+        "Cannot migrate malformed backup envelope: missing or invalid 'data' payload.",
+      );
+    }
     raw = raw.data;
   } else if (raw.state && typeof raw.state === "object") {
     raw = raw.state;
+  }
+
+  if (raw.version !== undefined && Number(raw.version) > CURRENT_SCHEMA_VERSION) {
+    throw new Error(
+      `Cannot migrate state with unsupported future schema version v${raw.version} (current schema is v${CURRENT_SCHEMA_VERSION}).`,
+    );
   }
 
   const hasCoveredCredit = raw.version === 4 || raw.version === 5;

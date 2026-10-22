@@ -17629,13 +17629,51 @@ test("Test 6B.26 — Realistic Multi-Account Financial Reconciliation Across All
   assert.equal(insights.transactionCount, 2);
 });
 
-test("Test 6B.27 — Backup and Migration Hardening: Real-world sample backups round trip and validation", () => {
-  // Test 1: Real-world sample backup 2026-10-14
+test("Test 6B.27 — Backup and Migration Hardening: Fully synthetic sample backups round trip and validation", () => {
+  // Synthetic standalone backup fixture 1 (legacy un-enveloped v2 structure)
+  const syntheticLegacyBackup = {
+    version: 2,
+    demo: false,
+    opening: 500000,
+    payday: "2026-10-21",
+    followingPayday: "2026-11-04",
+    paydaySchedule: {
+      frequency: "manual",
+      anchorDate: "2026-10-21",
+      manualFollowingPayday: "2026-11-04",
+      weekendRule: "exact",
+      overrides: [],
+    },
+    transactions: [],
+    budgets: [
+      { id: "synth-b1", name: "Groceries", category: "Groceries", limit: 25000 },
+      { id: "synth-b2", name: "Utilities", category: "Utilities", limit: 20000 },
+    ],
+    pots: [
+      { id: "synth-p1", name: "Vacation", saved: 50000, target: 100000 },
+    ],
+    bills: [
+      { id: "synth-bill-1", name: "Internet", amount: 4000, day: 13, protected: true, settledDueDates: ["2026-10-13"] },
+    ],
+    accounts: [
+      { id: "acc-default-checking", name: "Primary Checking", type: "checking", opening: 500000, includeInSafeToSpend: true, archived: false },
+    ],
+  };
+
+  const previewInline = validateAndPreviewBackup(syntheticLegacyBackup, "2026-10-22");
+  assert.equal(previewInline.valid, true, "Synthetic legacy backup validates cleanly");
+  const migratedInline = migrateState(syntheticLegacyBackup, "2026-10-22");
+  assert.equal(migratedInline.accounts.length, 1);
+  const exportedInline = exportBackup(migratedInline);
+  const roundTripInline = validateAndPreviewBackup(exportedInline, "2026-10-22");
+  assert.equal(roundTripInline.valid, true);
+
+  // Test with file fixtures from docs/sample-data/
   const path14 = path.resolve(process.cwd(), "docs/sample-data/budget-backup-2026-10-14.json");
   if (fs.existsSync(path14)) {
     const raw14 = JSON.parse(fs.readFileSync(path14, "utf-8"));
     const preview14 = validateAndPreviewBackup(raw14, "2026-10-22");
-    assert.equal(preview14.valid, true, "Sample backup 2026-10-14 validates successfully");
+    assert.equal(preview14.valid, true, "Synthetic sample backup 2026-10-14 validates successfully");
 
     const migrated14 = migrateState(raw14.state || raw14, "2026-10-22");
     assert.ok(migrated14.accounts.length > 0);
@@ -17647,12 +17685,11 @@ test("Test 6B.27 — Backup and Migration Hardening: Real-world sample backups r
     assert.equal(roundTrip14.valid, true, "Round-trip export validates cleanly");
   }
 
-  // Test 2: Real-world sample backup 2026-10-22
   const path22 = path.resolve(process.cwd(), "docs/sample-data/budget-backup-2026-10-22.json");
   if (fs.existsSync(path22)) {
     const raw22 = JSON.parse(fs.readFileSync(path22, "utf-8"));
     const preview22 = validateAndPreviewBackup(raw22, "2026-10-22");
-    assert.equal(preview22.valid, true, "Sample backup 2026-10-22 validates successfully");
+    assert.equal(preview22.valid, true, "Synthetic sample backup 2026-10-22 validates successfully");
 
     const migrated22 = migrateState(raw22.state || raw22, "2026-10-22");
     const t22 = totals(migrated22, "2026-10-22");
@@ -17668,6 +17705,188 @@ test("Test 6B.27 — Backup and Migration Hardening: Real-world sample backups r
     assert.equal(tRestored22.safe, t22.safe, "Safe to spend matches exactly after round-trip");
   }
 });
+
+test("Test 6B.28 — Backup Migration Safety: Rejection of future versions and malformed envelopes in migrateState", () => {
+  // 1. Direct migrateState rejects future format version envelope
+  assert.throws(
+    () => {
+      migrateState({
+        app: "mika-budget",
+        formatVersion: 99,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        data: demo(),
+      });
+    },
+    /unsupported future format version v99/i,
+    "migrateState must not silently accept unsupported future format versions",
+  );
+
+  // 2. Direct migrateState rejects future schema version envelope
+  assert.throws(
+    () => {
+      migrateState({
+        app: "mika-budget",
+        formatVersion: CURRENT_BACKUP_FORMAT_VERSION,
+        schemaVersion: 99,
+        data: demo(),
+      });
+    },
+    /unsupported future schema version v99/i,
+    "migrateState must not silently accept unsupported future schema versions in envelopes",
+  );
+
+  // 3. Direct migrateState rejects future bare state version
+  assert.throws(
+    () => {
+      migrateState({
+        version: 99,
+        opening: 10000,
+        transactions: [],
+        budgets: [],
+        pots: [],
+        bills: [],
+        accounts: [],
+      });
+    },
+    /unsupported future schema version v99/i,
+    "migrateState must not silently accept unsupported future bare state versions",
+  );
+
+  // 4. Direct migrateState rejects malformed envelope missing data payload
+  assert.throws(
+    () => {
+      migrateState({
+        app: "mika-budget",
+        formatVersion: 1,
+        schemaVersion: 5,
+        data: null,
+      });
+    },
+    /missing or invalid 'data' payload/i,
+    "migrateState must reject malformed backup envelope with null data",
+  );
+
+  assert.throws(
+    () => {
+      migrateState({
+        app: "mika-budget",
+        formatVersion: 1,
+        schemaVersion: 5,
+        data: "not-an-object",
+      });
+    },
+    /missing or invalid 'data' payload/i,
+    "migrateState must reject malformed backup envelope with non-object data",
+  );
+
+  // 5. Preserves validateAndPreviewBackup safety without unhandled exceptions
+  const previewFutureFormat = validateAndPreviewBackup({
+    app: "mika-budget",
+    formatVersion: 99,
+    schemaVersion: 5,
+    data: demo(),
+  });
+  assert.equal(previewFutureFormat.valid, false);
+  assert.match(previewFutureFormat.error || "", /newer format \(format v99\)/i);
+
+  const previewFutureSchema = validateAndPreviewBackup({
+    app: "mika-budget",
+    formatVersion: 1,
+    schemaVersion: 99,
+    data: demo(),
+  });
+  assert.equal(previewFutureSchema.valid, false);
+  assert.match(previewFutureSchema.error || "", /newer version of Mika Budget \(schema v99\)/i);
+
+  // 6. Valid current enveloped backup migrates cleanly
+  const validEnvelope = {
+    app: "mika-budget",
+    formatVersion: CURRENT_BACKUP_FORMAT_VERSION,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    data: demo(),
+  };
+  const migrated = migrateState(validEnvelope);
+  assert.equal(migrated.version, CURRENT_SCHEMA_VERSION);
+  assert.ok(migrated.accounts.length > 0);
+});
+
+test("Test 6B.29 — Date Correctness: UTC addDays, daysBetween, leap years, DST transitions, and formatting", () => {
+  // 1. Daylight-Saving Time (DST) transitions:
+  // US Spring Forward 2026: March 8, 2026 (local day is 23 hours)
+  assert.equal(addDays("2026-03-07", 1), "2026-03-08");
+  assert.equal(addDays("2026-03-08", 1), "2026-03-09");
+  assert.equal(addDays("2026-03-07", 2), "2026-03-09");
+  assert.equal(addDays("2026-03-09", -2), "2026-03-07");
+  assert.equal(daysBetween("2026-03-07", "2026-03-09"), 2, "Exact 2-day integer distance across spring DST");
+
+  // US Fall Back 2026: November 1, 2026 (local day is 25 hours)
+  assert.equal(addDays("2026-10-31", 1), "2026-11-01");
+  assert.equal(addDays("2026-11-01", 1), "2026-11-02");
+  assert.equal(addDays("2026-10-31", 2), "2026-11-02");
+  assert.equal(addDays("2026-11-02", -2), "2026-10-31");
+  assert.equal(daysBetween("2026-10-31", "2026-11-02"), 2, "Exact 2-day integer distance across fall DST");
+
+  // European DST transitions: March 29, 2026 and October 25, 2026
+  assert.equal(addDays("2026-03-28", 2), "2026-03-30");
+  assert.equal(addDays("2026-10-24", 2), "2026-10-26");
+
+  // 2. Leap Year Transitions:
+  // 2024 Leap Year:
+  assert.equal(getDaysInMonth(2024, 2), 29, "February 2024 has 29 days");
+  assert.equal(addDays("2024-02-28", 1), "2024-02-29");
+  assert.equal(addDays("2024-02-29", 1), "2024-03-01");
+  assert.equal(addDays("2024-03-01", -1), "2024-02-29");
+  assert.equal(addDays("2024-02-28", 2), "2024-03-01");
+  assert.equal(daysBetween("2024-02-28", "2024-03-01"), 2);
+
+  // 2026 Non-Leap Year:
+  assert.equal(getDaysInMonth(2026, 2), 28, "February 2026 has 28 days");
+  assert.equal(addDays("2026-02-28", 1), "2026-03-01");
+  assert.equal(addDays("2026-03-01", -1), "2026-02-28");
+  assert.equal(daysBetween("2026-02-28", "2026-03-01"), 1);
+
+  // 2028 Leap Year:
+  assert.equal(getDaysInMonth(2028, 2), 29, "February 2028 has 29 days");
+  assert.equal(addDays("2028-02-28", 1), "2028-02-29");
+  assert.equal(addDays("2028-02-29", 1), "2028-03-01");
+
+  // 3. Year Boundaries:
+  assert.equal(addDays("2026-12-31", 1), "2027-01-01");
+  assert.equal(addDays("2026-12-31", 14), "2027-01-14");
+  assert.equal(addDays("2027-01-01", -1), "2026-12-31");
+  assert.equal(addDays("2027-01-14", -14), "2026-12-31");
+  assert.equal(daysBetween("2026-12-31", "2027-01-01"), 1);
+  assert.equal(daysBetween("2026-01-01", "2027-01-01"), 365);
+  assert.equal(daysBetween("2024-01-01", "2025-01-01"), 366, "366 days in leap year 2024");
+
+  // 4. getDaysInMonth across all 12 calendar months:
+  const expectedDaysNonLeap = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  for (let m = 1; m <= 12; m++) {
+    assert.equal(getDaysInMonth(2026, m), expectedDaysNonLeap[m - 1], `Month ${m} in 2026 has expected days`);
+  }
+  assert.equal(getDaysInMonth(2024, 2), 29);
+  assert.equal(getDaysInMonth(2028, 2), 29);
+
+  // 5. Month comparison and history using getDaysInMonth:
+  const febState = blank();
+  febState.accounts.push({
+    id: "acc-1",
+    name: "Checking",
+    type: "checking",
+    opening: 500000,
+    includeInSafeToSpend: true,
+    archived: false,
+    createdAt: "2026-01-01",
+    updatedAt: "2026-01-01",
+  });
+  const compFeb = getMonthComparison(febState, "2026-02", "2026-02-15");
+  assert.equal(compFeb.daysInMonth, 28, "February 2026 has 28 days in comparison");
+  assert.equal(compFeb.elapsedDays, 15, "Partial month uses elapsed days");
+
+  const compFebLeap = getMonthComparison(febState, "2024-02", "2024-02-29");
+  assert.equal(compFebLeap.daysInMonth, 29, "February 2024 has 29 days in comparison");
+});
+
 
 
 
