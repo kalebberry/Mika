@@ -131,11 +131,33 @@ export type State = {
   bills: Bill[];
   settledBills?: BillSettlement[];
   accounts: Account[];
+  setupDismissed?: boolean;
+  lastBackupAt?: string;
+  lastBackupDate?: string;
 };
 
 export interface ThemeColor {
   name: string;
   value: string;
+}
+
+export function updatePot(
+  s: State,
+  id: string,
+  updates: { name?: string; target?: number; color?: string },
+): Pot | null {
+  const pot = (s.pots || []).find((p) => p.id === id);
+  if (!pot) return null;
+  if (updates.name !== undefined) pot.name = updates.name.trim();
+  if (updates.target !== undefined) pot.target = updates.target;
+  if (updates.color !== undefined) pot.color = updates.color;
+  if (pot.saved === undefined && (pot as any).amount !== undefined) {
+    pot.saved = (pot as any).amount;
+  }
+  if ((pot as any).amount === undefined && pot.saved !== undefined) {
+    (pot as any).amount = pot.saved;
+  }
+  return pot;
 }
 
 export const themeColors: ThemeColor[] = [
@@ -5050,7 +5072,11 @@ export function totals(s: State, now = today()) {
       .reduce((n, t) => n + t.amount, 0),
   );
 
-  const pots = s.pots.reduce((n, p) => n + Math.max(0, p.saved || 0), 0);
+  const pots = s.pots.reduce(
+    (n, p) =>
+      n + Math.max(0, p.saved !== undefined ? p.saved : ((p as any).amount || 0)),
+    0,
+  );
   const budgets = s.budgets.reduce(
     (n, b) =>
       n +
@@ -6185,6 +6211,9 @@ export function migrateState(raw: any, now = today()): State {
     bills,
     settledBills,
     accounts,
+    setupDismissed: raw.setupDismissed !== undefined ? Boolean(raw.setupDismissed) : undefined,
+    lastBackupAt: raw.lastBackupAt ? String(raw.lastBackupAt) : (raw.lastBackupDate ? String(raw.lastBackupDate) : undefined),
+    lastBackupDate: raw.lastBackupDate ? String(raw.lastBackupDate) : (raw.lastBackupAt ? String(raw.lastBackupAt) : undefined),
   };
 }
 
@@ -6437,4 +6466,171 @@ export function validateAndPreviewBackup(
     stateToRestore,
   };
 }
+
+export interface SetupChecklistItem {
+  id: "balance" | "payday" | "bills" | "budgets";
+  title: string;
+  description: string;
+  completed: boolean;
+  actionLabel: string;
+  targetPage?: string;
+  targetModal?: string;
+}
+
+export function getSetupChecklistStatus(s: State) {
+  const hasChecking =
+    (s.accounts || []).some(
+      (a) =>
+        a.type === "checking" &&
+        ((a as any).openingBalance > 0 ||
+          a.opening > 0 ||
+          a.lastVerifiedAt !== undefined),
+    ) || (s.transactions || []).length > 0;
+
+  const hasPayday = Boolean(
+    s.paydaySchedule?.frequency && s.paydaySchedule?.frequency !== "manual"
+      ? s.paydaySchedule?.anchorDate
+      : s.payday && s.payday !== "",
+  );
+
+  const hasBills = Boolean(s.bills && s.bills.length > 0);
+  const hasBudgets = Boolean(s.budgets && s.budgets.length > 0);
+
+  const items: SetupChecklistItem[] = [
+    {
+      id: "balance",
+      title: "Set primary checking balance",
+      description:
+        "Confirm your starting cash balance to calculate Safe to Spend.",
+      completed: Boolean(hasChecking),
+      actionLabel: "Adjust balance",
+      targetModal: "Adjust balance",
+    },
+    {
+      id: "payday",
+      title: "Set next payday cadence",
+      description:
+        "Tell Mika when you get paid so upcoming bills are protected.",
+      completed: Boolean(hasPayday),
+      actionLabel: "Configure payday",
+      targetPage: "Settings",
+    },
+    {
+      id: "bills",
+      title: "Add recurring bills",
+      description:
+        "Reserve money for rent, utilities, or subscriptions ahead of time.",
+      completed: Boolean(hasBills),
+      actionLabel: "Add bill",
+      targetModal: "Add recurring bill",
+    },
+    {
+      id: "budgets",
+      title: "Set spending budgets",
+      description:
+        "Set caps for flexible expenses like groceries and dining.",
+      completed: Boolean(hasBudgets),
+      actionLabel: "Add budget",
+      targetModal: "Add spending budget",
+    },
+  ];
+
+  const isAllComplete = items.every((i) => i.completed);
+  const isDismissed = Boolean(s.setupDismissed);
+  const shouldShow = !isDismissed && !isAllComplete;
+  const completedCount = items.filter((i) => i.completed).length;
+  const percentComplete = Math.round((completedCount / items.length) * 100);
+
+  return {
+    items,
+    isAllComplete,
+    isDismissed,
+    shouldShow,
+    completedCount,
+    totalCount: items.length,
+    percentComplete,
+  };
+}
+
+export interface BackupReminderStatus {
+  shouldRemind: boolean;
+  reason:
+    | "never_backed_up"
+    | "stale_backup"
+    | "insufficient_data"
+    | "recent_backup"
+    | "new_workspace";
+  daysSinceBackup: number;
+  lastBackupDate?: string;
+  message?: string;
+}
+
+export function getBackupReminderStatus(
+  s: State,
+  now = today(),
+): BackupReminderStatus {
+  const hasAccounts = (s.accounts || []).length > 0;
+  const hasRecords =
+    (s.transactions || []).length >= 3 ||
+    (s.bills || []).length > 0 ||
+    (s.budgets || []).length > 0;
+  if (!hasAccounts || !hasRecords) {
+    return {
+      shouldRemind: false,
+      reason: "insufficient_data",
+      daysSinceBackup: 0,
+      message: "",
+    };
+  }
+
+  const backupDateStr = s.lastBackupDate || s.lastBackupAt;
+  if (backupDateStr) {
+    const lastDate = backupDateStr.slice(0, 10);
+    const daysSince = daysBetween(lastDate, now);
+    if (daysSince >= 14) {
+      return {
+        shouldRemind: true,
+        reason: "stale_backup",
+        daysSinceBackup: daysSince,
+        lastBackupDate: backupDateStr,
+        message: `It has been ${daysSince} days since your last backup.`,
+      };
+    }
+    return {
+      shouldRemind: false,
+      reason: "recent_backup",
+      daysSinceBackup: daysSince,
+      lastBackupDate: backupDateStr,
+      message: "",
+    };
+  }
+
+  // Check if earliest transaction or account activity is at least 7 days old
+  const dates = [
+    ...(s.accounts || []).map((a) => a.createdAt || a.updatedAt),
+    ...(s.transactions || []).map((t) => t.date),
+  ].filter(Boolean);
+
+  if (dates.length > 0) {
+    const earliest = dates.sort()[0]!.slice(0, 10);
+    const daysActive = daysBetween(earliest, now);
+    if (daysActive >= 7) {
+      return {
+        shouldRemind: true,
+        reason: "never_backed_up",
+        daysSinceBackup: daysActive,
+        message:
+          "You have recorded budget data but haven't downloaded a backup yet.",
+      };
+    }
+  }
+
+  return {
+    shouldRemind: false,
+    reason: "new_workspace",
+    daysSinceBackup: 0,
+    message: "",
+  };
+}
+
 

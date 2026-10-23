@@ -4,7 +4,7 @@ import { today } from "../../model";
 import { money } from "../../utils/format";
 import { useBudget } from "../../composables/useBudget";
 
-const { state, sum, days, currentPayday } = useBudget();
+const { state, sum, days, currentPayday, navigateToMoneyOutlook } = useBudget();
 const showBreakdown = ref(false);
 </script>
 
@@ -95,6 +95,16 @@ const showBreakdown = ref(false);
       <div class="safe-total">
         <span>Yours to work with</span>
         <strong>{{ money(sum.safe) }}</strong>
+      </div>
+      <div style="margin-top: 0.75rem; text-align: center;">
+        <button
+          type="button"
+          class="text-link small"
+          style="color: var(--color-teal-light, #c0e8e6); text-decoration: underline;"
+          @click="navigateToMoneyOutlook"
+        >
+          View detailed Money Outlook in Insights →
+        </button>
       </div>
     </div>
   </section>

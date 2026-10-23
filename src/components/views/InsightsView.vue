@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, watch, onMounted, nextTick } from "vue";
 import { useBudget } from "../../composables/useBudget";
 import { useModal } from "../../composables/useModal";
 import { money, dateWithDay } from "../../utils/format";
@@ -24,12 +24,24 @@ const {
   beforePaydayCommitments,
   outlookExplanation,
   getMikaOutlookExplanation,
+  shouldOpenOutlookDetails,
 } = useBudget();
 
 const { open: openModal } = useModal();
 
 const showHistoryTable = ref(false);
 const showOutlookDetails = ref(false);
+
+onMounted(() => {
+  if (shouldOpenOutlookDetails.value) {
+    showOutlookDetails.value = true;
+    shouldOpenOutlookDetails.value = false;
+    nextTick(() => {
+      const el = document.getElementById("money-outlook-section");
+      el?.scrollIntoView({ behavior: "smooth" });
+    });
+  }
+});
 
 const activeMikaTopic = ref<OutlookTopic>(
   moneyOutlook.value.hasShortfall ? "shortfall" : "safe_to_spend",

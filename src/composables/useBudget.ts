@@ -86,6 +86,10 @@ import {
   getMoneyOutlook,
   getBeforePaydayCommitments,
   getOutlookExplanation,
+  getSetupChecklistStatus,
+  getBackupReminderStatus,
+  type SetupChecklistItem,
+  type BackupReminderStatus,
   type InsightsSpendingSummary,
   type ReportingPeriod,
   type MonthComparison,
@@ -162,6 +166,16 @@ const beforePaydayCommitments = computed(() =>
 const outlookExplanation = computed(() =>
   getOutlookExplanation(moneyOutlook.value),
 );
+
+export const shouldOpenOutlookDetails = ref(false);
+
+export function navigateToMoneyOutlook() {
+  page.value = "Insights";
+  shouldOpenOutlookDetails.value = true;
+}
+
+const setupChecklist = computed(() => getSetupChecklistStatus(state.value));
+const backupReminder = computed(() => getBackupReminderStatus(state.value));
 
 export const isMobileMenuOpen = ref(false);
 
@@ -776,6 +790,10 @@ export function useBudget() {
   }
 
   function backup() {
+    const nowIso = new Date().toISOString();
+    state.value.lastBackupAt = nowIso;
+    state.value.lastBackupDate = nowIso;
+    saveCurrentStateToStorage(state.value);
     const json = exportBackup(state.value);
     const url = URL.createObjectURL(
       new Blob([json], {
@@ -788,6 +806,16 @@ export function useBudget() {
     a.click();
     URL.revokeObjectURL(url);
     toast("Backup downloaded.");
+  }
+
+  function dismissSetup() {
+    state.value.setupDismissed = true;
+    saveCurrentStateToStorage(state.value);
+  }
+
+  function reopenSetup() {
+    state.value.setupDismissed = false;
+    saveCurrentStateToStorage(state.value);
   }
 
   async function prepareRestoreFromFile(
@@ -1357,6 +1385,12 @@ export function useBudget() {
     addScheduleOverride,
     removeScheduleOverride,
     backup,
+    dismissSetup,
+    reopenSetup,
+    setupChecklist,
+    backupReminder,
+    shouldOpenOutlookDetails,
+    navigateToMoneyOutlook,
     importBackup,
     storageHealth,
     pendingRestorePreview,

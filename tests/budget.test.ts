@@ -26,6 +26,7 @@ import {
   migrateState,
   cents,
   parseAmount,
+  updatePot,
   addDays,
   colors,
   themeColors,
@@ -17964,6 +17965,121 @@ test("Test 6B.30 — Formatted amount parsing and baseline synchronization with 
   assert.equal(getAccountBalance(primaryChecking, s), 742699, "Checking balance is $7,426.99");
   assert.equal(getAccountBalance(s.accounts[1]!, s), 100000, "Savings balance is $1,000.00");
   assert.equal(s.opening, 742699, "State opening matches checking opening");
+});
+
+test("Test 6B.31 — Savings Pots: updatePot modifications, color retention, and financial isolation", () => {
+  const s = blank();
+  s.accounts = [
+    {
+      id: "acc-1",
+      name: "Checking",
+      type: "checking",
+      opening: 200000,
+      balance: 200000,
+      includeInSafeToSpend: true,
+      lastVerifiedAt: "2026-10-20T00:00:00Z",
+    },
+  ];
+  s.pots = [
+    {
+      id: "pot-vacation",
+      name: "Vacation",
+      amount: 50000, // $500 saved
+      target: 100000, // $1,000 target
+      color: "#2563EB",
+    },
+  ];
+
+  const initialTotals = totals(s);
+  assert.equal(initialTotals.pots, 50000);
+  assert.equal(initialTotals.safe, 150000);
+
+  // Update pot with new name, new target, new color
+  const updatedPot = updatePot(s, "pot-vacation", {
+    name: "Summer Holiday",
+    target: 150000,
+    color: "#14B8A6",
+  });
+
+  assert.ok(updatedPot, "Pot should be updated successfully");
+  assert.equal(updatedPot.id, "pot-vacation");
+  assert.equal(updatedPot.name, "Summer Holiday");
+  assert.equal(updatedPot.target, 150000);
+  assert.equal(updatedPot.color, "#14B8A6");
+  assert.equal(updatedPot.amount, 50000, "Saved amount must be preserved");
+
+  // Verify financial totals remain identical since saved pot amount was unchanged
+  const postUpdateTotals = totals(s);
+  assert.equal(postUpdateTotals.pots, 50000);
+  assert.equal(postUpdateTotals.safe, 150000);
+
+  // Updating non-existent pot returns null
+  const missing = updatePot(s, "pot-nonexistent", { name: "Ghost" });
+  assert.equal(missing, null);
+});
+
+test("Test 6B.32 — Formatted amount parsing: parseAmount currency, negative, decimal, and empty value handling", () => {
+  // Currency strings with formatting
+  assert.equal(cents(parseAmount("$1,250.50")), 125050);
+  assert.equal(cents(parseAmount("$0.99")), 99);
+  assert.equal(cents(parseAmount("$100")), 10000);
+  assert.equal(cents(parseAmount("1,000,000.00")), 100000000);
+
+  // Numeric values
+  assert.equal(cents(parseAmount(50)), 5000);
+  assert.equal(cents(parseAmount(12.34)), 1234);
+  assert.equal(cents(parseAmount(0)), 0);
+
+  // Negative amounts
+  assert.equal(cents(parseAmount("-$45.50")), -4550);
+  assert.equal(cents(parseAmount("-100")), -10000);
+  assert.equal(cents(parseAmount(-25.5)), -2550);
+
+  // Partial decimals
+  assert.equal(cents(parseAmount("42.")), 4200);
+  assert.equal(cents(parseAmount(".50")), 50);
+
+  // Whitespace handling
+  assert.equal(cents(parseAmount("   $75.20   ")), 7520);
+
+  // Invalid and empty values return NaN
+  assert.ok(Number.isNaN(parseAmount("")));
+  assert.ok(Number.isNaN(parseAmount("   ")));
+  assert.ok(Number.isNaN(parseAmount(undefined)));
+  assert.ok(Number.isNaN(parseAmount(null)));
+  assert.ok(Number.isNaN(parseAmount("abc")));
+  assert.ok(Number.isNaN(parseAmount("$--")));
+});
+
+test("Test 6B.33 — Pot color palettes and default styling invariants", () => {
+  assert.ok(Array.isArray(colors), "Colors palette should be an array");
+  assert.ok(colors.length >= 8, "Colors palette should have at least 8 colors");
+  for (const c of colors) {
+    assert.match(c, /^#[0-9A-Fa-f]{6}$/, `Color ${c} should be a valid hex color code`);
+  }
+
+  // Ensure default fallback color is valid
+  const fallbackColor = colors[0];
+  assert.match(fallbackColor, /^#[0-9A-Fa-f]{6}$/);
+});
+
+test("Test 6B.34 — Setup checklist tracking and state persistence", () => {
+  const s = blank();
+  assert.equal(s.setupDismissed, undefined);
+  assert.equal(s.lastBackupDate, undefined);
+
+  // Mark setup dismissed
+  s.setupDismissed = true;
+  assert.equal(s.setupDismissed, true);
+
+  // Update backup timestamp
+  s.lastBackupDate = "2026-10-22T23:30:00.000Z";
+  assert.equal(s.lastBackupDate, "2026-10-22T23:30:00.000Z");
+
+  // Migration preserves setup state
+  const migrated = migrateState(s);
+  assert.equal(migrated.setupDismissed, true);
+  assert.equal(migrated.lastBackupDate, "2026-10-22T23:30:00.000Z");
 });
 
 

@@ -28,6 +28,8 @@ const {
   restoreRollbackSnapshot,
   reloadFromStorage,
   downloadCorruptData,
+  setupChecklist,
+  reopenSetup,
 } = useBudget();
 
 const {
@@ -807,6 +809,25 @@ function handleRemoveOverride(idOrDate: string) {
         <p class="muted settings-desc storage-educational-note">
           🔒 <strong>Browser Storage Durability:</strong> Local browser storage is specific to this browser and profile. Private browsing mode, clearing your browser website data, or switching devices will not retain your records. Download regular backups to keep your financial records permanently safe.
         </p>
+
+        <div class="reset-settings" style="margin-top: 1.5rem; border-top: 1px solid var(--color-border, #eee); padding-top: 1.25rem;">
+          <div>
+            <h3>Setup Checklist</h3>
+            <p class="muted">
+              {{ setupChecklist.isDismissed ? 'The dashboard setup checklist is currently hidden.' : 'The setup checklist is active on your dashboard.' }}
+              ({{ setupChecklist.completedCount }}/{{ setupChecklist.totalCount }} steps completed).
+            </p>
+          </div>
+          <button
+            v-if="setupChecklist.isDismissed"
+            class="secondary"
+            type="button"
+            @click="reopenSetup"
+          >
+            Reopen checklist ↺
+          </button>
+          <span v-else class="badge badge-teal">Active on dashboard</span>
+        </div>
 
         <div class="reset-settings">
           <div>

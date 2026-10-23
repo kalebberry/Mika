@@ -6,6 +6,7 @@ import {
   uid,
   cents,
   parseAmount,
+  updatePot,
   resetWorkspace,
   nextUnpaidDueDate,
   getBillOccurrenceStatus,
@@ -53,6 +54,14 @@ const dialogRef = ref<HTMLDialogElement | null>(null);
 const mode = ref("");
 const selected = ref("");
 const error = ref("");
+const fieldErrors = ref<{ [key: string]: string }>({});
+
+export function clearFieldError(field: string) {
+  if (fieldErrors.value[field]) {
+    delete fieldErrors.value[field];
+  }
+}
+
 const resetChoice = ref<"keep" | "all">("keep");
 const resetConfirmed = ref(false);
 const restoreConfirmed = ref(false);
@@ -138,6 +147,7 @@ export function useModal() {
     mode.value = m;
     selected.value = id;
     error.value = "";
+    fieldErrors.value = {};
     focusBefore.value =
       typeof document !== "undefined"
         ? (document.activeElement as HTMLElement)
@@ -153,7 +163,7 @@ export function useModal() {
       initialColor = available
         ? available.value
         : colors[state.value.budgets.length % colors.length]!;
-    } else if (m === "Add pot") {
+    } else if (m === "Add pot" || m === "Edit pot") {
       const usedPotColors = state.value.pots.map((p) => p.color.toLowerCase());
       const available = themeColors.find(
         (tc) => !usedPotColors.includes(tc.value.toLowerCase()),
@@ -262,6 +272,17 @@ export function useModal() {
           amount: String(b.limit / 100),
           color: b.color,
           customColor: b.color,
+        };
+      }
+    } else if (m === "Edit pot") {
+      const p = state.value.pots.find((item) => item.id === id);
+      if (p) {
+        form.value = {
+          ...form.value,
+          name: p.name,
+          target: String(p.target / 100),
+          color: p.color,
+          customColor: p.color,
         };
       }
     } else if (m === "Edit bill") {
@@ -403,6 +424,23 @@ export function useModal() {
         targetAccountId: targetCard ? targetCard.id : "",
         amount: prefillAmount > 0 ? String(prefillAmount / 100) : "",
       };
+    } else if (
+      m === "Add transaction" &&
+      (defaultCategory?.toLowerCase() === "transfer" || id?.toLowerCase() === "transfer")
+    ) {
+      const cashAccounts = (state.value.accounts || []).filter(
+        (a) => !a.archived && (a.type === "checking" || a.type === "savings"),
+      );
+      const sourceAcc = cashAccounts.find((a) => a.id === id) || cashAccounts[0];
+      const targetAcc = cashAccounts.find((a) => a.id !== (sourceAcc?.id || ""));
+      form.value = {
+        ...form.value,
+        type: "Transfer",
+        category: "Transfer",
+        name: "Transfer",
+        accountId: sourceAcc ? sourceAcc.id : defaultAccountId,
+        targetAccountId: targetAcc ? targetAcc.id : "",
+      };
     } else if (m === "Pay bill" || m === "Settle bill") {
       const b = state.value.bills.find((item) => item.id === id);
       if (b) {
@@ -455,11 +493,13 @@ export function useModal() {
     if (mode.value === "Add account") {
       if (!name) {
         error.value = "Enter an account name.";
+        fieldErrors.value.name = "Enter an account name.";
         return;
       }
       const initialBal = cents(parseAmount(f.amount || 0));
       if (!Number.isFinite(initialBal) || initialBal < 0) {
         error.value = "Enter a valid balance ($0.00 or greater).";
+        fieldErrors.value.amount = "Enter a valid balance ($0.00 or greater).";
         return;
       }
       const isCredit = f.accountType === "credit";
@@ -469,12 +509,14 @@ export function useModal() {
         limitCents = cents(parseAmount(f.creditLimit || 0));
         if (!Number.isFinite(limitCents) || limitCents < 0) {
           error.value = "Enter a valid credit limit ($0.00 or greater).";
+          fieldErrors.value.creditLimit = "Enter a valid credit limit ($0.00 or greater).";
           return;
         }
         if (f.minPayment) {
           minPayCents = cents(parseAmount(f.minPayment));
           if (!Number.isFinite(minPayCents) || minPayCents < 0) {
             error.value = "Enter a valid minimum payment.";
+            fieldErrors.value.minPayment = "Enter a valid minimum payment.";
             return;
           }
         }
@@ -497,6 +539,7 @@ export function useModal() {
     if (mode.value === "Edit account") {
       if (!name) {
         error.value = "Enter an account name.";
+        fieldErrors.value.name = "Enter an account name.";
         return;
       }
       const acc = (state.value.accounts || []).find((a) => a.id === selected.value);
@@ -506,16 +549,18 @@ export function useModal() {
       let minPayCents: number | undefined;
       if (isCredit) {
         if (f.creditLimit !== undefined && f.creditLimit !== "") {
-          limitCents = cents(Number(f.creditLimit));
+          limitCents = cents(parseAmount(f.creditLimit));
           if (!Number.isFinite(limitCents) || limitCents < 0) {
             error.value = "Enter a valid credit limit ($0.00 or greater).";
+            fieldErrors.value.creditLimit = "Enter a valid credit limit ($0.00 or greater).";
             return;
           }
         }
         if (f.minPayment !== undefined && f.minPayment !== "") {
-          minPayCents = cents(Number(f.minPayment));
+          minPayCents = cents(parseAmount(f.minPayment));
           if (!Number.isFinite(minPayCents) || minPayCents < 0) {
             error.value = "Enter a valid minimum payment.";
+            fieldErrors.value.minPayment = "Enter a valid minimum payment.";
             return;
           }
         }
@@ -538,6 +583,7 @@ export function useModal() {
       const newBal = cents(parsed);
       if (!Number.isFinite(newBal) || newBal < 0) {
         error.value = "Enter a valid balance ($0.00 or greater).";
+        fieldErrors.value.amount = "Enter a valid balance ($0.00 or greater).";
         return;
       }
       adjustAccountBalance(selected.value, newBal);
@@ -628,18 +674,21 @@ export function useModal() {
       (!Number.isFinite(amount) || amount <= 0 || amount > 10000000000)
     ) {
       error.value = "Enter an amount greater than zero.";
+      fieldErrors.value.amount = "Enter an amount greater than zero.";
       return;
     }
 
     if (
       [
         "Add pot",
+        "Edit pot",
         "Add bill",
         "Edit bill",
       ].includes(mode.value) &&
       !name
     ) {
       error.value = "Enter a name.";
+      fieldErrors.value.name = "Enter a name.";
       return;
     }
 
@@ -930,9 +979,10 @@ export function useModal() {
           color: resolvedColor,
         });
       }
-    } else if (mode.value === "Add pot") {
+    } else if (mode.value === "Add pot" || mode.value === "Edit pot") {
       if (!Number.isFinite(target) || target <= 0 || target > 10000000000) {
         error.value = "Enter a valid target greater than zero.";
+        fieldErrors.value.target = "Enter a valid target greater than zero.";
         return;
       }
       let resolvedColor = f.color;
@@ -943,17 +993,26 @@ export function useModal() {
         }
         if (!/^#[0-9a-fA-F]{6}$/.test(custom)) {
           error.value = "Enter a valid 6-character hex color (e.g. #277c78).";
+          fieldErrors.value.customColor = "Enter a valid 6-character hex color (e.g. #277c78).";
           return;
         }
         resolvedColor = custom.toLowerCase();
       }
-      state.value.pots.push({
-        id: uid(),
-        name,
-        saved: 0,
-        target,
-        color: resolvedColor,
-      });
+      if (mode.value === "Edit pot") {
+        updatePot(state.value, selected.value, {
+          name,
+          target,
+          color: resolvedColor,
+        });
+      } else {
+        state.value.pots.push({
+          id: uid(),
+          name,
+          saved: 0,
+          target,
+          color: resolvedColor,
+        });
+      }
     } else if (mode.value === "Add money" || mode.value === "Withdraw") {
       const p = state.value.pots.find((item) => item.id === selected.value);
       if (!p) return;
@@ -1166,6 +1225,8 @@ export function useModal() {
       confirmationMessage = "Ready for your numbers. Set your balance to begin.";
     } else if (currentMode === "Settle bill") {
       confirmationMessage = "Marked settled before setup without deducting cash.";
+    } else if (currentMode === "Edit pot") {
+      confirmationMessage = `Pot “${form.value.name}” updated.`;
     }
 
     if (showCompanion.value && currentMode === "Add transaction") {
@@ -1180,6 +1241,8 @@ export function useModal() {
     mode,
     selected,
     error,
+    fieldErrors,
+    clearFieldError,
     resetChoice,
     resetConfirmed,
     restoreConfirmed,

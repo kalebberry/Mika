@@ -19,13 +19,24 @@ const { open } = useModal();
           <i class="color-dot" :style="{ background: p.color }"></i>
           {{ p.name }}
         </h2>
-        <button
-          class="delete-icon"
-          @click="open('Delete pot', p.id)"
-          :aria-label="'Delete ' + p.name + ' pot'"
-        >
-          ×
-        </button>
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <button
+            class="text-link small"
+            @click="open('Edit pot', p.id)"
+            :aria-label="'Edit ' + p.name + ' pot'"
+            title="Edit pot"
+          >
+            Edit
+          </button>
+          <button
+            class="delete-icon"
+            @click="open('Delete pot', p.id)"
+            :aria-label="'Delete ' + p.name + ' pot'"
+            title="Delete pot"
+          >
+            ×
+          </button>
+        </div>
       </div>
       <div class="pot-amount">
         <span>Total saved</span>

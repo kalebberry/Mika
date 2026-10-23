@@ -32,6 +32,8 @@ const {
   mode,
   selected,
   error,
+  fieldErrors,
+  clearFieldError,
   resetChoice,
   resetConfirmed,
   restoreConfirmed,
@@ -243,7 +245,7 @@ function cancelRestoreBackup() {
 }
 
 const isColorFieldVisible = computed(() =>
-  ["Add budget", "Edit budget", "Add pot"].includes(mode.value),
+  ["Add budget", "Edit budget", "Add pot", "Edit pot"].includes(mode.value),
 );
 
 const usedColorsInCurrentMode = computed(() => {
@@ -252,8 +254,10 @@ const usedColorsInCurrentMode = computed(() => {
       .filter((b) => mode.value !== "Edit budget" || b.id !== selected.value)
       .map((b) => b.color.toLowerCase());
   }
-  if (mode.value === "Add pot") {
-    return state.value.pots.map((p) => p.color.toLowerCase());
+  if (mode.value === "Add pot" || mode.value === "Edit pot") {
+    return state.value.pots
+      .filter((p) => mode.value !== "Edit pot" || p.id !== selected.value)
+      .map((p) => p.color.toLowerCase());
   }
   return [];
 });
@@ -351,7 +355,9 @@ function onDateInput() {
               ? "Adjust balance — " + form.name
               : mode === "Reserve for payment"
                 ? "Reserve for payment — " + (targetReserveCard ? targetReserveCard.name : form.name)
-                : mode
+                : mode === "Edit pot"
+                  ? "Edit pot — " + form.name
+                  : mode
           }}
         </h2>
         <button
@@ -678,6 +684,29 @@ function onDateInput() {
         </small>
       </label>
 
+      <!-- Duplicate checking account guidance -->
+      <div
+        v-if="
+          mode === 'Add account' &&
+          form.accountType === 'checking' &&
+          state.accounts?.some((a) => a.id === 'acc-default-checking')
+        "
+        class="formula-note"
+        style="margin-bottom: 0.5rem;"
+      >
+        💡 <strong>Already have a Primary Checking account?</strong><br />
+        To avoid duplicate accounts, you can simply update your existing account's balance or name.
+        <div style="margin-top: 0.5rem;">
+          <button
+            type="button"
+            class="secondary small"
+            @click="open('Adjust balance', 'acc-default-checking')"
+          >
+            Adjust Primary Checking instead →
+          </button>
+        </div>
+      </div>
+
       <!-- Account Name (Add account or Edit account) -->
       <label v-if="mode === 'Add account' || mode === 'Edit account'">
         Account Name
@@ -685,6 +714,10 @@ function onDateInput() {
           v-model="form.name"
           required
           maxlength="60"
+          :class="{ 'field-input-error': fieldErrors.name }"
+          :aria-invalid="Boolean(fieldErrors.name)"
+          :aria-describedby="fieldErrors.name ? 'err-acc-name' : undefined"
+          @input="clearFieldError('name')"
           :placeholder="
             form.accountType === 'credit'
               ? 'e.g. Chase Freedom or Apple Card'
@@ -693,6 +726,7 @@ function onDateInput() {
                 : 'e.g. Main Checking'
           "
         />
+        <small v-if="fieldErrors.name" id="err-acc-name" class="field-error-text">{{ fieldErrors.name }}</small>
       </label>
 
       <!-- Initial Balance (Add account only) -->
@@ -700,14 +734,17 @@ function onDateInput() {
         {{ form.accountType === 'credit' ? 'Current Balance Owed ($)' : 'Starting Balance ($)' }}
         <input
           v-model="form.amount"
-          type="number"
-          min="0"
-          step="0.01"
+          type="text"
           required
           inputmode="decimal"
           placeholder="0.00"
+          :class="{ 'field-input-error': fieldErrors.amount }"
+          :aria-invalid="Boolean(fieldErrors.amount)"
+          :aria-describedby="fieldErrors.amount ? 'err-acc-amount' : undefined"
+          @input="clearFieldError('amount')"
         />
-        <small v-if="form.accountType === 'credit'">
+        <small v-if="fieldErrors.amount" id="err-acc-amount" class="field-error-text">{{ fieldErrors.amount }}</small>
+        <small v-else-if="form.accountType === 'credit'">
           Enter the current unpaid balance on the card.
         </small>
         <small v-else>
@@ -724,8 +761,13 @@ function onDateInput() {
           inputmode="decimal"
           required
           placeholder="0.00"
+          :class="{ 'field-input-error': fieldErrors.amount }"
+          :aria-invalid="Boolean(fieldErrors.amount)"
+          :aria-describedby="fieldErrors.amount ? 'err-adjust-amount' : undefined"
+          @input="clearFieldError('amount')"
         />
-        <small>
+        <small v-if="fieldErrors.amount" id="err-adjust-amount" class="field-error-text">{{ fieldErrors.amount }}</small>
+        <small v-else>
           Enter the updated balance. This is recorded as an authoritative adjustment.
         </small>
       </label>
@@ -832,12 +874,14 @@ function onDateInput() {
           <div class="amount-quick-row">
             <input
               v-model="form.amount"
-              type="number"
-              min="0.01"
-              step="0.01"
+              type="text"
               required
               inputmode="decimal"
               placeholder="0.00"
+              :class="{ 'field-input-error': fieldErrors.amount }"
+              :aria-invalid="Boolean(fieldErrors.amount)"
+              :aria-describedby="fieldErrors.amount ? 'err-reserve-amount' : undefined"
+              @input="clearFieldError('amount')"
             />
             <button
               v-if="form.reserveAction === 'reserve' && targetReserveCoverage && targetReserveCoverage.uncoveredDebt > 0"
@@ -858,7 +902,8 @@ function onDateInput() {
               Release All ({{ money(targetReserveCoverage.manualReleasable) }})
             </button>
           </div>
-          <small v-if="form.reserveAction === 'reserve'">
+          <small v-if="fieldErrors.amount" id="err-reserve-amount" class="field-error-text">{{ fieldErrors.amount }}</small>
+          <small v-else-if="form.reserveAction === 'reserve'">
             Up to {{ money(Math.min(sum.safe, targetReserveCoverage?.uncoveredDebt || 0)) }} (Available Safe to Spend: {{ money(sum.safe) }}).
           </small>
           <small v-else>
@@ -873,14 +918,17 @@ function onDateInput() {
           Credit Limit ($)
           <input
             v-model="form.creditLimit"
-            type="number"
-            min="0"
-            step="0.01"
+            type="text"
             required
             inputmode="decimal"
             placeholder="e.g. 5000.00"
+            :class="{ 'field-input-error': fieldErrors.creditLimit }"
+            :aria-invalid="Boolean(fieldErrors.creditLimit)"
+            :aria-describedby="fieldErrors.creditLimit ? 'err-credit-limit' : undefined"
+            @input="clearFieldError('creditLimit')"
           />
-          <small>Required to calculate available credit. Credit limits never increase Safe to Spend.</small>
+          <small v-if="fieldErrors.creditLimit" id="err-credit-limit" class="field-error-text">{{ fieldErrors.creditLimit }}</small>
+          <small v-else>Required to calculate available credit. Credit limits never increase Safe to Spend.</small>
         </label>
         <label>
           Payment Due Day of Month (Optional)
@@ -897,12 +945,15 @@ function onDateInput() {
           Minimum Payment ($ Optional)
           <input
             v-model="form.minPayment"
-            type="number"
-            min="0"
-            step="0.01"
+            type="text"
             inputmode="decimal"
             placeholder="0.00"
+            :class="{ 'field-input-error': fieldErrors.minPayment }"
+            :aria-invalid="Boolean(fieldErrors.minPayment)"
+            :aria-describedby="fieldErrors.minPayment ? 'err-min-payment' : undefined"
+            @input="clearFieldError('minPayment')"
           />
+          <small v-if="fieldErrors.minPayment" id="err-min-payment" class="field-error-text">{{ fieldErrors.minPayment }}</small>
         </label>
       </template>
 
@@ -1161,12 +1212,14 @@ function onDateInput() {
         <div :class="{ 'amount-quick-row': mode === 'Pay bill' }">
           <input
             v-model="form.amount"
-            type="number"
-            min="0.01"
-            step="0.01"
+            type="text"
             required
             inputmode="decimal"
             placeholder="0.00"
+            :class="{ 'field-input-error': fieldErrors.amount }"
+            :aria-invalid="Boolean(fieldErrors.amount)"
+            :aria-describedby="fieldErrors.amount ? 'err-gen-amount' : undefined"
+            @input="clearFieldError('amount')"
           />
           <button
             v-if="mode === 'Pay bill' && currentBillOccurrenceStatus && currentBillOccurrenceStatus.remainingAmount > 0"
@@ -1178,6 +1231,7 @@ function onDateInput() {
             Fill Remaining ({{ money(currentBillOccurrenceStatus.remainingAmount) }})
           </button>
         </div>
+        <small v-if="fieldErrors.amount" id="err-gen-amount" class="field-error-text">{{ fieldErrors.amount }}</small>
         <small
           v-if="form.type === 'Credit Card Payment' && targetPaymentCoverage && targetPaymentCoverage.totalOwed > 0"
           class="muted"
@@ -1238,9 +1292,13 @@ function onDateInput() {
         <input
           v-model="form.name"
           :required="
-            ['Add pot', 'Add bill', 'Edit bill'].includes(mode)
+            ['Add pot', 'Edit pot', 'Add bill', 'Edit bill'].includes(mode)
           "
           maxlength="80"
+          :class="{ 'field-input-error': fieldErrors.name }"
+          :aria-invalid="Boolean(fieldErrors.name)"
+          :aria-describedby="fieldErrors.name ? 'err-gen-name' : undefined"
+          @input="clearFieldError('name')"
           :placeholder="
             (mode === 'Add transaction' || mode === 'Edit transaction')
               ? (form.type === 'Transfer'
@@ -1259,6 +1317,7 @@ function onDateInput() {
                   : 'e.g. Weekly groceries'
           "
         />
+        <small v-if="fieldErrors.name" id="err-gen-name" class="field-error-text">{{ fieldErrors.name }}</small>
       </label>
 
       <!-- Category (Expenses and Budgets only) -->
@@ -1330,15 +1389,20 @@ function onDateInput() {
         </small>
       </label>
 
-      <label v-if="mode === 'Add pot'">
+      <label v-if="mode === 'Add pot' || mode === 'Edit pot'">
         Savings target ($)
         <input
-          type="number"
+          type="text"
+          inputmode="decimal"
           v-model="form.target"
-          min="0.01"
-          step="0.01"
           required
+          placeholder="0.00"
+          :class="{ 'field-input-error': fieldErrors.target }"
+          :aria-invalid="Boolean(fieldErrors.target)"
+          :aria-describedby="fieldErrors.target ? 'err-pot-target' : undefined"
+          @input="clearFieldError('target')"
         />
+        <small v-if="fieldErrors.target" id="err-pot-target" class="field-error-text">{{ fieldErrors.target }}</small>
       </label>
 
       <label v-if="mode === 'Add bill' || mode === 'Edit bill'">
@@ -1349,8 +1413,13 @@ function onDateInput() {
           min="1"
           max="31"
           required
+          :class="{ 'field-input-error': fieldErrors.day }"
+          :aria-invalid="Boolean(fieldErrors.day)"
+          :aria-describedby="fieldErrors.day ? 'err-bill-day' : undefined"
+          @input="clearFieldError('day')"
         />
-        <small>For shorter months, we use the last day.</small>
+        <small v-if="fieldErrors.day" id="err-bill-day" class="field-error-text">{{ fieldErrors.day }}</small>
+        <small v-else>For shorter months, we use the last day.</small>
       </label>
 
       <label
@@ -1913,5 +1982,19 @@ function onDateInput() {
   gap: 0.4rem;
   font-size: 0.8125rem;
   color: #78350f;
+}
+
+.field-input-error {
+  border-color: var(--color-danger, #c94736) !important;
+  outline-color: var(--color-danger, #c94736) !important;
+  background-color: rgba(201, 71, 54, 0.04);
+}
+
+.field-error-text {
+  color: var(--color-danger, #c94736) !important;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  margin-top: 0.2rem;
+  display: block;
 }
 </style>

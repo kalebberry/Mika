@@ -122,6 +122,25 @@ watch(targetedTransactionId, () => {
           <option v-for="c in categories" :key="c">{{ c }}</option>
         </select>
       </label>
+      <div style="display: flex; align-items: flex-end; gap: 0.5rem; flex-wrap: wrap;">
+        <button
+          type="button"
+          class="primary"
+          style="white-space: nowrap; height: 2.8125rem; padding: 0 1.25rem; font-size: 0.875rem;"
+          @click="open('Add transaction')"
+        >
+          ＋ Add transaction
+        </button>
+        <button
+          type="button"
+          class="secondary"
+          style="white-space: nowrap; height: 2.8125rem; padding: 0 1rem; font-size: 0.875rem;"
+          @click="open('Add transaction', '', 'Transfer')"
+          title="Transfer between accounts"
+        >
+          ⇄ Transfer
+        </button>
+      </div>
     </div>
 
     <!-- Active Filter Indicator Banner (when navigated from Insights or filtered by Month / Category) -->
@@ -342,6 +361,15 @@ watch(targetedTransactionId, () => {
             : "Your next small step: record one expense."
         }}
       </p>
+      <button
+        v-if="!state.transactions.length"
+        type="button"
+        class="primary"
+        style="margin-top: 0.75rem;"
+        @click="open('Add transaction')"
+      >
+        ＋ Record first transaction
+      </button>
     </div>
 
     <div class="table-footer">

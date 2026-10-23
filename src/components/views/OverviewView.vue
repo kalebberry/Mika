@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import BackupReminderBanner from "../overview/BackupReminderBanner.vue";
+import SetupChecklistCard from "../overview/SetupChecklistCard.vue";
 import SafeToSpendCard from "../overview/SafeToSpendCard.vue";
 import DailyAttentionCard from "../overview/DailyAttentionCard.vue";
+import MoneyOutlookCard from "../overview/MoneyOutlookCard.vue";
 import DailyPaydayCard from "../overview/DailyPaydayCard.vue";
 import QuickActionsCard from "../overview/QuickActionsCard.vue";
 import StatGrid from "../overview/StatGrid.vue";
@@ -17,16 +20,25 @@ const showFinancialDetails = ref(false);
 
 <template>
   <div class="daily-dashboard">
+    <!-- Proactive backup reminder -->
+    <BackupReminderBanner />
+
+    <!-- Setup checklist with progress & dismiss/reopen -->
+    <SetupChecklistCard />
+
     <!-- 1. Safe to Spend: Primary number and most prominent element -->
     <SafeToSpendCard />
 
     <!-- 2. What needs attention: Prioritized actionable items & suggested next action -->
     <DailyAttentionCard />
 
-    <!-- 3. Next payday: Date and confirmation/projection distinction -->
+    <!-- 3. Money Outlook: Clickable summary with shortcut to Insights -->
+    <MoneyOutlookCard />
+
+    <!-- 4. Next payday: Date and confirmation/projection distinction -->
     <DailyPaydayCard />
 
-    <!-- 4. Quick actions: Common daily tasks -->
+    <!-- 5. Quick actions: Common daily tasks -->
     <QuickActionsCard />
 
     <!-- 5. Supporting financial details: Secondary, collapsed by default for compact ADHD-friendly view -->

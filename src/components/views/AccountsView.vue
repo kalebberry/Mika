@@ -16,6 +16,7 @@ const {
   toggleArchiveAccount,
   confirmCardMinimum,
   unconfirmCardMinimum,
+  state,
 } = useBudget();
 const { open } = useModal();
 
@@ -38,6 +39,26 @@ const cashAccounts = computed(() =>
 const creditAccounts = computed(() =>
   displayedAccounts.value.filter((a) => a.type === "credit"),
 );
+
+const defaultChecking = computed(() =>
+  state.value.accounts?.find(
+    (a) =>
+      a.id === "acc-default-checking" ||
+      (a.type === "checking" && a.name.toLowerCase().includes("primary")),
+  ),
+);
+
+const showFirstTimeCheckingGuidance = computed(() => {
+  if (!defaultChecking.value) return false;
+  const checkingAccounts = (state.value.accounts || []).filter(
+    (a) => a.type === "checking",
+  );
+  return (
+    checkingAccounts.length === 1 &&
+    (!defaultChecking.value.lastVerifiedAt ||
+      defaultChecking.value.opening === 0)
+  );
+});
 
 function toggleExpand(id: string) {
   expandedAccountId.value = expandedAccountId.value === id ? null : id;
@@ -227,13 +248,56 @@ function getCoverageBadge(status: string) {
       </button>
     </div>
 
+    <!-- First-Time Checking Guidance Banner -->
+    <section
+      v-if="showFirstTimeCheckingGuidance && defaultChecking"
+      class="card first-time-checking-banner"
+      aria-label="First-time checking account guidance"
+      style="margin-bottom: 1.5rem; display: flex; gap: 1rem; align-items: flex-start; background: var(--color-surface, #fff); border-left: 4px solid var(--color-teal, #277c78);"
+    >
+      <div style="font-size: 1.5rem; line-height: 1;" aria-hidden="true">💡</div>
+      <div style="flex: 1;">
+        <h3 style="margin: 0 0 0.25rem; font-size: 1rem;">Customize your Primary Checking account</h3>
+        <p class="muted" style="margin: 0 0 0.75rem; font-size: 0.875rem;">
+          Mika created a default <strong>{{ defaultChecking.name }}</strong> for you. Instead of creating a duplicate checking account, simply adjust its balance or rename it to match your real bank.
+        </p>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <button
+            type="button"
+            class="primary small"
+            @click="open('Adjust balance', defaultChecking.id)"
+          >
+            Adjust balance
+          </button>
+          <button
+            type="button"
+            class="secondary small"
+            @click="open('Edit account', defaultChecking.id)"
+          >
+            Edit account name
+          </button>
+        </div>
+      </div>
+    </section>
+
     <!-- Cash Accounts Section (Checking & Savings) -->
     <section v-if="cashAccounts.length > 0" class="accounts-section">
       <div class="section-heading">
-        <h2>Cash Accounts</h2>
-        <span class="muted small">
-          {{ cashAccounts.length }} {{ cashAccounts.length === 1 ? 'account' : 'accounts' }}
-        </span>
+        <div style="display: flex; align-items: baseline; gap: 0.5rem;">
+          <h2>Cash Accounts</h2>
+          <span class="muted small">
+            {{ cashAccounts.length }} {{ cashAccounts.length === 1 ? 'account' : 'accounts' }}
+          </span>
+        </div>
+        <button
+          v-if="cashAccounts.length > 1"
+          type="button"
+          class="secondary small"
+          @click="open('Add transaction', '', 'Transfer')"
+          title="Transfer money between checking and savings"
+        >
+          ⇄ Transfer money
+        </button>
       </div>
 
       <div class="accounts-list">
@@ -383,6 +447,19 @@ function getCoverageBadge(status: string) {
                   </template>
                 </p>
                 <div class="expanded-actions">
+                  <button
+                    class="secondary small"
+                    @click="open('Add transaction', acc.id)"
+                  >
+                    ＋ Add transaction
+                  </button>
+                  <button
+                    v-if="cashAccounts.length > 1"
+                    class="secondary small"
+                    @click="open('Add transaction', acc.id, 'Transfer')"
+                  >
+                    ⇄ Transfer
+                  </button>
                   <button
                     class="secondary small"
                     @click="open('Adjust balance', acc.id)"
