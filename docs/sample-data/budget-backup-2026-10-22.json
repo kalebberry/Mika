@@ -2,195 +2,108 @@
   "app": "mika-budget",
   "formatVersion": 1,
   "schemaVersion": 5,
-  "exportedAt": "2026-10-22T13:10:38.181Z",
+  "exportedAt": "2026-10-22T12:00:00.000Z",
   "metadata": {
     "transactionCount": 0,
-    "accountCount": 3,
-    "budgetCount": 6,
-    "potCount": 2,
-    "billCount": 5
+    "accountCount": 2,
+    "budgetCount": 3,
+    "potCount": 1,
+    "billCount": 2
   },
   "data": {
     "version": 5,
     "demo": false,
-    "opening": 500000,
-    "payday": "2026-10-21",
-    "followingPayday": "2026-11-04",
+    "opening": 350000,
+    "payday": "2026-10-23",
+    "followingPayday": "2026-11-06",
     "paydaySchedule": {
-      "frequency": "manual",
-      "anchorDate": "2026-10-21",
-      "weekendRule": "exact",
-      "overrides": [],
-      "manualFollowingPayday": "2026-11-04"
+      "frequency": "biweekly",
+      "anchorDate": "2026-10-23",
+      "weekendRule": "preceding_friday",
+      "overrides": []
     },
     "transactions": [],
     "budgets": [
       {
-        "id": "synthetic-budget-util",
-        "name": "Utilities",
-        "category": "Utilities",
-        "limit": 20000,
+        "id": "bgt-fiction-books",
+        "name": "Books & Audio",
+        "category": "Books & Audio",
+        "limit": 6000,
         "color": "#277c78"
       },
       {
-        "id": "synthetic-budget-subs",
-        "name": "Subscriptions",
-        "category": "Subscriptions",
-        "limit": 15000,
-        "color": "#82c9d7"
-      },
-      {
-        "id": "synthetic-budget-groc",
-        "name": "Groceries",
-        "category": "Groceries",
-        "limit": 25000,
-        "color": "#626070"
-      },
-      {
-        "id": "synthetic-budget-dine",
-        "name": "Dining Out",
-        "category": "Dining Out",
-        "limit": 15000,
+        "id": "bgt-fiction-coffee",
+        "name": "Coffee Roasters",
+        "category": "Coffee Roasters",
+        "limit": 9000,
         "color": "#f2cdac"
       },
       {
-        "id": "synthetic-budget-tran",
-        "name": "Transportation",
-        "category": "Transportation",
-        "limit": 10000,
+        "id": "bgt-fiction-transit",
+        "name": "Metro Pass",
+        "category": "Metro Pass",
+        "limit": 11000,
         "color": "#826cb0"
-      },
-      {
-        "id": "synthetic-budget-ent",
-        "name": "Entertainment",
-        "category": "Entertainment",
-        "limit": 15000,
-        "color": "#597c7c"
       }
     ],
     "pots": [
       {
-        "id": "synthetic-pot-vacation",
-        "name": "Vacation Fund",
-        "saved": 50000,
-        "target": 100000,
-        "color": "#277c78"
-      },
-      {
-        "id": "synthetic-pot-emergency",
-        "name": "Emergency Reserve",
-        "saved": 100000,
-        "target": 200000,
+        "id": "pot-fiction-kayak",
+        "name": "Sea Kayak Fund",
+        "saved": 35000,
+        "target": 120000,
         "color": "#82c9d7"
       }
     ],
     "bills": [
       {
-        "id": "synthetic-bill-housing",
-        "name": "Housing Payment",
-        "amount": 120000,
-        "day": 1,
+        "id": "bill-fiction-cloud",
+        "name": "Cloud Storage Pro",
+        "amount": 1500,
+        "day": 8,
         "protected": true,
         "settledDueDates": [
-          "2026-10-01"
+          "2026-10-08"
         ],
         "trackingStartDate": "2026-10-01"
       },
       {
-        "id": "synthetic-bill-gym",
-        "name": "Fitness Membership",
-        "amount": 5000,
-        "day": 22,
+        "id": "bill-fiction-music",
+        "name": "Streaming Music Duo",
+        "amount": 2200,
+        "day": 18,
         "protected": true,
         "settledDueDates": [],
-        "trackingStartDate": "2026-10-01"
-      },
-      {
-        "id": "synthetic-bill-mobile",
-        "name": "Mobile Wireless",
-        "amount": 5000,
-        "day": 20,
-        "protected": true,
-        "settledDueDates": [
-          "2026-10-20"
-        ],
-        "trackingStartDate": "2026-10-01"
-      },
-      {
-        "id": "synthetic-bill-insurance",
-        "name": "Auto Insurance",
-        "amount": 12000,
-        "day": 4,
-        "protected": true,
-        "settledDueDates": [
-          "2026-10-04"
-        ],
-        "trackingStartDate": "2026-10-01"
-      },
-      {
-        "id": "synthetic-bill-internet",
-        "name": "Internet Service",
-        "amount": 4000,
-        "day": 13,
-        "protected": true,
-        "settledDueDates": [
-          "2026-10-13"
-        ],
         "trackingStartDate": "2026-10-01"
       }
     ],
     "settledBills": [
       {
-        "billId": "synthetic-bill-housing",
-        "dueDate": "2026-10-01",
-        "settledAt": "2026-10-13"
-      },
-      {
-        "billId": "synthetic-bill-insurance",
-        "dueDate": "2026-10-04",
-        "settledAt": "2026-10-13"
-      },
-      {
-        "billId": "synthetic-bill-internet",
-        "dueDate": "2026-10-13",
-        "settledAt": "2026-10-13"
-      },
-      {
-        "billId": "synthetic-bill-mobile",
-        "dueDate": "2026-10-20",
-        "settledAt": "2026-10-21"
+        "billId": "bill-fiction-cloud",
+        "dueDate": "2026-10-08",
+        "settledAt": "2026-10-08"
       }
     ],
     "accounts": [
       {
         "id": "acc-default-checking",
-        "name": "Sample Primary Checking",
+        "name": "Fictional Community Checking",
         "type": "checking",
-        "opening": 500000,
+        "opening": 350000,
         "includeInSafeToSpend": true,
         "archived": false,
-        "createdAt": "2026-10-14",
-        "updatedAt": "2026-10-14"
+        "createdAt": "2026-10-01",
+        "updatedAt": "2026-10-01"
       },
       {
-        "id": "synthetic-acc-credit",
-        "name": "Sample Rewards Card",
+        "id": "acc-fiction-rewards",
+        "name": "Fictional Solar Rewards",
         "type": "credit",
-        "opening": 25000,
+        "opening": 15000,
         "includeInSafeToSpend": false,
         "archived": false,
-        "createdAt": "2026-10-14",
-        "updatedAt": "2026-10-14"
-      },
-      {
-        "id": "synthetic-acc-savings",
-        "name": "Sample Savings",
-        "type": "savings",
-        "opening": 200000,
-        "includeInSafeToSpend": true,
-        "archived": false,
-        "createdAt": "2026-10-14",
-        "updatedAt": "2026-10-14"
+        "createdAt": "2026-10-01",
+        "updatedAt": "2026-10-01"
       }
     ]
   }

@@ -24,6 +24,8 @@ import {
   getBillDueDate,
   isBillUnpaidThisMonth,
   migrateState,
+  cents,
+  parseAmount,
   addDays,
   colors,
   themeColors,
@@ -17885,6 +17887,83 @@ test("Test 6B.29 — Date Correctness: UTC addDays, daysBetween, leap years, DST
 
   const compFebLeap = getMonthComparison(febState, "2024-02", "2024-02-29");
   assert.equal(compFebLeap.daysInMonth, 29, "February 2024 has 29 days in comparison");
+});
+
+test("Test 6B.30 — Formatted amount parsing and baseline synchronization with cash accounts", () => {
+  // 1. parseAmount with commas, currency symbols, and whitespace:
+  assert.equal(parseAmount("8,426.99"), 8426.99);
+  assert.equal(parseAmount("$8,426.99"), 8426.99);
+  assert.equal(parseAmount("  8,426.99  "), 8426.99);
+  assert.equal(parseAmount("8426.99"), 8426.99);
+  assert.equal(parseAmount(8426.99), 8426.99);
+  assert.equal(cents(parseAmount("8,426.99")), 842699);
+  assert.equal(cents(parseAmount("$1,250.50")), 125050);
+
+  // Invalid / empty inputs return NaN:
+  assert.ok(Number.isNaN(parseAmount("")));
+  assert.ok(Number.isNaN(parseAmount("   ")));
+  assert.ok(Number.isNaN(parseAmount(null)));
+  assert.ok(Number.isNaN(parseAmount(undefined)));
+  assert.ok(Number.isNaN(parseAmount("abc")));
+
+  // 2. Baseline balance synchronization when primary checking exists:
+  const s = blank();
+  s.accounts = [
+    {
+      id: "acc-default-checking",
+      name: "Primary Checking",
+      type: "checking",
+      opening: 500000, // $5,000.00
+      includeInSafeToSpend: true,
+      archived: false,
+      createdAt: "2026-10-01",
+      updatedAt: "2026-10-01",
+    },
+    {
+      id: "acc-savings-1",
+      name: "Savings",
+      type: "savings",
+      opening: 100000, // $1,000.00
+      includeInSafeToSpend: true,
+      archived: false,
+      createdAt: "2026-10-01",
+      updatedAt: "2026-10-01",
+    },
+  ];
+
+  // Prior balance: $5,000 + $1,000 = $6,000.00 (600000 cents)
+  assert.equal(totals(s).balance, 600000);
+
+  // User sets baseline in Settings to "8,426.99" ($8,426.99 = 842699 cents):
+  const parsedTarget = parseAmount("8,426.99");
+  const targetCents = cents(parsedTarget);
+  assert.equal(targetCents, 842699);
+
+  // Calculate target for primary checking taking other cash accounts into account:
+  const eligibleCash = s.accounts.filter(
+    (a) => !a.archived && (a.type === "checking" || a.type === "savings") && a.includeInSafeToSpend,
+  );
+  const primaryChecking = eligibleCash.find((a) => a.id === "acc-default-checking")!;
+  const otherCash = eligibleCash
+    .filter((a) => a.id !== primaryChecking.id)
+    .reduce((sum, a) => sum + getAccountBalance(a, s), 0); // 100000 cents
+
+  assert.equal(otherCash, 100000);
+  const targetPrimary = targetCents - otherCash; // 742699 cents ($7,426.99)
+  assert.equal(targetPrimary, 742699);
+
+  // Calibrate primary checking:
+  const delta = getAccountLedgerDelta(primaryChecking, s);
+  primaryChecking.opening = targetPrimary - delta;
+  primaryChecking.balance = targetPrimary;
+  s.opening = primaryChecking.opening;
+
+  // Verify that totals(s).balance exactly matches the newly saved baseline:
+  const newTotals = totals(s);
+  assert.equal(newTotals.balance, 842699, "Total cash balance equals $8,426.99");
+  assert.equal(getAccountBalance(primaryChecking, s), 742699, "Checking balance is $7,426.99");
+  assert.equal(getAccountBalance(s.accounts[1]!, s), 100000, "Savings balance is $1,000.00");
+  assert.equal(s.opening, 742699, "State opening matches checking opening");
 });
 
 

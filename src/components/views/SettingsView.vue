@@ -287,10 +287,9 @@ function handleRemoveOverride(idOrDate: string) {
             <span>Current account balance ($)</span>
             <input
               v-model="settingsBalance"
-              type="number"
-              step="0.01"
-              required
+              type="text"
               inputmode="decimal"
+              required
               placeholder="0.00"
             />
             <small>

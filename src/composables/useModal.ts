@@ -5,6 +5,7 @@ import {
   today,
   uid,
   cents,
+  parseAmount,
   resetWorkspace,
   nextUnpaidDueDate,
   getBillOccurrenceStatus,
@@ -447,8 +448,8 @@ export function useModal() {
     error.value = "";
     let billToastMessage = "Bill payment recorded.";
     const f = form.value;
-    const amount = cents(Number(f.amount));
-    const target = cents(Number(f.target));
+    const amount = cents(parseAmount(f.amount));
+    const target = cents(parseAmount(f.target));
     const name = f.name.trim();
 
     if (mode.value === "Add account") {
@@ -456,7 +457,7 @@ export function useModal() {
         error.value = "Enter an account name.";
         return;
       }
-      const initialBal = cents(Number(f.amount || 0));
+      const initialBal = cents(parseAmount(f.amount || 0));
       if (!Number.isFinite(initialBal) || initialBal < 0) {
         error.value = "Enter a valid balance ($0.00 or greater).";
         return;
@@ -465,13 +466,13 @@ export function useModal() {
       let limitCents: number | undefined;
       let minPayCents: number | undefined;
       if (isCredit) {
-        limitCents = cents(Number(f.creditLimit || 0));
+        limitCents = cents(parseAmount(f.creditLimit || 0));
         if (!Number.isFinite(limitCents) || limitCents < 0) {
           error.value = "Enter a valid credit limit ($0.00 or greater).";
           return;
         }
         if (f.minPayment) {
-          minPayCents = cents(Number(f.minPayment));
+          minPayCents = cents(parseAmount(f.minPayment));
           if (!Number.isFinite(minPayCents) || minPayCents < 0) {
             error.value = "Enter a valid minimum payment.";
             return;
@@ -533,7 +534,8 @@ export function useModal() {
     }
 
     if (mode.value === "Adjust balance") {
-      const newBal = cents(Number(f.amount || 0));
+      const parsed = parseAmount(f.amount || 0);
+      const newBal = cents(parsed);
       if (!Number.isFinite(newBal) || newBal < 0) {
         error.value = "Enter a valid balance ($0.00 or greater).";
         return;
@@ -565,7 +567,7 @@ export function useModal() {
         error.value = "Selected account is not a valid credit card.";
         return;
       }
-      const reserveAmount = cents(Number(f.amount || 0));
+      const reserveAmount = cents(parseAmount(f.amount || 0));
       if (!Number.isFinite(reserveAmount) || reserveAmount <= 0) {
         error.value = "Enter an amount greater than zero.";
         return;

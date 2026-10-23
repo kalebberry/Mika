@@ -5,6 +5,7 @@ import {
   themeColors,
   today,
   cents,
+  parseAmount,
   getBillOccurrenceStatus,
   nextUnpaidDueDate,
   previewCreditCardExpenseImpact,
@@ -308,7 +309,7 @@ const creditImpactPreview = computed(() => {
   ) {
     return null;
   }
-  const amtCents = cents(Number(form.value.amount || 0));
+  const amtCents = cents(parseAmount(form.value.amount || 0));
   const cat =
     form.value.category === "__custom__"
       ? (form.value.customCategory || "General").trim()
@@ -719,11 +720,9 @@ function onDateInput() {
         {{ form.accountType === 'credit' ? 'New Balance Owed ($)' : 'New Current Balance ($)' }}
         <input
           v-model="form.amount"
-          type="number"
-          min="0"
-          step="0.01"
-          required
+          type="text"
           inputmode="decimal"
+          required
           placeholder="0.00"
         />
         <small>
@@ -1015,12 +1014,12 @@ function onDateInput() {
           class="payment-coverage-callout"
           :class="{
             'uncovered-warning': targetPaymentCoverage.readyToPay === 0 && targetPaymentCoverage.totalOwed > 0,
-            'covered-info': targetPaymentCoverage.readyToPay > 0 && cents(Number(form.amount || 0)) <= targetPaymentCoverage.readyToPay,
-            'partial-warning': targetPaymentCoverage.readyToPay > 0 && cents(Number(form.amount || 0)) > targetPaymentCoverage.readyToPay
+            'covered-info': targetPaymentCoverage.readyToPay > 0 && cents(parseAmount(form.amount || 0)) <= targetPaymentCoverage.readyToPay,
+            'partial-warning': targetPaymentCoverage.readyToPay > 0 && cents(parseAmount(form.amount || 0)) > targetPaymentCoverage.readyToPay
           }"
         >
           <template v-if="targetPaymentCoverage.readyToPay > 0">
-            <template v-if="cents(Number(form.amount || 0)) <= targetPaymentCoverage.readyToPay">
+            <template v-if="cents(parseAmount(form.amount || 0)) <= targetPaymentCoverage.readyToPay">
               <div class="callout-header">
                 <span class="badge covered-badge">🛡️ Reserve-Backed</span>
                 <span class="muted"><strong>{{ money(targetPaymentCoverage.readyToPay) }}</strong> Ready to Pay reserved</span>
@@ -1033,11 +1032,11 @@ function onDateInput() {
               <div class="callout-header">
                 <span class="badge partial-badge">⚡ Partially Covered</span>
                 <span class="uncovered-note">
-                  <strong>{{ money(targetPaymentCoverage.readyToPay) }}</strong> covered / <strong>{{ money(cents(Number(form.amount || 0)) - targetPaymentCoverage.readyToPay) }}</strong> uncovered
+                  <strong>{{ money(targetPaymentCoverage.readyToPay) }}</strong> covered / <strong>{{ money(cents(parseAmount(form.amount || 0)) - targetPaymentCoverage.readyToPay) }}</strong> uncovered
                 </span>
               </div>
               <small class="callout-note text-warning">
-                Of this {{ money(cents(Number(form.amount || 0))) }} payment, <strong>{{ money(targetPaymentCoverage.readyToPay) }}</strong> is funded from reserved cash. The remaining <strong>{{ money(cents(Number(form.amount || 0)) - targetPaymentCoverage.readyToPay) }}</strong> is uncovered debt and will directly reduce your Safe to Spend.
+                Of this {{ money(cents(parseAmount(form.amount || 0))) }} payment, <strong>{{ money(targetPaymentCoverage.readyToPay) }}</strong> is funded from reserved cash. The remaining <strong>{{ money(cents(parseAmount(form.amount || 0)) - targetPaymentCoverage.readyToPay) }}</strong> is uncovered debt and will directly reduce your Safe to Spend.
               </small>
             </template>
           </template>

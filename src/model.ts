@@ -165,6 +165,16 @@ export const today = () => {
 };
 
 export const cents = (v: number) => Math.round(v * 100);
+
+export function parseAmount(val: unknown): number {
+  if (typeof val === "number") return Number.isFinite(val) ? val : NaN;
+  if (typeof val !== "string") return NaN;
+  const cleaned = val.replace(/[$,\s]/g, "");
+  if (!cleaned) return NaN;
+  const num = Number(cleaned);
+  return Number.isFinite(num) ? num : NaN;
+}
+
 export const uid = () => crypto.randomUUID();
 
 export function addDays(dateStr: string, days: number): string {

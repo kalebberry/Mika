@@ -7,6 +7,7 @@ import {
   demo,
   resetWorkspace,
   cents,
+  parseAmount,
   today,
   totals,
   spent,
@@ -613,7 +614,8 @@ export function useBudget() {
   }
 
   function saveSettings() {
-    const balance = cents(Number(settingsBalance.value));
+    const parsed = parseAmount(settingsBalance.value);
+    const balance = cents(parsed);
     if (!Number.isFinite(balance)) {
       toast("Enter a valid account balance.");
       return;
@@ -622,7 +624,31 @@ export function useBudget() {
       .filter((t) => isLedgerStatus(t.status))
       .reduce((n, t) => n + t.amount, 0);
 
-    state.value.opening = balance - postedSum;
+    const eligibleCashAccounts = (state.value.accounts || []).filter(
+      (a) =>
+        !a.archived &&
+        (a.type === "checking" || a.type === "savings") &&
+        a.includeInSafeToSpend,
+    );
+
+    if (eligibleCashAccounts.length > 0) {
+      const primaryChecking =
+        eligibleCashAccounts.find((a) => a.id === "acc-default-checking") ||
+        eligibleCashAccounts.find((a) => a.type === "checking") ||
+        eligibleCashAccounts[0];
+
+      if (primaryChecking) {
+        const otherCashSum = eligibleCashAccounts
+          .filter((a) => a.id !== primaryChecking.id)
+          .reduce((sum, a) => sum + getAccountBalance(a, state.value), 0);
+
+        const targetPrimaryBal = balance - otherCashSum;
+        adjustAccountBalance(primaryChecking.id, targetPrimaryBal, true);
+      }
+    } else {
+      state.value.opening = balance - postedSum;
+    }
+
     state.value.payday = getCurrentPayday(state.value);
     state.value.followingPayday = getFollowingPayday(state.value);
     settingsSaved.value = true;
@@ -1052,7 +1078,7 @@ export function useBudget() {
     return true;
   }
 
-  function adjustAccountBalance(id: string, newBalanceCents: number) {
+  function adjustAccountBalance(id: string, newBalanceCents: number, suppressToast = false) {
     if (!Number.isFinite(newBalanceCents)) return false;
     const acc = (state.value.accounts || []).find((a) => a.id === id);
     if (!acc) return false;
@@ -1066,7 +1092,9 @@ export function useBudget() {
     if (acc.id === "acc-default-checking") {
       state.value.opening = acc.opening;
     }
-    toast(`Balance for ${acc.name} adjusted.`);
+    if (!suppressToast) {
+      toast(`Balance for ${acc.name} adjusted.`);
+    }
     return true;
   }
 
