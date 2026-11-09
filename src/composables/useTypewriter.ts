@@ -7,7 +7,7 @@
  * - Non-blocking execution and clean timer cleanup
  */
 
-import { ref, onUnmounted, unref, type Ref } from "vue";
+import { ref, onUnmounted, unref, getCurrentInstance, type Ref } from "vue";
 
 export interface TypewriterOptions {
   speedMs?: number;
@@ -95,9 +95,11 @@ export function useTypewriter(options?: TypewriterOptions) {
     }
   }
 
-  onUnmounted(() => {
-    stopTimer();
-  });
+  if (getCurrentInstance()) {
+    onUnmounted(() => {
+      stopTimer();
+    });
+  }
 
   return {
     displayedText,

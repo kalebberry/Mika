@@ -37,6 +37,7 @@ const {
   resetChoice,
   resetConfirmed,
   restoreConfirmed,
+  isSubmitting,
   payMethod,
   form,
   open,
@@ -325,6 +326,18 @@ watch(
   },
 );
 
+watch(
+  () => error.value,
+  (newErr) => {
+    if (newErr) {
+      nextTick(() => {
+        const errEl = dialogRef.value?.querySelector<HTMLElement>(".form-error");
+        errEl?.focus();
+      });
+    }
+  },
+);
+
 const creditImpactPreview = computed(() => {
   if (
     (mode.value !== "Add transaction" && mode.value !== "Edit transaction") ||
@@ -402,8 +415,8 @@ function onDateInput() {
             <span>
               <strong>Keep my budgets and bills</strong>
               <small>
-                Keep category limits and recurring bill details. Clear
-                transactions, pots, balance, and payday.
+                Keep category limits, recurring bills, and accounts. Clear
+                transactions, pots, and balances.
               </small>
             </span>
           </label>
@@ -1519,7 +1532,7 @@ function onDateInput() {
         </div>
       </div>
 
-      <p class="form-error" v-if="error" role="alert" aria-live="assertive">{{ error }}</p>
+      <p class="form-error" v-if="error" role="alert" aria-live="assertive" tabindex="-1">{{ error }}</p>
 
       <!-- Secondary settlement option for bill payment -->
       <div v-if="mode === 'Pay bill' && payMethod === 'transaction'" class="bill-settle-alt">
@@ -1548,7 +1561,11 @@ function onDateInput() {
           danger: mode.startsWith('Delete') || mode === 'Start fresh' || mode === 'Restore backup',
         }"
         type="submit"
-        :disabled="mode === 'Restore backup' && !restoreConfirmed"
+        :disabled="
+          (mode === 'Restore backup' && !restoreConfirmed) ||
+          (mode === 'Start fresh' && !resetConfirmed) ||
+          isSubmitting
+        "
       >
         {{
           mode === "Restore backup"

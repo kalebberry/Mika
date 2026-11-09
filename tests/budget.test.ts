@@ -10,6 +10,7 @@ import {
   blank,
   demo,
   resetWorkspace,
+  nextPayday,
   today,
   totals,
   reserveBillsBreakdown,
@@ -146,6 +147,7 @@ import {
   STORAGE_CORRUPT_KEY,
   saveCurrentStateToStorage,
   storageHealth,
+  getInitialPage,
 } from "../src/composables/useBudget.ts";
 import {
   useModal,
@@ -16293,12 +16295,12 @@ test("Test 6A.17 — Reset workspace safeguards: keepPlan vs all", () => {
   const state = demo();
   state.payday = "2026-10-31";
 
-  // Option 1: Keep Plan (preserves budgets, bills, accounts, payday schedule)
+  // Option 1: Keep Plan (preserves budgets, bills, accounts, resets balances & establishes fresh payday baseline)
   const kept = resetWorkspace(state, true);
   assert.equal(kept.budgets.length, state.budgets.length);
   assert.equal(kept.bills.length, state.bills.length);
   assert.equal(kept.accounts.length, state.accounts.length);
-  assert.equal(kept.payday, state.payday);
+  assert.equal(kept.payday, nextPayday(), "Payday resets to fresh baseline");
   assert.equal(kept.transactions.length, 0, "Transactions wiped");
   assert.equal(kept.pots.length, 0, "Pots wiped");
 
@@ -19859,6 +19861,249 @@ test("Test 6D.1.5 — Time and boundary regression suite: month-end rollover, mi
     assert.equal(tRestored.safe, tDec01.safe);
   }
 });
+
+test("Test 6D.2.1 — Reset workspace 'Keep my budgets and bills' specification integrity", () => {
+  const s = demo();
+  s.payday = "2026-10-31";
+  const chk = s.accounts.find((a) => a.type === "checking")!;
+  const crd = s.accounts.find((a) => a.type === "credit")!;
+  chk.opening = 500000;
+  crd.opening = 200000;
+  crd.assignedPaymentReserve = 50000;
+  crd.paymentReservations = [
+    { id: "r1", amount: 50000, date: "2026-10-15", createdAt: "2026-10-15T10:00:00.000Z" },
+  ];
+  crd.confirmedMinimumDueDates = ["2026-10-22"];
+  crd.minimumObligations = { "2026-10-22": 3500 };
+
+  const bill = s.bills[0]!;
+  bill.settledDueDates = ["2026-10-15"];
+  s.settledBills = [{ billId: bill.id, dueDate: "2026-10-15", settledAt: "2026-10-15T10:00:00.000Z" }];
+
+  const kept = resetWorkspace(s, true);
+
+  // 1. Budgets and bills preserved
+  assert.equal(kept.budgets.length, s.budgets.length, "Budget definitions preserved");
+  assert.equal(kept.bills.length, s.bills.length, "Bill definitions preserved");
+  assert.equal(kept.accounts.length, s.accounts.length, "Account definitions preserved");
+
+  // 2. Financial balances reset to $0
+  const keptChk = kept.accounts.find((a) => a.id === chk.id)!;
+  const keptCrd = kept.accounts.find((a) => a.id === crd.id)!;
+  assert.equal(keptChk.opening, 0, "Checking opening balance reset to 0");
+  assert.equal(keptChk.balance, undefined, "Checking cached balance cleared");
+  assert.equal(keptCrd.opening, 0, "Credit card opening balance reset to 0");
+  assert.equal(keptCrd.balance, undefined, "Credit card cached balance cleared");
+  assert.equal(getAccountBalance(keptChk, kept), 0, "Checking account balance is exactly $0.00");
+  assert.equal(getAccountBalance(keptCrd, kept), 0, "Credit card account balance is exactly $0.00");
+
+  // 3. Transactions and pots wiped
+  assert.equal(kept.transactions.length, 0, "Transactions wiped");
+  assert.equal(kept.pots.length, 0, "Pots wiped");
+
+  // 4. Payment reservations and credit card obligations cleared
+  assert.equal(keptCrd.assignedPaymentReserve, 0, "Assigned payment reserve reset to 0");
+  assert.deepEqual(keptCrd.paymentReservations, [], "Payment reservations cleared");
+  assert.deepEqual(keptCrd.confirmedMinimumDueDates, [], "Confirmed minimum due dates cleared");
+  assert.deepEqual(keptCrd.minimumObligations, {}, "Minimum obligations cleared");
+
+  // 5. Settled bill occurrences cleared (all bills marked unpaid)
+  const keptBill = kept.bills.find((b) => b.id === bill.id)!;
+  assert.equal(keptBill.settledDueDates, undefined, "Bill settledDueDates cleared");
+  assert.deepEqual(kept.settledBills, [], "settledBills array cleared");
+  assert.equal(isBillPaid(kept, keptBill, "2026-10-15"), false, "Kept bill is marked unpaid");
+
+  // 6. Fresh payday baseline established (consistent with UI promise: payday to two weeks from today)
+  assert.ok(isValidDateString(kept.payday), "Payday is a valid date string");
+  assert.equal(kept.paydaySchedule?.configured, false, "Payday schedule configured reset to false");
+  assert.equal(kept.payday, nextPayday(), "Payday reset to nextPayday baseline");
+
+  // 7. Account metadata intact
+  assert.equal(keptChk.name, chk.name, "Account name preserved");
+  assert.equal(keptChk.type, chk.type, "Account type preserved");
+  assert.equal(keptCrd.creditLimit, crd.creditLimit, "Credit limit preserved");
+  assert.equal(keptCrd.dueDay, crd.dueDay, "Due day preserved");
+  assert.equal(keptCrd.minPayment, crd.minPayment, "Min payment preserved");
+});
+
+test("Test 6D.2.2 — Start Fresh atomic failure-safety: snapshot failure, persistence failure, and stale-tab concurrency protection", () => {
+  const originalLocalStorage = globalThis.localStorage;
+  const store: Record<string, string> = {};
+  let failOnKey: string | null = null;
+
+  (globalThis as any).localStorage = {
+    getItem: (k: string) => store[k] || null,
+    setItem: (k: string, v: string) => {
+      if (failOnKey === k || failOnKey === "*") {
+        const err = new Error("Storage failure");
+        err.name = "QuotaExceededError";
+        throw err;
+      }
+      store[k] = v;
+    },
+    removeItem: (k: string) => {
+      delete store[k];
+    },
+  };
+
+  try {
+    const b = useBudget();
+    const m = useModal();
+
+    // Baseline workspace state
+    const baselineState = demo();
+    baselineState.opening = 300000;
+    b.state.value = baselineState;
+    store[STORAGE_KEY] = JSON.stringify(baselineState);
+
+    // 1. Unconfirmed attempt is blocked
+    m.open("Start fresh");
+    m.resetConfirmed.value = false;
+    m.submit();
+    assert.equal(m.error.value, "Confirm that you understand what will be cleared.");
+    assert.equal(b.state.value.opening, 300000, "Active state untouched when unconfirmed");
+
+    // 2. Failed snapshot aborts reset without mutating memory or storage
+    failOnKey = STORAGE_BACKUP_KEY;
+    m.resetConfirmed.value = true;
+    m.submit();
+    assert.match(m.error.value, /Reset aborted: unable to save safety rollback snapshot/);
+    assert.equal(b.state.value.opening, 300000, "Active workspace untouched when snapshot fails");
+    assert.equal(b.state.value.transactions.length, baselineState.transactions.length);
+    failOnKey = null;
+
+    // 3. Failed storage persistence restores pre-reset state to memory
+    failOnKey = STORAGE_KEY;
+    m.open("Start fresh");
+    m.resetConfirmed.value = true;
+    m.submit();
+    assert.match(m.error.value, /Reset failed: could not persist changes to storage/);
+    assert.equal(b.state.value.opening, 300000, "Active memory restored to pre-reset state upon persistence failure");
+    assert.equal(b.state.value.transactions.length, baselineState.transactions.length);
+    failOnKey = null;
+
+    // 4. Stale-tab conflict blocks write and prevents overwriting newer remote tab data
+    store[STORAGE_KEY] = JSON.stringify({
+      version: 5,
+      accounts: [],
+      transactions: [{ id: "tx-other-tab" }],
+    });
+    m.open("Start fresh");
+    m.resetConfirmed.value = true;
+    m.submit();
+    assert.match(m.error.value, /Storage conflict detected/);
+    assert.equal(b.state.value.opening, 300000, "Stale reset blocked by OCC protection");
+  } finally {
+    globalThis.localStorage = originalLocalStorage;
+  }
+});
+
+test("Test 6D.2.3 — Prevent duplicate financial submissions: isSubmitting guard and destructive button confirmation", () => {
+  const m = useModal();
+  const b = useBudget();
+
+  // Ensure state has an account and budget
+  b.state.value = demo();
+  const chk = b.state.value.accounts.find((a) => a.type === "checking")!;
+  const initialTxCount = b.state.value.transactions.length;
+
+  m.open("Add transaction");
+  m.form.value.name = "Groceries Run";
+  m.form.value.amount = "45.00";
+  m.form.value.category = "Groceries";
+  m.form.value.type = "Expense";
+  m.form.value.accountId = chk.id;
+  m.form.value.date = "2026-10-14";
+  m.form.value.status = "cleared";
+
+  // Simulate first submission
+  assert.equal(m.isSubmitting.value, false);
+  m.submit();
+  assert.equal(b.state.value.transactions.length, initialTxCount + 1);
+  assert.equal(m.isSubmitting.value, false, "isSubmitting resets to false on success");
+
+  // Verify guard during submission rejects re-entry
+  m.isSubmitting.value = true;
+  m.submit();
+  assert.equal(b.state.value.transactions.length, initialTxCount + 1, "Duplicate submit rejected while isSubmitting is true");
+  m.isSubmitting.value = false;
+
+  // Validation failure releases guard
+  m.open("Add transaction");
+  m.form.value.amount = "-10"; // invalid
+  m.submit();
+  assert.equal(m.error.value, "Enter an amount greater than zero.");
+  assert.equal(m.isSubmitting.value, false, "isSubmitting resets to false on validation failure");
+});
+
+test("Test 6D.2.4 — Navigation and URL routing architecture: hash navigation authority and Vercel path fallback resolution", () => {
+  // Test 1: Hash navigation resolves pages
+  const originalLocation = globalThis.window.location;
+  try {
+    // Hash resolution
+    delete (globalThis.window as any).location;
+    (globalThis.window as any).location = {
+      hash: "#insights",
+      pathname: "/",
+    };
+    assert.equal(getInitialPage(), "Insights");
+
+    (globalThis.window as any).location = {
+      hash: "#recurring-bills",
+      pathname: "/",
+    };
+    assert.equal(getInitialPage(), "Recurring Bills");
+
+    // Pathname fallback resolution (for direct links or Vercel rewrites without hash)
+    (globalThis.window as any).location = {
+      hash: "",
+      pathname: "/insights",
+    };
+    assert.equal(getInitialPage(), "Insights");
+
+    (globalThis.window as any).location = {
+      hash: "",
+      pathname: "/accounts",
+    };
+    assert.equal(getInitialPage(), "Accounts");
+
+    (globalThis.window as any).location = {
+      hash: "",
+      pathname: "/unknown-route",
+    };
+    assert.equal(getInitialPage(), "Overview");
+  } finally {
+    (globalThis.window as any).location = originalLocation;
+  }
+});
+
+test("Test 6D.2.5 — Accessibility hardening: reduced-motion tokens, live regions, and typewriter lifecycle cleanup", () => {
+  // 1. useTypewriter executes cleanly without error or [Vue warn] in headless test environment
+  const tw = useTypewriter({ speedMs: 5 });
+  assert.ok(tw);
+  assert.equal(tw.displayedText.value, "");
+  tw.start("Testing typewriter effect");
+  assert.equal(tw.isTyping.value, true);
+  tw.skip();
+  assert.equal(tw.displayedText.value, "Testing typewriter effect");
+  tw.stopTimer();
+
+  // 2. CSS reset contains prefers-reduced-motion media query
+  const cssPath = path.resolve(process.cwd(), "src/styles/base/_reset.css");
+  const css = fs.readFileSync(cssPath, "utf-8");
+  assert.ok(css.includes("prefers-reduced-motion: reduce"), "Contains reduced-motion media query");
+  assert.ok(css.includes("animation: none !important"), "Suppresses animations");
+  assert.ok(css.includes("transition: none !important"), "Suppresses transitions");
+
+  // 3. Toast notification template contains persistent aria-live region
+  const toastVuePath = path.resolve(process.cwd(), "src/components/layout/ToastNotification.vue");
+  const toastVue = fs.readFileSync(toastVuePath, "utf-8");
+  assert.ok(toastVue.includes('aria-live="polite"'), "Contains polite aria-live attribute");
+  assert.ok(toastVue.includes('role="status"'), "Contains role status");
+  assert.ok(toastVue.includes('toast-region'), "Contains persistent toast-region wrapper");
+});
+
+
 
 
 

@@ -890,4 +890,102 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await expect(accountsGrid).toContainText("$400.00"); // Total Credit Card Debt
     await expect(accountsGrid).toContainText("$0.00"); // Ready to Pay
   });
+
+  test("Journey 10 — Release candidate hardening: Start fresh confirmation, Keep budgets and bills reset, reload persistence, duplicate prevention, Vercel routing, and reduced motion", async ({
+    page,
+  }) => {
+    // 1. Reduced-motion preference emulation & Vercel URL routing check
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto("/#insights");
+    const insightsHeader = page.locator(".page-header h1");
+    await expect(insightsHeader).toHaveText("Your Insights");
+
+    // 2. Start fresh confirmation button guard
+    await page.goto("/#settings");
+    const startFreshBtn = page.getByRole("button", { name: /Start fresh/i });
+    await expect(startFreshBtn).toBeVisible();
+    await startFreshBtn.click();
+
+    const dialog = page.locator("dialog[open]");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator("#dialog-title")).toHaveText("Start fresh");
+
+    const confirmBtn = dialog.getByRole("button", {
+      name: /Confirm and start fresh/i,
+    });
+    const confirmCheckbox = dialog.locator(
+      ".reset-confirm input[type='checkbox']",
+    );
+
+    // Destructive confirmation button must be disabled until checkbox is checked
+    await expect(confirmBtn).toBeDisabled();
+    await confirmCheckbox.check();
+    await expect(confirmBtn).toBeEnabled();
+    await confirmCheckbox.uncheck();
+    await expect(confirmBtn).toBeDisabled();
+
+    // 3. "Keep my budgets and bills" reset execution
+    await dialog.locator('input[type="radio"][value="keep"]').check();
+    await confirmCheckbox.check();
+    await expect(confirmBtn).toBeEnabled();
+    await confirmBtn.click();
+    await expect(dialog).toBeHidden();
+
+    // After reset: lands on Overview with Safe to Spend = $0.00
+    const safeNumber = page.locator(".safe-card .safe-number");
+    await expect(safeNumber).toHaveText("$0.00");
+
+    // Budgets preserved
+    await page.locator(".sidebar").getByRole("button", { name: /Budgets/i }).click();
+    const budgetLines = page.locator(".budget-summary .summary-line");
+    const budgetCount = await budgetLines.count();
+    expect(budgetCount).toBeGreaterThan(0);
+
+    // Recurring bills preserved and marked unpaid
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Recurring Bills/i })
+      .click();
+    const billItems = page.locator(".bill-item");
+    const billCount = await billItems.count();
+    expect(billCount).toBeGreaterThan(0);
+    const paidBadges = page.locator(".bill-item .badge.paid");
+    await expect(paidBadges).toHaveCount(0); // All kept bills reset to unpaid
+
+    // Accounts preserved with $0.00 balances
+    await page.locator(".sidebar").getByRole("button", { name: /Accounts/i }).click();
+    const accountsGrid = page.locator(".accounts-stat-grid");
+    await expect(accountsGrid).toContainText("$0.00");
+
+    // 4. Reload persistence
+    await page.reload();
+    await expect(accountsGrid).toContainText("$0.00");
+    await page.locator(".sidebar").getByRole("button", { name: /Overview/i }).click();
+    await expect(safeNumber).toHaveText("$0.00");
+
+    // 5. Duplicate-submit prevention via modal submission guard
+    await page.locator(".sidebar").getByRole("button", { name: /Transactions/i }).click();
+    await expect(page.locator("table tbody tr")).toHaveCount(0);
+
+    const addTxBtn = page.getByRole("button", { name: /Record first transaction|Add transaction/i }).first();
+    await addTxBtn.click();
+    await expect(dialog).toBeVisible();
+
+    await dialog.getByLabel(/Payee \/ Description/i).fill("Hardware Store");
+    await dialog.getByLabel(/Amount \(\$\)/i).fill("34.50");
+    const submitBtn = dialog.getByRole("button", { name: /^Save$/i });
+
+    // Submit and ensure modal closes cleanly
+    await submitBtn.click();
+    await expect(dialog).toBeHidden();
+
+    // Verify exactly one transaction was recorded
+    const finalTxRows = page.locator("table tbody tr");
+    await expect(finalTxRows).toHaveCount(1);
+
+    // 6. Navigation to Vercel-compatible URLs
+    await page.goto("/#recurring-bills");
+    const billsHeader = page.locator(".page-header h1");
+    await expect(billsHeader).toHaveText("Recurring Bills");
+  });
 });

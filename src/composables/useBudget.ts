@@ -282,25 +282,32 @@ const statusFilter = ref<"All" | "Scheduled" | "Pending" | "Cleared">("All");
 const monthFilter = ref<string>("All");
 const targetedTransactionId = ref<string | null>(null);
 
-const getInitialPage = (): PageName => {
-  if (typeof window !== "undefined" && window.location.hash) {
-    const raw = window.location.hash.slice(1);
-    const [pathPart, queryPart] = raw.split("?");
-    const h = (pathPart || "").replace(/^\//, "").toLowerCase();
-    if (queryPart) {
-      const params = new URLSearchParams(queryPart);
-      const catParam = params.get("category");
-      const monthParam = params.get("month");
-      if (catParam) category.value = catParam;
-      if (monthParam) monthFilter.value = monthParam;
+export const getInitialPage = (): PageName => {
+  if (typeof window !== "undefined") {
+    let raw = "";
+    if (window.location.hash) {
+      raw = window.location.hash.slice(1);
+    } else if (window.location.pathname && window.location.pathname !== "/") {
+      raw = window.location.pathname.replace(/^\//, "");
     }
-    if (h === "insights") return "Insights";
-    if (h === "transactions") return "Transactions";
-    if (h === "accounts") return "Accounts";
-    if (h === "budgets") return "Budgets";
-    if (h === "pots") return "Pots";
-    if (h === "recurring-bills") return "Recurring Bills";
-    if (h === "settings") return "Settings";
+    if (raw) {
+      const [pathPart, queryPart] = raw.split("?");
+      const h = (pathPart || "").replace(/^\//, "").toLowerCase();
+      if (queryPart) {
+        const params = new URLSearchParams(queryPart);
+        const catParam = params.get("category");
+        const monthParam = params.get("month");
+        if (catParam) category.value = catParam;
+        if (monthParam) monthFilter.value = monthParam;
+      }
+      if (h === "insights") return "Insights";
+      if (h === "transactions") return "Transactions";
+      if (h === "accounts") return "Accounts";
+      if (h === "budgets") return "Budgets";
+      if (h === "pots") return "Pots";
+      if (h === "recurring-bills" || h === "bills") return "Recurring Bills";
+      if (h === "settings") return "Settings";
+    }
   }
   return "Overview";
 };

@@ -65,6 +65,7 @@ export function clearFieldError(field: string) {
 const resetChoice = ref<"keep" | "all">("keep");
 const resetConfirmed = ref(false);
 const restoreConfirmed = ref(false);
+const isSubmitting = ref(false);
 const focusBefore = ref<HTMLElement | null>(null);
 const payMethod = ref<"transaction" | "settled">("transaction");
 
@@ -544,8 +545,11 @@ export function useModal() {
   }
 
   function submit() {
-    error.value = "";
-    let billToastMessage = "Bill payment recorded.";
+    if (isSubmitting.value) return;
+    isSubmitting.value = true;
+    try {
+      error.value = "";
+      let billToastMessage = "Bill payment recorded.";
     const f = form.value;
     const amount = cents(parseAmount(f.amount));
     const target = cents(parseAmount(f.target));
@@ -1146,10 +1150,22 @@ export function useModal() {
         error.value = "Confirm that you understand what will be cleared.";
         return;
       }
-      createRollbackSnapshot();
+      const snapshotOk = createRollbackSnapshot();
+      if (!snapshotOk) {
+        error.value =
+          "Reset aborted: unable to save safety rollback snapshot to storage. Your existing financial records are untouched.";
+        return;
+      }
+      const previousState = JSON.parse(JSON.stringify(state.value));
+      const candidateState = resetWorkspace(state.value, resetChoice.value === "keep");
+      const saveResult = saveCurrentStateToStorage(candidateState);
+      if (!saveResult.success) {
+        state.value = previousState;
+        error.value = `Reset failed: could not persist changes to storage (${saveResult.error || "write failed"}). Existing financial records were preserved.`;
+        return;
+      }
+      state.value = candidateState;
       storageBlocked.value = false;
-      state.value = resetWorkspace(state.value, resetChoice.value === "keep");
-      saveCurrentStateToStorage(state.value);
       page.value = "Overview";
     } else if (mode.value === "Restore backup") {
       if (!restoreConfirmed.value) {
@@ -1336,6 +1352,9 @@ export function useModal() {
     }
 
     toast(confirmationMessage, toastActionItem);
+    } finally {
+      isSubmitting.value = false;
+    }
   }
 
   return {
@@ -1348,6 +1367,7 @@ export function useModal() {
     resetChoice,
     resetConfirmed,
     restoreConfirmed,
+    isSubmitting,
     payMethod,
     form,
     lastUsedExpenseCategory,

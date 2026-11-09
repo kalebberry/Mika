@@ -1,3 +1,7 @@
+.toast-region {
+  display: contents;
+}
+
 .toast {
   position: fixed;
   bottom: 1.5rem;

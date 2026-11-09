@@ -6462,13 +6462,21 @@ export function resetWorkspace(current: State, keepPlan: boolean): State {
   const fresh = blank();
   if (keepPlan) {
     fresh.budgets = current.budgets.map((b) => ({ ...b }));
-    fresh.bills = current.bills.map((b) => ({ ...b }));
-    fresh.accounts = (current.accounts || []).map((a) => ({ ...a }));
-    if (current.paydaySchedule) {
-      fresh.paydaySchedule = JSON.parse(JSON.stringify(current.paydaySchedule));
-      fresh.payday = current.payday;
-      fresh.followingPayday = current.followingPayday;
-    }
+    fresh.bills = current.bills.map((b) => {
+      const copy = { ...b };
+      delete copy.settledDueDates;
+      return copy;
+    });
+    fresh.settledBills = [];
+    fresh.accounts = (current.accounts || []).map((a) => ({
+      ...a,
+      opening: 0,
+      balance: undefined,
+      assignedPaymentReserve: 0,
+      paymentReservations: [],
+      confirmedMinimumDueDates: [],
+      minimumObligations: {},
+    }));
   }
   return fresh;
 }
