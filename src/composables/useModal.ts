@@ -125,6 +125,7 @@ export function useModal() {
     sort,
     search,
     navigateToTransaction,
+    hasStorageConflict,
     createRollbackSnapshot,
     confirmRestore,
     cancelRestore,
@@ -1148,6 +1149,16 @@ export function useModal() {
     } else if (mode.value === "Start fresh") {
       if (!resetConfirmed.value) {
         error.value = "Confirm that you understand what will be cleared.";
+        return;
+      }
+      if (storageBlocked.value) {
+        error.value =
+          "Reset blocked: local storage writes are locked to protect unrecovered data. Inspect or export your raw data in Settings first.";
+        return;
+      }
+      if (hasStorageConflict()) {
+        error.value =
+          "Reset blocked: another browser tab saved newer financial records. Reload to sync with the latest records before resetting.";
         return;
       }
       const snapshotOk = createRollbackSnapshot();

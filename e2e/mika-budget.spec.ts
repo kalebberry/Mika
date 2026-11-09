@@ -983,9 +983,19 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     const finalTxRows = page.locator("table tbody tr");
     await expect(finalTxRows).toHaveCount(1);
 
-    // 6. Navigation to Vercel-compatible URLs
+    // 6. Navigation to Vercel-compatible URLs: both /#recurring-bills and /recurring-bills
     await page.goto("/#recurring-bills");
     const billsHeader = page.locator(".page-header h1");
     await expect(billsHeader).toHaveText("Recurring Bills");
+
+    // Pathname deep link (/recurring-bills) served via SPA routing and normalized to hash navigation
+    await page.goto("/recurring-bills");
+    await expect(billsHeader).toHaveText("Recurring Bills");
+    await expect(page).toHaveURL(/.*#recurring-bills/);
+
+    // Another pathname deep link (/budgets)
+    await page.goto("/budgets");
+    await expect(page.locator(".page-header h1")).toHaveText("Budgets");
+    await expect(page).toHaveURL(/.*#budgets/);
   });
 });

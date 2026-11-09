@@ -315,6 +315,12 @@ export const getInitialPage = (): PageName => {
 const page = ref<PageName>(getInitialPage());
 
 if (typeof window !== "undefined") {
+  if (window.location.pathname && window.location.pathname !== "/") {
+    const slug = page.value === "Recurring Bills" ? "recurring-bills" : page.value.toLowerCase();
+    const query = window.location.search || "";
+    window.history.replaceState(null, "", "/" + (slug === "overview" ? "" : "#" + slug) + query);
+  }
+
   window.addEventListener("hashchange", () => {
     page.value = getInitialPage();
   });
@@ -509,6 +515,23 @@ watch(
   },
   { deep: true },
 );
+
+export function hasStorageConflict(): boolean {
+  if (storageHealth.status === "conflict") return true;
+  if (typeof localStorage === "undefined") return false;
+  const currentInStorage = localStorage.getItem(STORAGE_KEY);
+  if (
+    lastLoadedStorageContent !== null &&
+    currentInStorage !== null &&
+    currentInStorage !== lastLoadedStorageContent
+  ) {
+    storageHealth.status = "conflict";
+    storageHealth.errorMessage =
+      "Storage conflict detected: Another browser tab saved newer financial records. This tab's writes are blocked to protect your data. You can export a backup of this tab's unsaved changes or reload to sync with the latest records.";
+    return true;
+  }
+  return false;
+}
 
 export function saveCurrentStateToStorage(stateToSave: State): {
   success: boolean;
@@ -738,6 +761,7 @@ export function useBudget() {
 
   function createRollbackSnapshot(): boolean {
     if (typeof localStorage === "undefined") return false;
+    if (storageBlocked.value || hasStorageConflict()) return false;
     try {
       const timestamp = new Date().toISOString();
       const payload = JSON.stringify({
@@ -904,6 +928,12 @@ export function useBudget() {
 
     const previousState = JSON.parse(JSON.stringify(state.value));
 
+    // If storage was previously blocked, restoring a valid verified backup explicitly replaces corrupt storage
+    storageBlocked.value = false;
+    if (typeof localStorage !== "undefined") {
+      lastLoadedStorageContent = localStorage.getItem(STORAGE_KEY);
+    }
+
     // 1. Create rollback snapshot before touching anything
     const snapshotOk = createRollbackSnapshot();
     if (!snapshotOk) {
@@ -915,10 +945,6 @@ export function useBudget() {
 
     // 2. Persist candidate restored dataset to storage
     const candidateState = pendingRestoreState.value;
-    storageBlocked.value = false;
-    if (typeof localStorage !== "undefined") {
-      lastLoadedStorageContent = localStorage.getItem(STORAGE_KEY);
-    }
     const saveResult = saveCurrentStateToStorage(candidateState);
     if (!saveResult.success) {
       // Storage persistence failed (e.g. QuotaExceededError or write failure)
@@ -1438,6 +1464,7 @@ export function useBudget() {
     prepareRestoreFromFile,
     confirmRestore,
     cancelRestore,
+    hasStorageConflict,
     createRollbackSnapshot,
     restoreRollbackSnapshot,
     reloadFromStorage,

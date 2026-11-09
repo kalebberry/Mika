@@ -19926,7 +19926,7 @@ test("Test 6D.2.1 — Reset workspace 'Keep my budgets and bills' specification 
   assert.equal(keptCrd.minPayment, crd.minPayment, "Min payment preserved");
 });
 
-test("Test 6D.2.2 — Start Fresh atomic failure-safety: snapshot failure, persistence failure, and stale-tab concurrency protection", () => {
+test("Test 6D.2.2 — Start Fresh atomic failure-safety: snapshot failure, persistence failure, corrupted storage protection, and stale-tab concurrency protection", () => {
   const originalLocalStorage = globalThis.localStorage;
   const store: Record<string, string> = {};
   let failOnKey: string | null = null;
@@ -19954,7 +19954,9 @@ test("Test 6D.2.2 — Start Fresh atomic failure-safety: snapshot failure, persi
     const baselineState = demo();
     baselineState.opening = 300000;
     b.state.value = baselineState;
-    store[STORAGE_KEY] = JSON.stringify(baselineState);
+    b.storageBlocked.value = false;
+    b.storageHealth.status = "healthy";
+    b.saveCurrentStateToStorage(baselineState);
 
     // 1. Unconfirmed attempt is blocked
     m.open("Start fresh");
@@ -19983,6 +19985,7 @@ test("Test 6D.2.2 — Start Fresh atomic failure-safety: snapshot failure, persi
     failOnKey = null;
 
     // 4. Stale-tab conflict blocks write and prevents overwriting newer remote tab data
+    store[STORAGE_BACKUP_KEY] = "prior-snapshot-preserved";
     store[STORAGE_KEY] = JSON.stringify({
       version: 5,
       accounts: [],
@@ -19991,8 +19994,21 @@ test("Test 6D.2.2 — Start Fresh atomic failure-safety: snapshot failure, persi
     m.open("Start fresh");
     m.resetConfirmed.value = true;
     m.submit();
-    assert.match(m.error.value, /Storage conflict detected/);
+    assert.match(m.error.value, /another browser tab saved newer financial records|Storage conflict/);
     assert.equal(b.state.value.opening, 300000, "Stale reset blocked by OCC protection");
+    assert.equal(store[STORAGE_BACKUP_KEY], "prior-snapshot-preserved", "Prior snapshot untouched during OCC conflict");
+
+    // 5. Corrupted primary storage protection: Start fresh cannot bypass storageBlocked
+    b.storageBlocked.value = true;
+    store[STORAGE_BACKUP_KEY] = "safe-original-backup";
+    m.open("Start fresh");
+    m.resetConfirmed.value = true;
+    m.submit();
+    assert.match(m.error.value, /Reset blocked: local storage writes are locked to protect unrecovered data/);
+    assert.equal(b.state.value.opening, 300000, "Memory untouched while storage is blocked");
+    assert.equal(store[STORAGE_BACKUP_KEY], "safe-original-backup", "Rollback snapshot untouched while storage is blocked");
+    assert.equal(b.createRollbackSnapshot(), false, "createRollbackSnapshot refuses to write while storageBlocked is true");
+    b.storageBlocked.value = false;
   } finally {
     globalThis.localStorage = originalLocalStorage;
   }
@@ -20036,11 +20052,20 @@ test("Test 6D.2.3 — Prevent duplicate financial submissions: isSubmitting guar
   assert.equal(m.isSubmitting.value, false, "isSubmitting resets to false on validation failure");
 });
 
-test("Test 6D.2.4 — Navigation and URL routing architecture: hash navigation authority and Vercel path fallback resolution", () => {
-  // Test 1: Hash navigation resolves pages
+test("Test 6D.2.4 — Navigation and URL routing architecture: hash navigation authority, pathname deep links, and Vercel SPA configuration", () => {
+  // 1. Verify vercel.json SPA rewrite configuration
+  const vercelConfigPath = path.resolve(process.cwd(), "vercel.json");
+  assert.ok(fs.existsSync(vercelConfigPath), "vercel.json must exist in project root");
+  const vercelConfig = JSON.parse(fs.readFileSync(vercelConfigPath, "utf-8"));
+  assert.ok(Array.isArray(vercelConfig.rewrites), "vercel.json must define rewrites array");
+  const spaCatchAll = vercelConfig.rewrites.find(
+    (r: any) => r.source === "/(.*)" && r.destination === "/index.html",
+  );
+  assert.ok(spaCatchAll, "vercel.json must rewrite /(.*) to /index.html for SPA client-side deep links");
+
+  // 2. Hash navigation authority
   const originalLocation = globalThis.window.location;
   try {
-    // Hash resolution
     delete (globalThis.window as any).location;
     (globalThis.window as any).location = {
       hash: "#insights",
@@ -20054,24 +20079,66 @@ test("Test 6D.2.4 — Navigation and URL routing architecture: hash navigation a
     };
     assert.equal(getInitialPage(), "Recurring Bills");
 
-    // Pathname fallback resolution (for direct links or Vercel rewrites without hash)
+    (globalThis.window as any).location = {
+      hash: "#budgets",
+      pathname: "/",
+    };
+    assert.equal(getInitialPage(), "Budgets");
+
+    (globalThis.window as any).location = {
+      hash: "#pots",
+      pathname: "/",
+    };
+    assert.equal(getInitialPage(), "Pots");
+
+    (globalThis.window as any).location = {
+      hash: "#settings",
+      pathname: "/",
+    };
+    assert.equal(getInitialPage(), "Settings");
+
+    // 3. Pathname deep-link fallback resolution (for direct URLs served by Vercel / server rewrites)
     (globalThis.window as any).location = {
       hash: "",
-      pathname: "/insights",
+      pathname: "/recurring-bills",
     };
-    assert.equal(getInitialPage(), "Insights");
+    assert.equal(getInitialPage(), "Recurring Bills", "Resolves /recurring-bills pathname");
+
+    (globalThis.window as any).location = {
+      hash: "",
+      pathname: "/budgets",
+    };
+    assert.equal(getInitialPage(), "Budgets", "Resolves /budgets pathname");
 
     (globalThis.window as any).location = {
       hash: "",
       pathname: "/accounts",
     };
-    assert.equal(getInitialPage(), "Accounts");
+    assert.equal(getInitialPage(), "Accounts", "Resolves /accounts pathname");
+
+    (globalThis.window as any).location = {
+      hash: "",
+      pathname: "/pots",
+    };
+    assert.equal(getInitialPage(), "Pots", "Resolves /pots pathname");
+
+    (globalThis.window as any).location = {
+      hash: "",
+      pathname: "/insights",
+    };
+    assert.equal(getInitialPage(), "Insights", "Resolves /insights pathname");
+
+    (globalThis.window as any).location = {
+      hash: "",
+      pathname: "/settings",
+    };
+    assert.equal(getInitialPage(), "Settings", "Resolves /settings pathname");
 
     (globalThis.window as any).location = {
       hash: "",
       pathname: "/unknown-route",
     };
-    assert.equal(getInitialPage(), "Overview");
+    assert.equal(getInitialPage(), "Overview", "Unrecognized routes fall back safely to Overview");
   } finally {
     (globalThis.window as any).location = originalLocation;
   }
