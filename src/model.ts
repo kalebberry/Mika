@@ -1340,15 +1340,28 @@ export function getCreditCardCoverage(
 
   const assignedReserve = manualEntries.reduce((sum, r) => sum + r.amount, 0);
 
-  const allCardTransactions = (s.transactions || []).filter(
-    (t) =>
-      isLedgerStatus(t.status) &&
-      (t.accountId === account.id || t.targetAccountId === account.id),
-  );
+  const accountMap = new Map<string, Account>();
+  const runningLiabilityByCard = new Map<string, number>();
+  for (const acc of s.accounts || []) {
+    accountMap.set(acc.id, acc);
+    if (acc.type === "credit") {
+      runningLiabilityByCard.set(acc.id, acc.opening);
+    }
+  }
+  if (!runningLiabilityByCard.has(account.id)) {
+    runningLiabilityByCard.set(account.id, account.opening);
+  }
 
   interface TimelineEvent {
-    type: "purchase" | "payment" | "manual_reserve" | "refund";
+    type:
+      | "credit_purchase"
+      | "credit_refund"
+      | "cash_purchase"
+      | "cash_refund"
+      | "payment"
+      | "manual_reserve";
     amount: number;
+    cardId?: string;
     category?: string;
     date: string;
     createdAt: string;
@@ -1358,39 +1371,71 @@ export function getCreditCardCoverage(
 
   const events: TimelineEvent[] = [];
 
-  for (const t of allCardTransactions) {
+  for (const t of s.transactions || []) {
+    if (!isLedgerStatus(t.status)) continue;
     const kind = t.kind || "standard";
     const absAmt = Math.abs(t.amount);
     const createdAt = t.createdAt || t.postedDate || t.date;
+    const srcAcc = accountMap.get(t.accountId || "acc-default-checking");
+    const isCreditSource = srcAcc ? srcAcc.type === "credit" : false;
 
-    if (kind === "payment" && t.targetAccountId === account.id) {
-      events.push({
-        type: "payment",
-        amount: absAmt,
-        date: t.date,
-        createdAt,
-        txId: t.id,
-      });
-    } else if (kind === "standard" && t.accountId === account.id) {
-      if (t.amount < 0) {
+    if (kind === "payment" && t.targetAccountId) {
+      const targetAcc = accountMap.get(t.targetAccountId);
+      if (targetAcc?.type === "credit" || t.targetAccountId === account.id) {
         events.push({
-          type: "purchase",
+          type: "payment",
           amount: absAmt,
-          category: t.category,
-          date: t.date,
-          createdAt,
-          isLegacyDebt: Boolean(t.isLegacyDebt),
-          txId: t.id,
-        });
-      } else if (t.amount > 0) {
-        events.push({
-          type: "refund",
-          amount: absAmt,
-          category: t.category,
+          cardId: t.targetAccountId,
           date: t.date,
           createdAt,
           txId: t.id,
         });
+      }
+    } else if (kind === "standard") {
+      if (isCreditSource && srcAcc) {
+        if (t.amount < 0) {
+          events.push({
+            type: "credit_purchase",
+            amount: absAmt,
+            cardId: srcAcc.id,
+            category: t.category,
+            date: t.date,
+            createdAt,
+            isLegacyDebt: Boolean(t.isLegacyDebt),
+            txId: t.id,
+          });
+        } else if (t.amount > 0) {
+          events.push({
+            type: "credit_refund",
+            amount: absAmt,
+            cardId: srcAcc.id,
+            category: t.category,
+            date: t.date,
+            createdAt,
+            isLegacyDebt: Boolean(t.isLegacyDebt),
+            txId: t.id,
+          });
+        }
+      } else if (!t.isLegacyDebt) {
+        if (t.amount < 0) {
+          events.push({
+            type: "cash_purchase",
+            amount: absAmt,
+            category: t.category,
+            date: t.date,
+            createdAt,
+            txId: t.id,
+          });
+        } else if (t.amount > 0) {
+          events.push({
+            type: "cash_refund",
+            amount: absAmt,
+            category: t.category,
+            date: t.date,
+            createdAt,
+            txId: t.id,
+          });
+        }
       }
     }
   }
@@ -1399,12 +1444,20 @@ export function getCreditCardCoverage(
     events.push({
       type: "manual_reserve",
       amount: r.amount,
+      cardId: account.id,
       date: r.date,
       createdAt: r.createdAt || r.date,
     });
   }
 
-  const typePriority = { refund: 1, purchase: 2, manual_reserve: 3, payment: 4 };
+  const typePriority: Record<TimelineEvent["type"], number> = {
+    cash_refund: 1,
+    credit_refund: 1,
+    cash_purchase: 2,
+    credit_purchase: 2,
+    manual_reserve: 3,
+    payment: 4,
+  };
   events.sort((a, b) => {
     if (a.date !== b.date) return a.date.localeCompare(b.date);
     const tsA = a.createdAt.length === 10 ? `${a.createdAt}T00:00:00.000Z` : a.createdAt;
@@ -1413,9 +1466,37 @@ export function getCreditCardCoverage(
     return typePriority[a.type] - typePriority[b.type];
   });
 
-  const categoryBudgetSpentMap = new Map<string, number>();
+  interface CategoryBudgetTracker {
+    cashPurchases: number;
+    cashRefunds: number;
+    creditPurchases: number;
+    creditRefunds: number;
+  }
+  const categoryBudgetMap = new Map<string, CategoryBudgetTracker>();
 
-  let runningCardLiability = account.opening;
+  const getTracker = (key: string): CategoryBudgetTracker => {
+    let tr = categoryBudgetMap.get(key);
+    if (!tr) {
+      tr = {
+        cashPurchases: 0,
+        cashRefunds: 0,
+        creditPurchases: 0,
+        creditRefunds: 0,
+      };
+      categoryBudgetMap.set(key, tr);
+    }
+    return tr;
+  };
+
+  const getCategoryUsed = (key: string): number => {
+    const tr = categoryBudgetMap.get(key);
+    if (!tr) return 0;
+    return (
+      Math.max(0, tr.cashPurchases - tr.cashRefunds) +
+      Math.max(0, tr.creditPurchases - tr.creditRefunds)
+    );
+  };
+
   let reservePool = 0;
 
   interface ReserveLot {
@@ -1425,20 +1506,67 @@ export function getCreditCardCoverage(
   const reserveLots: ReserveLot[] = [];
 
   for (const ev of events) {
-    if (ev.type === "refund") {
-      runningCardLiability -= ev.amount;
-    } else if (ev.type === "purchase") {
-      runningCardLiability += ev.amount;
+    if (ev.type === "cash_purchase") {
+      const month = ev.date.slice(0, 7);
+      const cat = ev.category || "General";
+      const key = `${month}:${cat.toLowerCase()}`;
+      getTracker(key).cashPurchases += ev.amount;
+    } else if (ev.type === "cash_refund") {
+      const month = ev.date.slice(0, 7);
+      const cat = ev.category || "General";
+      const key = `${month}:${cat.toLowerCase()}`;
+      getTracker(key).cashRefunds += ev.amount;
+    } else if (ev.type === "credit_refund" && ev.cardId) {
+      const prevLiab = runningLiabilityByCard.get(ev.cardId) ?? 0;
+      const nextLiab = prevLiab - ev.amount;
+      runningLiabilityByCard.set(ev.cardId, nextLiab);
+
+      const cardAcc = accountMap.get(ev.cardId);
+      const isEligible =
+        !ev.isLegacyDebt &&
+        (!cardAcc?.coveredCreditBaselineAt ||
+          ev.date >= cardAcc.coveredCreditBaselineAt.slice(0, 7));
+      if (isEligible) {
+        const month = ev.date.slice(0, 7);
+        const cat = ev.category || "General";
+        const key = `${month}:${cat.toLowerCase()}`;
+        getTracker(key).creditRefunds += ev.amount;
+      }
+
+      if (ev.cardId === account.id) {
+        const currentAutoPool = reserveLots
+          .filter((l) => l.type === "auto")
+          .reduce((sum, l) => sum + l.amount, 0);
+        const maxLiabilityForAuto = Math.max(0, nextLiab);
+        if (currentAutoPool > maxLiabilityForAuto) {
+          let excessAuto = currentAutoPool - maxLiabilityForAuto;
+          for (let i = reserveLots.length - 1; i >= 0 && excessAuto > 0; i--) {
+            const lot = reserveLots[i]!;
+            if (lot.type === "auto" && lot.amount > 0) {
+              const trim = Math.min(lot.amount, excessAuto);
+              lot.amount -= trim;
+              reservePool = Math.max(0, reservePool - trim);
+              excessAuto -= trim;
+            }
+          }
+        }
+      }
+    } else if (ev.type === "credit_purchase" && ev.cardId) {
+      const liabilityBefore = runningLiabilityByCard.get(ev.cardId) ?? 0;
+      const nextLiab = liabilityBefore + ev.amount;
+      runningLiabilityByCard.set(ev.cardId, nextLiab);
+
+      const cardAcc =
+        ev.cardId === account.id ? account : accountMap.get(ev.cardId);
 
       // Legacy debt transactions never auto-fund
       const isEligible =
         !ev.isLegacyDebt &&
-        (!account.coveredCreditBaselineAt ||
-          ev.date >= account.coveredCreditBaselineAt.slice(0, 7));
+        (!cardAcc?.coveredCreditBaselineAt ||
+          ev.date >= cardAcc.coveredCreditBaselineAt.slice(0, 7));
 
       if (isEligible) {
         // Purchases when card is in statement credit absorb that credit first
-        const liabilityBefore = runningCardLiability - ev.amount;
         const absorbsCredit =
           liabilityBefore < 0
             ? Math.min(ev.amount, Math.abs(liabilityBefore))
@@ -1456,33 +1584,38 @@ export function getCreditCardCoverage(
           let coveredPortion = 0;
           if (budget) {
             const limit = budget.limit;
-            const alreadyUsed = categoryBudgetSpentMap.get(key) || 0;
+            const alreadyUsed = getCategoryUsed(key);
             const remaining = Math.max(0, limit - alreadyUsed);
             coveredPortion = Math.min(netRequiringCoverage, remaining);
-            categoryBudgetSpentMap.set(key, alreadyUsed + coveredPortion);
-          } else {
-            coveredPortion = 0;
           }
 
-          reservePool += coveredPortion;
-          if (coveredPortion > 0) {
-            reserveLots.push({ type: "auto", amount: coveredPortion });
+          getTracker(key).creditPurchases += netRequiringCoverage;
+
+          if (ev.cardId === account.id) {
+            reservePool += coveredPortion;
+            if (coveredPortion > 0) {
+              reserveLots.push({ type: "auto", amount: coveredPortion });
+            }
           }
         }
       }
-    } else if (ev.type === "payment") {
-      runningCardLiability -= ev.amount;
-      const consumed = Math.min(reservePool, ev.amount);
-      reservePool -= consumed;
-      let toConsume = ev.amount;
-      for (let i = 0; i < reserveLots.length; i++) {
-        const lot = reserveLots[i]!;
-        if (toConsume <= 0) break;
-        const take = Math.min(lot.amount, toConsume);
-        lot.amount -= take;
-        toConsume -= take;
+    } else if (ev.type === "payment" && ev.cardId) {
+      const prevLiab = runningLiabilityByCard.get(ev.cardId) ?? 0;
+      runningLiabilityByCard.set(ev.cardId, prevLiab - ev.amount);
+
+      if (ev.cardId === account.id) {
+        const consumed = Math.min(reservePool, ev.amount);
+        reservePool -= consumed;
+        let toConsume = ev.amount;
+        for (let i = 0; i < reserveLots.length; i++) {
+          const lot = reserveLots[i]!;
+          if (toConsume <= 0) break;
+          const take = Math.min(lot.amount, toConsume);
+          lot.amount -= take;
+          toConsume -= take;
+        }
       }
-    } else if (ev.type === "manual_reserve") {
+    } else if (ev.type === "manual_reserve" && ev.cardId === account.id) {
       reservePool = Math.max(0, reservePool + ev.amount);
       if (ev.amount > 0) {
         reserveLots.push({ type: "manual", amount: ev.amount });
@@ -1652,7 +1785,7 @@ export function previewCreditCardExpenseImpact(
   const covBefore = getCreditCardCoverage(account, baseState, date);
   const covAfter = getCreditCardCoverage(
     account,
-    { ...baseState, transactions: [simTx, ...baseTransactions] },
+    { ...baseState, transactions: [...baseTransactions, simTx] },
     date,
   );
 
@@ -1712,9 +1845,9 @@ export function previewCreditCardExpenseImpact(
     } else if (coveredAmount === validAmount) {
       explanation = `Fully covered: All ${formatPreviewCurrency(validAmount)} will be backed by cash in Ready to Pay. Safe to Spend is preserved.`;
     } else if (coveredAmount > 0 && uncoveredAmount > 0) {
-      explanation = `Partially covered: ${formatPreviewCurrency(coveredAmount)} backed in Ready to Pay, but ${formatPreviewCurrency(uncoveredAmount)} exceeds budget and creates Uncovered Debt (reduces Safe to Spend).`;
+      explanation = `Partially covered: ${formatPreviewCurrency(coveredAmount)} backed in Ready to Pay, but ${formatPreviewCurrency(uncoveredAmount)} exceeds budget and creates Uncovered Debt (not yet reserved from Safe to Spend).`;
     } else {
-      explanation = `Uncovered: Full ${formatPreviewCurrency(validAmount)} creates Uncovered Debt because ${cat} has no remaining budget. This will reduce Safe to Spend.`;
+      explanation = `Uncovered: Full ${formatPreviewCurrency(validAmount)} creates Uncovered Debt because ${cat} has no remaining budget. Safe to Spend is not reduced until you reserve cash or make a payment.`;
     }
   }
 

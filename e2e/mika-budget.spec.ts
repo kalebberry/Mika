@@ -477,4 +477,417 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
       }
     }
   });
+
+  test("Journey 9 — Seven-Day Financial Simulation & Persistence Round-Trip (Nov 10–16, 2026)", async ({
+    page,
+  }) => {
+    // Set deterministic system clock starting on Day 1 (2026-11-10) without freezing timers
+    await page.clock.setSystemTime(new Date("2026-11-10T09:00:00"));
+
+    const baselineState = {
+      version: 5,
+      demo: false,
+      setupDismissed: true,
+      workspaceCreatedAt: "2026-11-01",
+      opening: 320000,
+      payday: "2026-11-15",
+      followingPayday: "2026-11-29",
+      paydaySchedule: {
+        frequency: "biweekly",
+        anchorDate: "2026-11-15",
+        weekendRule: "exact",
+        overrides: [],
+        configured: true,
+      },
+      accounts: [
+        {
+          id: "acc-default-checking",
+          name: "Primary Checking",
+          type: "checking",
+          opening: 320000, // $3,200.00
+          includeInSafeToSpend: true,
+          archived: false,
+          createdAt: "2026-11-01",
+          updatedAt: "2026-11-10",
+          lastVerifiedAt: "2026-11-10",
+        },
+        {
+          id: "acc-savings-1",
+          name: "High-Yield Savings",
+          type: "savings",
+          opening: 500000, // $5,000.00 (excluded from Safe to Spend)
+          includeInSafeToSpend: false,
+          archived: false,
+          createdAt: "2026-11-01",
+          updatedAt: "2026-11-10",
+          lastVerifiedAt: "2026-11-10",
+        },
+        {
+          id: "acc-cc-sapphire",
+          name: "Sapphire Rewards Card",
+          type: "credit",
+          opening: 45000, // $450.00 prior uncovered debt
+          creditLimit: 500000, // $5,000.00
+          dueDay: 18,
+          minPayment: 5000, // $50.00 minimum due 2026-11-18
+          protected: true,
+          includeInSafeToSpend: false,
+          archived: false,
+          createdAt: "2026-11-01",
+          updatedAt: "2026-11-10",
+          coveredCreditBaselineAt: "2026-11-01",
+          assignedPaymentReserve: 0,
+          paymentReservations: [],
+        },
+      ],
+      pots: [
+        {
+          id: "pot-emergency",
+          name: "Emergency Fund",
+          saved: 60000, // $600.00
+          target: 200000,
+          color: "#277c78",
+        },
+        {
+          id: "pot-vacation",
+          name: "Vacation Fund",
+          saved: 30000, // $300.00
+          target: 100000,
+          color: "#82c9d7",
+        },
+      ],
+      budgets: [
+        {
+          id: "b-groceries",
+          name: "Groceries",
+          category: "Groceries",
+          limit: 40000, // $400.00
+          color: "#277c78",
+        },
+        {
+          id: "b-dining",
+          name: "Dining Out",
+          category: "Dining Out",
+          limit: 15000, // $150.00
+          color: "#f2cdac",
+        },
+        {
+          id: "b-fun",
+          name: "Entertainment",
+          category: "Entertainment",
+          limit: 10000, // $100.00
+          color: "#826cb0",
+        },
+      ],
+      bills: [
+        {
+          id: "bill-internet",
+          name: "Internet Fiber",
+          amount: 8000, // $80.00
+          day: 11,
+          protected: true,
+          settledDueDates: [],
+          trackingStartDate: "2026-11-01",
+        },
+        {
+          id: "bill-electric",
+          name: "Electric Utility",
+          amount: 14000, // $140.00
+          day: 14,
+          protected: true,
+          settledDueDates: [],
+          trackingStartDate: "2026-11-01",
+        },
+        {
+          id: "bill-rent",
+          name: "Apartment Rent",
+          amount: 120000, // $1,200.00
+          day: 25,
+          protected: false,
+          settledDueDates: [],
+          trackingStartDate: "2026-11-01",
+        },
+      ],
+      settledBills: [],
+      transactions: [],
+    };
+
+    await page.goto("/");
+    await page.evaluate((stateJson) => {
+      localStorage.setItem("budget-companion-v1", stateJson);
+    }, JSON.stringify(baselineState));
+    await page.reload();
+
+    const dialog = page.locator("dialog[open]");
+    const safeNumber = page.locator(".safe-card .safe-number");
+    const safeBreakdown = page.locator("#safe-breakdown-details");
+
+    // Expand Safe to Spend breakdown once on Overview
+    await expect(safeNumber).toHaveText("$1,380.00");
+    await page.locator("#safe-breakdown-toggle").click();
+    await expect(safeBreakdown).toBeVisible();
+    await expect(safeBreakdown).toContainText("$3,200.00"); // Checking balance
+    await expect(safeBreakdown).toContainText("− $900.00"); // Pots
+    await expect(safeBreakdown).toContainText("− $650.00"); // Budgets
+    await expect(safeBreakdown).toContainText("− $220.00"); // Bills due before payday
+    await expect(safeBreakdown).toContainText("− $50.00"); // Next cycle card minimums protected
+
+    // -----------------------------------------------------------------------
+    // Day 1 (2026-11-10): Cash Groceries (-$125.00) + Add $150.00 to Vacation Fund pot
+    // -----------------------------------------------------------------------
+    await page.locator(".page-header button.primary").click();
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel(/Amount \(\$\)/i).fill("125.00");
+    await dialog.getByLabel(/Category/i).selectOption("Groceries");
+    await dialog.getByLabel(/Payee \/ Description/i).fill("Trader Joe's");
+    await dialog.getByRole("button", { name: /^Save$/i }).click();
+    await expect(dialog).toBeHidden();
+
+    // Navigate to Pots and add $150.00 to Vacation Fund
+    await page.locator(".sidebar").getByRole("button", { name: /Pots/i }).click();
+    const vacationPot = page
+      .locator(".pot-card")
+      .filter({ hasText: "Vacation Fund" });
+    await vacationPot.getByRole("button", { name: /Add money/i }).click();
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel(/Amount \(\$\)/i).fill("150.00");
+    await dialog.getByRole("button", { name: /^Save$/i }).click();
+    await expect(dialog).toBeHidden();
+    await expect(vacationPot.locator(".pot-amount strong")).toHaveText("$450.00");
+
+    // Verify Day 1 on Overview
+    await page.locator(".sidebar").getByRole("button", { name: /Overview/i }).click();
+    await expect(safeNumber).toHaveText("$1,230.00");
+    await page.locator("#safe-breakdown-toggle").click();
+    await expect(safeBreakdown).toContainText("$3,075.00");
+    await expect(safeBreakdown).toContainText("− $1,050.00");
+    await expect(safeBreakdown).toContainText("− $525.00");
+
+    // -----------------------------------------------------------------------
+    // Day 2 (2026-11-11): Pay Internet Fiber bill (-$80.00) + Credit Card Dining Out (-$90.00)
+    // -----------------------------------------------------------------------
+    await page.clock.setSystemTime(new Date("2026-11-11T09:00:00"));
+
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Recurring Bills/i })
+      .click();
+    const internetBill = page
+      .locator(".bill-item")
+      .filter({ hasText: "Internet Fiber" });
+    await internetBill.getByRole("button", { name: /Pay bill/i }).click();
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: /Confirm payment/i }).click();
+    await expect(dialog).toBeHidden();
+
+    // Log $90.00 Dining Out purchase on Sapphire Rewards Card
+    await page.locator(".sidebar").getByRole("button", { name: /Overview/i }).click();
+    await page.locator(".page-header button.primary").click();
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("combobox", { name: /^Account/i }).selectOption("acc-cc-sapphire");
+    await dialog.getByLabel(/Amount \(\$\)/i).fill("90.00");
+    await dialog.getByLabel(/Category/i).selectOption("Dining Out");
+    await dialog.getByLabel(/Payee \/ Description/i).fill("Bistro Maya");
+    await expect(dialog.locator(".credit-impact-card")).toContainText(
+      "Fully Covered",
+    );
+    await dialog.getByRole("button", { name: /^Save$/i }).click();
+    await expect(dialog).toBeHidden();
+
+    // Verify Day 2 on Overview ($1,280.00 Safe to Spend: +$50 because $90 RTP covers the $50 CC minimum!)
+    await expect(safeNumber).toHaveText("$1,280.00");
+    await page.locator("#safe-breakdown-toggle").click();
+    await expect(safeBreakdown).toContainText("$2,995.00");
+    await expect(safeBreakdown).toContainText("− $140.00"); // Bills due before payday
+    await expect(safeBreakdown).toContainText("− $435.00"); // Remaining budgets
+    await expect(safeBreakdown).toContainText("− $90.00"); // Credit card payment reserves
+
+    // -----------------------------------------------------------------------
+    // Day 3 (2026-11-12): Transfer -$300.00 Checking -> Savings + Unexpected Auto Repair (-$210.00)
+    // -----------------------------------------------------------------------
+    await page.clock.setSystemTime(new Date("2026-11-12T09:00:00"));
+
+    // Transfer $300.00 from Primary Checking to High-Yield Savings
+    await page.locator(".page-header button.primary").click();
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel(/Transaction Type/i).selectOption("Transfer");
+    await dialog.getByLabel(/To Account/i).selectOption("acc-savings-1");
+    await dialog.getByLabel(/Amount \(\$\)/i).fill("300.00");
+    await dialog
+      .getByLabel(/Description/i)
+      .fill("Transfer to High-Yield Savings");
+    await dialog.getByRole("button", { name: /^Save$/i }).click();
+    await expect(dialog).toBeHidden();
+
+    // Unexpected Auto Repair (-$210.00) on Primary Checking (with status 'posted' to test edit status preservation on Day 7)
+    await page.locator(".page-header button.primary").click();
+    await expect(dialog).toBeVisible();
+    await dialog
+      .getByRole("combobox", { name: /^Account/i })
+      .selectOption("acc-default-checking");
+    await dialog.getByLabel(/Amount \(\$\)/i).fill("210.00");
+    await dialog.getByLabel(/Category/i).selectOption("Transport");
+    await dialog
+      .getByLabel(/Payee \/ Description/i)
+      .fill("Metro Auto Tire Repair");
+    await dialog.getByLabel(/Status/i).selectOption("posted");
+    await dialog.getByRole("button", { name: /^Save$/i }).click();
+    await expect(dialog).toBeHidden();
+
+    await expect(safeNumber).toHaveText("$770.00");
+
+    // Verify Accounts stat cards on Day 3
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Accounts/i })
+      .click();
+    const accountsGrid = page.locator(".accounts-stat-grid");
+    await expect(accountsGrid).toContainText("$7,785.00"); // Total Cash Assets ($2,485 + $5,300)
+    await expect(accountsGrid).toContainText("$540.00"); // Total Credit Card Debt
+    await expect(accountsGrid).toContainText("$90.00"); // Ready to Pay
+
+    // -----------------------------------------------------------------------
+    // Day 4 (2026-11-13): Cash Dining Out (-$85.00) exceeds remaining $60.00 Dining Out budget by $25.00
+    // -----------------------------------------------------------------------
+    await page.clock.setSystemTime(new Date("2026-11-13T09:00:00"));
+
+    await page.locator(".sidebar").getByRole("button", { name: /Overview/i }).click();
+    await page.locator(".page-header button.primary").click();
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel(/Amount \(\$\)/i).fill("85.00");
+    await dialog.getByLabel(/Category/i).selectOption("Dining Out");
+    await dialog.getByLabel(/Payee \/ Description/i).fill("Sushi Omakase");
+    await dialog.getByRole("button", { name: /^Save$/i }).click();
+    await expect(dialog).toBeHidden();
+
+    // Verify Day 4: Safe to Spend drops by $25 overage to $745.00, while Day 2's $90.00 Ready to Pay stays intact!
+    await expect(safeNumber).toHaveText("$745.00");
+    await page.locator("#safe-breakdown-toggle").click();
+    await expect(safeBreakdown).toContainText("$2,400.00");
+    await expect(safeBreakdown).toContainText("− $375.00"); // Remaining budgets ($275 Groceries + $0 Dining + $100 Fun)
+    await expect(safeBreakdown).toContainText("− $90.00"); // Credit card payment reserves preserved!
+
+    // -----------------------------------------------------------------------
+    // Day 5 (2026-11-14): Pay Electric Utility bill (-$140.00) + Credit Card Payment (-$140.00)
+    // -----------------------------------------------------------------------
+    await page.clock.setSystemTime(new Date("2026-11-14T09:00:00"));
+
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Recurring Bills/i })
+      .click();
+    const electricBill = page
+      .locator(".bill-item")
+      .filter({ hasText: "Electric Utility" });
+    await electricBill.getByRole("button", { name: /Pay bill/i }).click();
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: /Confirm payment/i }).click();
+    await expect(dialog).toBeHidden();
+
+    // Make $140.00 Credit Card Payment ($90.00 covered by Ready to Pay + $50.00 uncovered debt paydown)
+    await page.locator(".sidebar").getByRole("button", { name: /Overview/i }).click();
+    await page.locator(".page-header button.primary").click();
+    await expect(dialog).toBeVisible();
+    await dialog
+      .getByLabel(/Transaction Type/i)
+      .selectOption("Credit Card Payment");
+    await dialog.getByLabel(/Amount \(\$\)/i).fill("140.00");
+    await expect(dialog.locator(".payment-coverage-callout")).toContainText(
+      "Partially Covered",
+    );
+    await dialog.getByRole("button", { name: /^Save$/i }).click();
+    await expect(dialog).toBeHidden();
+
+    // Verify Day 5 on Overview ($695.00 Safe to Spend, $2,120.00 Checking, $0.00 Bills)
+    await expect(safeNumber).toHaveText("$695.00");
+    await page.locator("#safe-breakdown-toggle").click();
+    await expect(safeBreakdown).toContainText("$2,120.00");
+    await expect(safeBreakdown).toContainText("− $0.00"); // Bills due before payday
+
+    // -----------------------------------------------------------------------
+    // Day 6 (2026-11-15, Payday): Biweekly Paycheck (+$1,850.00) posted to Checking
+    // -----------------------------------------------------------------------
+    await page.clock.setSystemTime(new Date("2026-11-15T09:00:00"));
+
+    await page.locator(".page-header button.primary").click();
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel(/Transaction Type/i).selectOption("Income");
+    await dialog.getByLabel(/Amount \(\$\)/i).fill("1850.00");
+    await dialog.getByLabel(/Payer \/ Description/i).fill("Acme Corp Payroll");
+    await dialog.getByRole("button", { name: /^Save$/i }).click();
+    await expect(dialog).toBeHidden();
+
+    await expect(safeNumber).toHaveText("$2,545.00");
+    await expect(safeBreakdown).toContainText("$3,970.00");
+
+    // -----------------------------------------------------------------------
+    // Day 7 (2026-11-16): Payday horizon rollover + Reload persistence + Edit Day 3 Auto Repair (-$210 -> -$180)
+    // -----------------------------------------------------------------------
+    await page.clock.setSystemTime(new Date("2026-11-16T09:00:00"));
+    await page.reload();
+
+    // Navigate to Transactions and edit Day 3 Auto Repair from $210.00 to $180.00
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Transactions/i })
+      .click();
+    await page
+      .getByRole("button", { name: "Edit Metro Auto Tire Repair" })
+      .click();
+    await expect(dialog).toBeVisible();
+    // Verify status select preserved ledger posted/pending state across reload
+    await expect(dialog.getByLabel(/Status/i)).toHaveValue(/^(posted|pending)$/);
+    await dialog.getByLabel(/Amount \(\$\)/i).fill("180.00");
+    await dialog.getByRole("button", { name: /Save changes/i }).click();
+    await expect(dialog).toBeHidden();
+
+    // Verify Day 7 on Overview ($1,295.00 Safe to Spend, $4,000.00 Checking, $1,200.00 current-cycle Rent + $80.00 next-cycle protected Internet Fiber)
+    await page.locator(".sidebar").getByRole("button", { name: /Overview/i }).click();
+    await expect(safeNumber).toHaveText("$1,295.00");
+    await page.locator("#safe-breakdown-toggle").click();
+    await expect(safeBreakdown).toContainText("$4,000.00");
+    await expect(safeBreakdown).toContainText("− $1,200.00"); // Bills due before payday (Rent due Nov 25)
+    await expect(safeBreakdown).toContainText("− $80.00"); // Next cycle bills protected (Internet Fiber due Dec 11 <= Dec 13)
+
+    // -----------------------------------------------------------------------
+    // Backup Export & Full Restore Integrity Verification on Day 7
+    // -----------------------------------------------------------------------
+    await page.locator(".sidebar").getByRole("button", { name: /Settings/i }).click();
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: /Download backup/i }).click();
+    const download = await downloadPromise;
+    const downloadPath = await download.path();
+    expect(downloadPath).toBeTruthy();
+
+    // Reset workspace to $0, then restore the Day 7 backup file
+    await page.getByRole("button", { name: /Start fresh/i }).click();
+    await expect(dialog).toBeVisible();
+    await dialog.locator('input[type="radio"][value="all"]').check();
+    await dialog.locator(".reset-confirm input[type='checkbox']").check();
+    await dialog
+      .getByRole("button", { name: /Confirm and start fresh/i })
+      .click();
+    await expect(dialog).toBeHidden();
+    await expect(safeNumber).toHaveText("$0.00");
+
+    // Import and restore Day 7 backup
+    await page.locator(".sidebar").getByRole("button", { name: /Settings/i }).click();
+    const fileInput = page.locator('input[type="file"][accept=".json"]');
+    await fileInput.setInputFiles(downloadPath!);
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator("#dialog-title")).toHaveText("Restore backup");
+    await dialog.locator(".reset-confirm input[type='checkbox']").check();
+    await dialog
+      .getByRole("button", { name: /Replace and restore backup/i })
+      .click();
+    await expect(dialog).toBeHidden();
+
+    // Verify restored Day 7 state on Overview and Accounts
+    await page.locator(".sidebar").getByRole("button", { name: /Overview/i }).click();
+    await expect(safeNumber).toHaveText("$1,295.00");
+    await page.locator(".sidebar").getByRole("button", { name: /Accounts/i }).click();
+    await expect(accountsGrid).toContainText("$9,300.00"); // Total Cash Assets ($4,000 + $5,300)
+    await expect(accountsGrid).toContainText("$400.00"); // Total Credit Card Debt
+    await expect(accountsGrid).toContainText("$0.00"); // Ready to Pay
+  });
 });

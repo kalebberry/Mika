@@ -1277,11 +1277,14 @@ function onDateInput() {
         class="future-date-callout"
       >
         <span class="callout-icon" aria-hidden="true">ℹ️</span>
-        <small v-if="form.type === 'Income'">
+        <small v-if="form.type === 'Income' && form.status === 'scheduled'">
           Scheduled income is planned for the future and is not yet available in your spendable cash or Safe to Spend.
         </small>
-        <small v-else>
+        <small v-else-if="form.status === 'scheduled'">
           Scheduled transactions are held in planning and will not deduct from your cash balance until confirmed.
+        </small>
+        <small v-else>
+          This future-dated transaction is marked as {{ form.status }} and will immediately affect your current ledger balance. Switch status to Scheduled to hold it in planning until confirmed.
         </small>
       </div>
 
@@ -1394,7 +1397,7 @@ function onDateInput() {
       <label v-if="mode === 'Add transaction' || mode === 'Edit transaction' || (mode === 'Pay bill' && payMethod === 'transaction')">
         Status
         <select v-model="form.status">
-          <option value="posted">Posted — Submitted / authorized in ledger</option>
+          <option :value="form.status === 'pending' ? 'pending' : 'posted'">Posted — Submitted / authorized in ledger</option>
           <option value="scheduled">Scheduled — Planned, not in cash balance</option>
           <option value="cleared" :disabled="form.date > today()">
             Cleared — Confirmed against bank statement {{ form.date > today() ? "(Cannot clear future date)" : "" }}

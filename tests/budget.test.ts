@@ -12253,8 +12253,10 @@ test("Test 4B.6 — Credit card purchase preview: uncovered purchases", () => {
     "Warns user that purchase will create Uncovered Debt",
   );
   assert.ok(
-    impact.explanation.includes("reduce Safe to Spend"),
-    "Warns that Safe to Spend will drop",
+    impact.explanation.includes(
+      "Safe to Spend is not reduced until you reserve cash or make a payment",
+    ),
+    "Accurately explains that Uncovered Debt does not immediately reduce Safe to Spend at purchase time",
   );
 });
 
@@ -18379,6 +18381,1257 @@ test("Test 6C.4 — Storage persistence verification and failure rollback in dis
     storageHealth.errorMessage = "";
   }
 });
+
+// ============================================================================
+// PHASE 6D.1 — FINANCIAL SIMULATION & RELEASE AUDIT REGRESSION SUITE
+// ============================================================================
+
+test("Test 6D.1.1 — Mixed cash and credit card category spending: chronology, multi-card sharing, budget exhaustion, refunds, and edits", () => {
+  const simDate = "2026-11-10";
+
+  // -------------------------------------------------------------------------
+  // Case A: Cash purchase followed by credit card purchase in same category
+  // -------------------------------------------------------------------------
+  {
+    const s = blank();
+    const checking = s.accounts[0]!;
+    checking.opening = 200000; // $2,000.00
+    s.opening = 200000;
+    s.payday = "2026-11-25";
+
+    const cardA: Account = {
+      id: "acc-cc-a",
+      name: "Card Alpha",
+      type: "credit",
+      opening: 0,
+      creditLimit: 500000,
+      includeInSafeToSpend: false,
+      createdAt: "2026-11-01",
+      updatedAt: "2026-11-01",
+      coveredCreditBaselineAt: "2026-11-01",
+    };
+    s.accounts.push(cardA);
+    s.budgets = [
+      { id: "b-groc", category: "Groceries", limit: 40000, color: "#277c78" }, // $400.00
+    ];
+
+    // Baseline Safe to Spend: $2,000.00 - $400.00 Groceries budget = $1,600.00
+    assert.equal(totals(s, simDate).safe, 160000);
+
+    // 1. Cash purchase of $300.00 on 2026-11-02 (leaves $100.00 budget remaining)
+    s.transactions.push({
+      id: "tx-cash-groc-1",
+      name: "Supermarket Cash",
+      amount: -30000,
+      category: "Groceries",
+      date: "2026-11-02",
+      createdAt: "2026-11-02T10:00:00.000Z",
+      status: "posted",
+      accountId: checking.id,
+      kind: "standard",
+    });
+
+    let t = totals(s, simDate);
+    assert.equal(t.balance, 170000, "Checking is $1,700.00");
+    assert.equal(t.budgets, 10000, "Remaining Groceries budget is $100.00");
+    assert.equal(t.safe, 160000, "Safe to Spend remains $1,600.00");
+
+    // 2. Credit card purchase of $150.00 on 2026-11-05 (exceeds remaining $100.00 budget by $50.00)
+    s.transactions.push({
+      id: "tx-cc-groc-1",
+      name: "Supermarket Credit",
+      amount: -15000,
+      category: "Groceries",
+      date: "2026-11-05",
+      createdAt: "2026-11-05T14:00:00.000Z",
+      status: "posted",
+      accountId: cardA.id,
+      kind: "standard",
+    });
+
+    const covA = getCreditCardCoverage(cardA, s, simDate);
+    assert.equal(covA.totalOwed, 15000, "Card Alpha owes $150.00");
+    assert.equal(
+      covA.readyToPay,
+      10000,
+      "Only $100.00 is covered in Ready to Pay because $300.00 of the $400.00 budget was already spent in cash",
+    );
+    assert.equal(
+      covA.uncoveredDebt,
+      5000,
+      "$50.00 overage is classified as Uncovered Debt",
+    );
+
+    t = totals(s, simDate);
+    assert.equal(t.budgets, 0, "Remaining Groceries budget is $0.00");
+    assert.equal(t.totalReadyToPay, 10000, "Total Ready to Pay is $100.00");
+    assert.equal(
+      t.safe,
+      160000,
+      "Safe to Spend remains $1,600.00 ($1,700 cash - $0 budget - $100 Ready to Pay); cash is not double-reserved",
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Case B: Credit card purchase followed by cash purchase in same category
+  // -------------------------------------------------------------------------
+  {
+    const s = blank();
+    const checking = s.accounts[0]!;
+    checking.opening = 200000; // $2,000.00
+    s.opening = 200000;
+    s.payday = "2026-11-25";
+
+    const cardA: Account = {
+      id: "acc-cc-b",
+      name: "Card Alpha",
+      type: "credit",
+      opening: 0,
+      creditLimit: 500000,
+      includeInSafeToSpend: false,
+      createdAt: "2026-11-01",
+      updatedAt: "2026-11-01",
+      coveredCreditBaselineAt: "2026-11-01",
+    };
+    s.accounts.push(cardA);
+    s.budgets = [
+      { id: "b-groc", category: "Groceries", limit: 40000, color: "#277c78" }, // $400.00
+    ];
+
+    // 1. Credit card purchase of $150.00 on 2026-11-02 (all $150.00 covered by $400.00 budget)
+    s.transactions.push({
+      id: "tx-cc-first",
+      name: "Supermarket Credit First",
+      amount: -15000,
+      category: "Groceries",
+      date: "2026-11-02",
+      createdAt: "2026-11-02T10:00:00.000Z",
+      status: "posted",
+      accountId: cardA.id,
+      kind: "standard",
+    });
+
+    let covA = getCreditCardCoverage(cardA, s, simDate);
+    assert.equal(covA.readyToPay, 15000, "All $150.00 is covered by budget");
+    assert.equal(covA.uncoveredDebt, 0);
+
+    // 2. Cash purchase of $300.00 on 2026-11-05 (consumes remaining $250.00 budget and overspends by $50.00 cash)
+    s.transactions.push({
+      id: "tx-cash-second",
+      name: "Supermarket Cash Second",
+      amount: -30000,
+      category: "Groceries",
+      date: "2026-11-05",
+      createdAt: "2026-11-05T14:00:00.000Z",
+      status: "posted",
+      accountId: checking.id,
+      kind: "standard",
+    });
+
+    covA = getCreditCardCoverage(cardA, s, simDate);
+    assert.equal(
+      covA.readyToPay,
+      15000,
+      "Chronological credit card coverage of $150.00 is preserved when subsequent cash purchase overspends the budget",
+    );
+    assert.equal(covA.uncoveredDebt, 0);
+
+    const t = totals(s, simDate);
+    assert.equal(t.balance, 170000, "Checking is $1,700.00");
+    assert.equal(t.budgets, 0, "Remaining Groceries budget is $0.00");
+    assert.equal(t.totalReadyToPay, 15000, "Ready to Pay remains $150.00");
+    assert.equal(
+      t.safe,
+      155000,
+      "Safe to Spend drops by the exact $50.00 cash budget overspend ($1,600 -> $1,550)",
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Case C: Multiple credit cards spending within one category + exhaustion
+  // -------------------------------------------------------------------------
+  {
+    const s = blank();
+    const checking = s.accounts[0]!;
+    checking.opening = 200000;
+    s.opening = 200000;
+    s.payday = "2026-11-25";
+
+    const card1: Account = {
+      id: "acc-cc-1",
+      name: "Visa One",
+      type: "credit",
+      opening: 0,
+      creditLimit: 500000,
+      includeInSafeToSpend: false,
+      createdAt: "2026-11-01",
+      updatedAt: "2026-11-01",
+      coveredCreditBaselineAt: "2026-11-01",
+    };
+    const card2: Account = {
+      id: "acc-cc-2",
+      name: "Mastercard Two",
+      type: "credit",
+      opening: 0,
+      creditLimit: 500000,
+      includeInSafeToSpend: false,
+      createdAt: "2026-11-01",
+      updatedAt: "2026-11-01",
+      coveredCreditBaselineAt: "2026-11-01",
+    };
+    s.accounts.push(card1, card2);
+    s.budgets = [
+      { id: "b-groc", category: "Groceries", limit: 40000, color: "#277c78" }, // $400.00
+    ];
+
+    // 1. Card 1 spends $250.00 on Nov 2 -> $250.00 covered, $150.00 budget remaining
+    s.transactions.push({
+      id: "tx-c1-1",
+      name: "Visa Groceries",
+      amount: -25000,
+      category: "Groceries",
+      date: "2026-11-02",
+      createdAt: "2026-11-02T09:00:00.000Z",
+      status: "posted",
+      accountId: card1.id,
+      kind: "standard",
+    });
+
+    // 2. Card 2 spends $200.00 on Nov 4 -> $150.00 covered (exhausting $400 budget), $50.00 uncovered
+    s.transactions.push({
+      id: "tx-c2-1",
+      name: "Mastercard Groceries",
+      amount: -20000,
+      category: "Groceries",
+      date: "2026-11-04",
+      createdAt: "2026-11-04T11:00:00.000Z",
+      status: "posted",
+      accountId: card2.id,
+      kind: "standard",
+    });
+
+    // 3. Card 1 spends another $60.00 on Nov 6 after budget is exhausted -> $0 covered, $60.00 uncovered
+    s.transactions.push({
+      id: "tx-c1-2",
+      name: "Visa Extra Groceries",
+      amount: -6000,
+      category: "Groceries",
+      date: "2026-11-06",
+      createdAt: "2026-11-06T15:00:00.000Z",
+      status: "posted",
+      accountId: card1.id,
+      kind: "standard",
+    });
+
+    const cov1 = getCreditCardCoverage(card1, s, simDate);
+    const cov2 = getCreditCardCoverage(card2, s, simDate);
+
+    assert.equal(cov1.totalOwed, 31000, "Card 1 owes $310.00 ($250 + $60)");
+    assert.equal(cov1.readyToPay, 25000, "Card 1 Ready to Pay is $250.00");
+    assert.equal(cov1.uncoveredDebt, 6000, "Card 1 Uncovered Debt is $60.00");
+
+    assert.equal(cov2.totalOwed, 20000, "Card 2 owes $200.00");
+    assert.equal(
+      cov2.readyToPay,
+      15000,
+      "Card 2 Ready to Pay is capped at remaining $150.00 budget",
+    );
+    assert.equal(cov2.uncoveredDebt, 5000, "Card 2 Uncovered Debt is $50.00");
+
+    const t = totals(s, simDate);
+    assert.equal(
+      t.totalReadyToPay,
+      40000,
+      "Combined Ready to Pay across both cards equals the $400.00 budget without double-counting",
+    );
+    assert.equal(t.totalUncoveredDebt, 11000, "Combined Uncovered Debt is $110.00");
+    assert.equal(t.budgets, 0);
+    assert.equal(t.safe, 160000, "Safe to Spend remains $1,600.00");
+  }
+
+  // -------------------------------------------------------------------------
+  // Case D: Refunds and transaction edits across cash and credit
+  // -------------------------------------------------------------------------
+  {
+    const s = blank();
+    const checking = s.accounts[0]!;
+    checking.opening = 100000; // $1,000.00
+    s.opening = 100000;
+    s.payday = "2026-11-25";
+
+    const card: Account = {
+      id: "acc-cc-d",
+      name: "Sapphire",
+      type: "credit",
+      opening: 0,
+      creditLimit: 500000,
+      includeInSafeToSpend: false,
+      createdAt: "2026-11-01",
+      updatedAt: "2026-11-01",
+      coveredCreditBaselineAt: "2026-11-01",
+    };
+    s.accounts.push(card);
+    s.budgets = [
+      { id: "b-groc", category: "Groceries", limit: 20000, color: "#277c78" }, // $200.00
+    ];
+
+    // 1. Cash purchase of $150.00 on Nov 2
+    const cashTx: Transaction = {
+      id: "tx-d-cash",
+      name: "Cash Groceries",
+      amount: -15000,
+      category: "Groceries",
+      date: "2026-11-02",
+      createdAt: "2026-11-02T10:00:00.000Z",
+      status: "posted",
+      accountId: checking.id,
+      kind: "standard",
+    };
+    s.transactions.push(cashTx);
+
+    // 2. Cash refund of $50.00 on Nov 3 (restores net cash spent to $100.00 -> $100.00 budget remaining)
+    s.transactions.push({
+      id: "tx-d-cash-refund",
+      name: "Cash Grocery Refund",
+      amount: 5000,
+      category: "Groceries",
+      date: "2026-11-03",
+      createdAt: "2026-11-03T10:00:00.000Z",
+      status: "posted",
+      accountId: checking.id,
+      kind: "standard",
+    });
+
+    // 3. Credit card purchase of $120.00 on Nov 4 -> $100.00 covered, $20.00 uncovered
+    s.transactions.push({
+      id: "tx-d-card",
+      name: "Card Groceries",
+      amount: -12000,
+      category: "Groceries",
+      date: "2026-11-04",
+      createdAt: "2026-11-04T10:00:00.000Z",
+      status: "posted",
+      accountId: card.id,
+      kind: "standard",
+    });
+
+    let cov = getCreditCardCoverage(card, s, simDate);
+    assert.equal(
+      cov.readyToPay,
+      10000,
+      "Cash refund restored $50.00 of budget, so $100.00 of the $120.00 card purchase is covered",
+    );
+    assert.equal(cov.uncoveredDebt, 2000, "$20.00 is uncovered");
+
+    // 4. Edit earlier cash purchase from -$150.00 to -$110.00 (net cash becomes $60.00 -> $140.00 budget available for Nov 4 card purchase!)
+    cashTx.amount = -11000;
+    cov = getCreditCardCoverage(card, s, simDate);
+    assert.equal(
+      cov.readyToPay,
+      12000,
+      "After editing cash purchase down to $110.00 ($60.00 net cash), full $120.00 card purchase is covered",
+    );
+    assert.equal(cov.uncoveredDebt, 0);
+
+    const t = totals(s, simDate);
+    assert.equal(t.budgets, 2000, "$20.00 Groceries budget remains ($200 - $60 cash - $120 card)");
+    assert.equal(t.totalReadyToPay, 12000);
+    assert.equal(t.balance, 94000, "Checking is $1,000 - $110 + $50 = $940.00");
+    assert.equal(t.safe, 80000, "Safe to Spend remains $800.00 ($940 - $20 budget - $120 Ready to Pay)");
+  }
+});
+
+test("Test 6D.1.2 — Credit card impact preview accuracy: uncovered debt explanation does not falsely claim Safe to Spend reduction at purchase time", () => {
+  const simDate = "2026-11-10";
+  const s = blank();
+  const checking = s.accounts[0]!;
+  checking.opening = 100000;
+  s.opening = 100000;
+
+  const card: Account = {
+    id: "acc-cc-preview",
+    name: "Sapphire",
+    type: "credit",
+    opening: 0,
+    creditLimit: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-11-01",
+    updatedAt: "2026-11-01",
+    coveredCreditBaselineAt: "2026-11-01",
+  };
+  s.accounts.push(card);
+  s.budgets = [
+    { id: "b-dining", category: "Dining Out", limit: 5000, color: "#277c78" }, // $50.00
+  ];
+
+  // 1. Partially covered purchase ($80.00 on $50.00 budget)
+  const partialImpact = previewCreditCardExpenseImpact(
+    s,
+    card,
+    "Dining Out",
+    8000,
+    simDate,
+    { status: "posted" },
+  );
+  assert.equal(partialImpact.status, "partially_covered");
+  assert.equal(partialImpact.coveredAmount, 5000);
+  assert.equal(partialImpact.uncoveredAmount, 3000);
+  assert.ok(
+    !partialImpact.explanation.includes("(reduces Safe to Spend)"),
+    "Must not claim that uncovered debt reduces Safe to Spend at purchase time",
+  );
+  assert.ok(
+    partialImpact.explanation.includes("not yet reserved from Safe to Spend"),
+    "Clarifies that uncovered portion is not yet reserved from Safe to Spend",
+  );
+
+  // 2. Uncovered purchase ($75.00 in unbudgeted category)
+  const uncovImpact = previewCreditCardExpenseImpact(
+    s,
+    card,
+    "General",
+    7500,
+    simDate,
+    { status: "posted" },
+  );
+  assert.equal(uncovImpact.status, "uncovered");
+  assert.equal(uncovImpact.coveredAmount, 0);
+  assert.equal(uncovImpact.uncoveredAmount, 7500);
+  assert.ok(
+    !uncovImpact.explanation.includes("This will reduce Safe to Spend"),
+    "Must not claim that uncovered credit card purchase immediately reduces Safe to Spend",
+  );
+  assert.ok(
+    uncovImpact.explanation.includes(
+      "Safe to Spend is not reduced until you reserve cash or make a payment",
+    ),
+    "Accurately states policy that Safe to Spend is not reduced at purchase time",
+  );
+});
+
+test("Test 6D.1.3 — Future-dated transactions: status-gated ledger vs date-gated Insights reconciliation and modal edit status preservation", () => {
+  const simNow = "2026-11-10";
+  const b = useBudget();
+  const m = useModal();
+
+  const s = blank();
+  const checking = s.accounts[0]!;
+  checking.opening = 200000; // $2,000.00
+  s.opening = 200000;
+  s.payday = "2026-11-25";
+  s.budgets = [
+    { id: "b-groc", category: "Groceries", limit: 30000, color: "#277c78" }, // $300.00
+  ];
+  b.state.value = s;
+
+  // 1. Add a posted transaction today ($50.00 on 2026-11-10)
+  s.transactions.push({
+    id: "tx-posted-today",
+    name: "Fresh Market",
+    amount: -5000,
+    category: "Groceries",
+    date: "2026-11-10",
+    status: "posted",
+    accountId: checking.id,
+    kind: "standard",
+  });
+
+  // Verify opening Edit transaction preserves "posted" status (previously mapped to "pending")
+  m.open("Edit transaction", "tx-posted-today");
+  assert.equal(
+    m.form.value.status,
+    "posted",
+    "Edit transaction modal must preserve 'posted' status instead of coercing to 'pending'",
+  );
+  m.close();
+
+  // 2. Scheduled future transaction ($80.00 on 2026-11-18) does NOT reduce current cash balance or budget spent
+  s.transactions.push({
+    id: "tx-sched-future",
+    name: "Planned Catering",
+    amount: -8000,
+    category: "Groceries",
+    date: "2026-11-18",
+    status: "scheduled",
+    accountId: checking.id,
+    kind: "standard",
+  });
+
+  let t = totals(s, simNow);
+  assert.equal(
+    t.balance,
+    195000,
+    "Scheduled future transaction does not deduct from current cash balance ($1,950.00)",
+  );
+  assert.equal(
+    spent(s, "Groceries", "2026-11"),
+    5000,
+    "Scheduled future transaction does not count as spent in Groceries budget ($50.00)",
+  );
+  assert.equal(
+    t.uncoveredScheduledExpenses,
+    0,
+    "Scheduled $80.00 Groceries expense is covered by the remaining $250.00 Groceries budget without double-reserving",
+  );
+
+  // 3. Future-dated posted transaction ($40.00 on 2026-11-20):
+  // Ledger is status-gated (affects balance & budget immediately), while Insights is date-gated (reconciled as future_excluded)
+  s.transactions.push({
+    id: "tx-posted-future",
+    name: "Pre-authorized Box Delivery",
+    amount: -4000,
+    category: "Groceries",
+    date: "2026-11-20",
+    status: "posted",
+    accountId: checking.id,
+    kind: "standard",
+  });
+
+  t = totals(s, simNow);
+  assert.equal(t.balance, 191000, "Status-gated ledger includes posted transaction ($1,910.00)");
+  assert.equal(spent(s, "Groceries", "2026-11"), 9000, "Budget spent reflects $90.00 ($50 + $40)");
+
+  const insights = getInsightsSpending(s, "2026-11", simNow);
+  assert.equal(
+    insights.totalSpent,
+    5000,
+    "Date-gated Insights spending as of 2026-11-10 includes only the $50.00 transaction on or before simNow",
+  );
+  const recon = getInsightsReconciliation(s, "2026-11", "Groceries", simNow);
+  assert.equal(recon.futureCount, 1, "Reconciliation explicitly identifies 1 future-dated ledger transaction");
+  assert.equal(recon.scheduledCount, 1, "Reconciliation explicitly identifies 1 scheduled transaction");
+  assert.equal(
+    getTransactionInsightsStatus(s.transactions[2]!, simNow).status,
+    "future_excluded",
+  );
+});
+
+test("Test 6D.1.4 — Seven-Day Synthetic Financial Simulation (Nov 10–16, 2026): Longitudinal expected-results ledger verification", () => {
+  // Single evolving financial state across all 7 simulated days
+  const s = blank();
+  s.version = CURRENT_SCHEMA_VERSION;
+  s.demo = false;
+  s.workspaceCreatedAt = "2026-11-01";
+  s.opening = 320000; // $3,200.00
+
+  // Payday schedule: biweekly anchored on Sunday 2026-11-15 (following payday: 2026-11-29)
+  s.payday = "2026-11-15";
+  s.followingPayday = "2026-11-29";
+  s.paydaySchedule = {
+    frequency: "biweekly",
+    anchorDate: "2026-11-15",
+    weekendRule: "exact",
+    overrides: [],
+  };
+
+  // Accounts:
+  // 1. Primary Checking ($3,200.00, included in Safe to Spend)
+  // 2. High-Yield Savings ($5,000.00, excluded from Safe to Spend)
+  // 3. Sapphire Rewards Card ($450.00 prior debt, $50.00 minimum due on 18th, protected)
+  const checking: Account = {
+    id: "acc-default-checking",
+    name: "Primary Checking",
+    type: "checking",
+    opening: 320000,
+    includeInSafeToSpend: true,
+    createdAt: "2026-11-01",
+    updatedAt: "2026-11-10",
+    lastVerifiedAt: "2026-11-10",
+  };
+  const savings: Account = {
+    id: "acc-ally-savings",
+    name: "High-Yield Savings",
+    type: "savings",
+    opening: 500000,
+    includeInSafeToSpend: false,
+    createdAt: "2026-11-01",
+    updatedAt: "2026-11-10",
+  };
+  const sapphireCard: Account = {
+    id: "acc-sapphire-card",
+    name: "Sapphire Rewards Card",
+    type: "credit",
+    opening: 45000, // $450.00 prior debt
+    creditLimit: 500000,
+    dueDay: 18,
+    minPayment: 5000, // $50.00 minimum
+    protected: true,
+    includeInSafeToSpend: false,
+    createdAt: "2026-11-01",
+    updatedAt: "2026-11-10",
+    assignedPaymentReserve: 0,
+    paymentReservations: [],
+    coveredCreditBaselineAt: "2026-11-01",
+  };
+  s.accounts = [checking, savings, sapphireCard];
+
+  // Savings Pots: Emergency Buffer ($600.00) + Holiday Travel ($300.00) = $900.00
+  s.pots = [
+    {
+      id: "pot-emergency",
+      name: "Emergency Buffer",
+      saved: 60000,
+      target: 200000,
+      color: "#2a9d8f",
+    },
+    {
+      id: "pot-travel",
+      name: "Holiday Travel",
+      saved: 30000,
+      target: 120000,
+      color: "#e9c46a",
+    },
+  ];
+
+  // Monthly Spending Budgets: Groceries ($400) + Dining Out ($150) + Fun & Hobbies ($100) = $650.00
+  s.budgets = [
+    {
+      id: "bud-groceries",
+      name: "Groceries",
+      category: "Groceries",
+      limit: 40000,
+      color: "#277c78",
+    },
+    {
+      id: "bud-dining",
+      name: "Dining Out",
+      category: "Dining Out",
+      limit: 15000,
+      color: "#82c9d7",
+    },
+    {
+      id: "bud-fun",
+      name: "Fun & Hobbies",
+      category: "Fun & Hobbies",
+      limit: 10000,
+      color: "#f2cdac",
+    },
+  ];
+
+  // Recurring Bills:
+  // - Internet Fiber: $80.00 due day 11 (2026-11-11, current cycle)
+  // - Electric Utility: $140.00 due day 14 (2026-11-14, current cycle)
+  // - Apartment Rent: $1,200.00 due day 25 (2026-11-25, following cycle until payday crosses on Nov 16; protected: false)
+  s.bills = [
+    {
+      id: "bill-internet",
+      name: "Internet Fiber",
+      amount: 8000,
+      day: 11,
+      protected: true,
+      trackingStartDate: "2026-11-01",
+    },
+    {
+      id: "bill-electric",
+      name: "Electric Utility",
+      amount: 14000,
+      day: 14,
+      protected: true,
+      trackingStartDate: "2026-11-01",
+    },
+    {
+      id: "bill-rent",
+      name: "Apartment Rent",
+      amount: 120000,
+      day: 25,
+      protected: false,
+      trackingStartDate: "2026-11-01",
+    },
+  ];
+  s.transactions = [];
+
+  // Helper to assert all 9 ledger metrics at a given date
+  function assertLedgerSnapshot(
+    date: string,
+    label: string,
+    expected: {
+      checkingBalance: number;
+      totalCash: number;
+      pots: number;
+      reservedBills: number;
+      reservedBudgets: number;
+      readyToPay: number;
+      ccMinimumProtection: number;
+      totalCreditDebt: number;
+      uncoveredCreditDebt: number;
+      safeToSpend: number;
+      shortfall: number;
+    },
+  ) {
+    const t = totals(s, date);
+    const accT = accountTotals(s);
+    const chkBal = getAccountBalance(checking, s);
+
+    assert.equal(chkBal, expected.checkingBalance, `${label}: checking account balance`);
+    assert.equal(t.balance, expected.checkingBalance, `${label}: totals().balance`);
+    assert.equal(accT.totalCashAssets, expected.totalCash, `${label}: totalCashAssets`);
+    assert.equal(t.pots, expected.pots, `${label}: savings pots`);
+    assert.equal(t.bills, expected.reservedBills, `${label}: reserved bills`);
+    assert.equal(t.budgets, expected.reservedBudgets, `${label}: reserved budgets`);
+    assert.equal(t.totalReadyToPay, expected.readyToPay, `${label}: credit card Ready to Pay`);
+    assert.equal(
+      t.creditCardMinimums,
+      expected.ccMinimumProtection,
+      `${label}: credit card minimum protection`,
+    );
+    assert.equal(t.totalCreditOwed, expected.totalCreditDebt, `${label}: total credit card debt`);
+    assert.equal(
+      t.totalUncoveredDebt,
+      expected.uncoveredCreditDebt,
+      `${label}: uncovered credit card debt`,
+    );
+    assert.equal(t.safe, expected.safeToSpend, `${label}: Safe to Spend`);
+    assert.equal(t.shortfall, expected.shortfall, `${label}: shortfall`);
+  }
+
+  // -------------------------------------------------------------------------
+  // Baseline (2026-11-10 Start of Day)
+  // -------------------------------------------------------------------------
+  assertLedgerSnapshot("2026-11-10", "Baseline (2026-11-10 Start)", {
+    checkingBalance: 320000, // $3,200.00
+    totalCash: 820000, // $8,200.00 ($3,200 + $5,000)
+    pots: 90000, // $900.00 ($600 + $300)
+    reservedBills: 22000, // $220.00 ($80 Internet + $140 Electric)
+    reservedBudgets: 65000, // $650.00 ($400 Groceries + $150 Dining + $100 Fun)
+    readyToPay: 0, // $0.00
+    ccMinimumProtection: 5000, // $50.00
+    totalCreditDebt: 45000, // $450.00
+    uncoveredCreditDebt: 45000, // $450.00
+    safeToSpend: 138000, // $1,380.00
+    shortfall: 0,
+  });
+
+  // -------------------------------------------------------------------------
+  // Day 1 (2026-11-10): Normal cash spending (-$125 Groceries) + Pot contribution (+$150 Travel)
+  // -------------------------------------------------------------------------
+  s.transactions.push({
+    id: "tx-d1-groceries",
+    name: "Trader Joe's",
+    amount: -12500,
+    category: "Groceries",
+    date: "2026-11-10",
+    createdAt: "2026-11-10T10:00:00.000Z",
+    status: "posted",
+    accountId: checking.id,
+    kind: "standard",
+  });
+  s.pots[1]!.saved += 15000; // Holiday Travel: $300 -> $450
+
+  assertLedgerSnapshot("2026-11-10", "Day 1 (2026-11-10)", {
+    checkingBalance: 307500, // $3,075.00
+    totalCash: 807500, // $8,075.00
+    pots: 105000, // $1,050.00
+    reservedBills: 22000, // $220.00
+    reservedBudgets: 52500, // $525.00 ($275 Groceries + $150 Dining + $100 Fun)
+    readyToPay: 0,
+    ccMinimumProtection: 5000, // $50.00
+    totalCreditDebt: 45000, // $450.00
+    uncoveredCreditDebt: 45000, // $450.00
+    safeToSpend: 123000, // $1,230.00
+    shortfall: 0,
+  });
+
+  // -------------------------------------------------------------------------
+  // Day 2 (2026-11-11): Pay Internet Fiber bill (-$80) + Credit card Dining Out (-$90)
+  // -------------------------------------------------------------------------
+  const d2BillTx = recordBillPayment(s, "bill-internet", {
+    dueDate: "2026-11-11",
+    amount: 8000,
+    date: "2026-11-11",
+    accountId: checking.id,
+    status: "posted",
+  });
+  assert.ok(d2BillTx);
+
+  s.transactions.push({
+    id: "tx-d2-dining",
+    name: "Bistro Maya",
+    amount: -9000,
+    category: "Dining Out",
+    date: "2026-11-11",
+    createdAt: "2026-11-11T19:00:00.000Z",
+    status: "posted",
+    accountId: sapphireCard.id,
+    kind: "standard",
+  });
+
+  assertLedgerSnapshot("2026-11-11", "Day 2 (2026-11-11)", {
+    checkingBalance: 299500, // $2,995.00
+    totalCash: 799500, // $7,995.00
+    pots: 105000, // $1,050.00
+    reservedBills: 14000, // $140.00 (Electric remaining; Internet paid)
+    reservedBudgets: 43500, // $435.00 ($275 Groceries + $60 Dining + $100 Fun)
+    readyToPay: 9000, // $90.00 auto-reserved from Dining Out budget
+    ccMinimumProtection: 0, // $0.00 ($90 Ready to Pay covers the $50 minimum requirement)
+    totalCreditDebt: 54000, // $540.00 ($450 + $90)
+    uncoveredCreditDebt: 45000, // $450.00
+    safeToSpend: 128000, // $1,280.00 (+$50 because $90 RTP subsumes the $50 CC min protection)
+    shortfall: 0,
+  });
+
+  // -------------------------------------------------------------------------
+  // Day 3 (2026-11-12): Transfer -$300 Checking -> Savings + Unexpected Auto Repair (-$210)
+  // -------------------------------------------------------------------------
+  s.transactions.push({
+    id: "tx-d3-transfer",
+    name: "Transfer to High-Yield Savings",
+    amount: -30000,
+    category: "Transfer",
+    date: "2026-11-12",
+    createdAt: "2026-11-12T09:00:00.000Z",
+    status: "posted",
+    accountId: checking.id,
+    kind: "transfer",
+    targetAccountId: savings.id,
+  });
+  s.transactions.push({
+    id: "tx-d3-repair",
+    name: "Metro Auto Tire Repair",
+    amount: -21000,
+    category: "Auto & Transport",
+    date: "2026-11-12",
+    createdAt: "2026-11-12T15:00:00.000Z",
+    status: "posted",
+    accountId: checking.id,
+    kind: "standard",
+  });
+
+  assert.equal(
+    getAccountBalance(savings, s),
+    530000,
+    "Day 3: High-Yield Savings balance increased to $5,300.00",
+  );
+  assertLedgerSnapshot("2026-11-12", "Day 3 (2026-11-12)", {
+    checkingBalance: 248500, // $2,485.00
+    totalCash: 778500, // $7,785.00 ($2,485 + $5,300; transfer preserved total cash)
+    pots: 105000, // $1,050.00
+    reservedBills: 14000, // $140.00
+    reservedBudgets: 43500, // $435.00
+    readyToPay: 9000, // $90.00
+    ccMinimumProtection: 0,
+    totalCreditDebt: 54000, // $540.00
+    uncoveredCreditDebt: 45000, // $450.00
+    safeToSpend: 77000, // $770.00 (-$300 transfer to excluded savings, -$210 unbudgeted repair)
+    shortfall: 0,
+  });
+
+  // -------------------------------------------------------------------------
+  // Day 4 (2026-11-13): Cash Dining Out (-$85) exceeds remaining $60 Dining Out budget by $25
+  // -------------------------------------------------------------------------
+  s.transactions.push({
+    id: "tx-d4-dining-over",
+    name: "Sushi Omakase",
+    amount: -8500,
+    category: "Dining Out",
+    date: "2026-11-13",
+    createdAt: "2026-11-13T20:00:00.000Z",
+    status: "posted",
+    accountId: checking.id,
+    kind: "standard",
+  });
+
+  assertLedgerSnapshot("2026-11-13", "Day 4 (2026-11-13)", {
+    checkingBalance: 240000, // $2,400.00
+    totalCash: 770000, // $7,700.00 ($2,400 + $5,300)
+    pots: 105000, // $1,050.00
+    reservedBills: 14000, // $140.00
+    reservedBudgets: 37500, // $375.00 ($275 Groceries + $0 Dining + $100 Fun)
+    readyToPay: 9000, // $90.00 (Day 2 credit card Dining Out coverage remains intact)
+    ccMinimumProtection: 0,
+    totalCreditDebt: 54000, // $540.00
+    uncoveredCreditDebt: 45000, // $450.00
+    safeToSpend: 74500, // $745.00 (-$25 Dining Out budget overage)
+    shortfall: 0,
+  });
+
+  // -------------------------------------------------------------------------
+  // Day 5 (2026-11-14): Pay Electric Utility bill (-$140) + Credit card payment (-$140)
+  // -------------------------------------------------------------------------
+  const d5BillTx = recordBillPayment(s, "bill-electric", {
+    dueDate: "2026-11-14",
+    amount: 14000,
+    date: "2026-11-14",
+    accountId: checking.id,
+    status: "posted",
+  });
+  assert.ok(d5BillTx);
+
+  s.transactions.push({
+    id: "tx-d5-cc-payment",
+    name: "Payment to Sapphire Rewards Card",
+    amount: -14000,
+    category: "Payment",
+    date: "2026-11-14",
+    createdAt: "2026-11-14T16:00:00.000Z",
+    status: "posted",
+    accountId: checking.id,
+    kind: "payment",
+    targetAccountId: sapphireCard.id,
+  });
+
+  assertLedgerSnapshot("2026-11-14", "Day 5 (2026-11-14)", {
+    checkingBalance: 212000, // $2,120.00
+    totalCash: 742000, // $7,420.00 ($2,120 + $5,300)
+    pots: 105000, // $1,050.00
+    reservedBills: 0, // $0.00 (all current-cycle bills paid)
+    reservedBudgets: 37500, // $375.00
+    readyToPay: 0, // $0.00 ($90 Ready to Pay consumed by $140 payment)
+    ccMinimumProtection: 0, // $0.00 ($140 paid >= $50 minimum requirement)
+    totalCreditDebt: 40000, // $400.00 ($540 - $140)
+    uncoveredCreditDebt: 40000, // $400.00 ($450 - $50 uncovered debt paydown)
+    safeToSpend: 69500, // $695.00 (-$50 uncovered debt paydown)
+    shortfall: 0,
+  });
+
+  // -------------------------------------------------------------------------
+  // Day 6 (2026-11-15, Payday): Biweekly Paycheck (+$1,850.00) posted to Checking
+  // -------------------------------------------------------------------------
+  // Before paycheck is posted on payday, verify payday date alone does NOT increase cash
+  assertLedgerSnapshot("2026-11-15", "Day 6 Pre-Paycheck (2026-11-15)", {
+    checkingBalance: 212000,
+    totalCash: 742000,
+    pots: 105000,
+    reservedBills: 0,
+    reservedBudgets: 37500,
+    readyToPay: 0,
+    ccMinimumProtection: 0,
+    totalCreditDebt: 40000,
+    uncoveredCreditDebt: 40000,
+    safeToSpend: 69500,
+    shortfall: 0,
+  });
+
+  s.transactions.push({
+    id: "tx-d6-paycheck",
+    name: "Acme Corp Payroll",
+    amount: 185000,
+    category: "Income",
+    date: "2026-11-15",
+    createdAt: "2026-11-15T08:00:00.000Z",
+    status: "posted",
+    accountId: checking.id,
+    kind: "standard",
+  });
+
+  assertLedgerSnapshot("2026-11-15", "Day 6 Post-Paycheck (2026-11-15)", {
+    checkingBalance: 397000, // $3,970.00
+    totalCash: 927000, // $9,270.00 ($3,970 + $5,300)
+    pots: 105000, // $1,050.00
+    reservedBills: 0, // $0.00 (current cycle ends 2026-11-15)
+    reservedBudgets: 37500, // $375.00
+    readyToPay: 0,
+    ccMinimumProtection: 0,
+    totalCreditDebt: 40000, // $400.00
+    uncoveredCreditDebt: 40000, // $400.00
+    safeToSpend: 254500, // $2,545.00 (+$1,850.00 paycheck)
+    shortfall: 0,
+  });
+
+  // -------------------------------------------------------------------------
+  // Day 7 (2026-11-16): Payday horizon crosses to 2026-11-29 (reserving $1,200 Rent due 11-25)
+  // + Edit Day 3 Auto Repair from -$210.00 to -$180.00 (+$30.00 correction)
+  // -------------------------------------------------------------------------
+  const repairTx = s.transactions.find((tx) => tx.id === "tx-d3-repair")!;
+  repairTx.amount = -18000; // -$180.00
+
+  assert.equal(
+    getCurrentPayday(s, "2026-11-16"),
+    "2026-11-29",
+    "Day 7: Active payday horizon advances to 2026-11-29",
+  );
+  const d7BillsBreakdown = reserveBillsBreakdown(s, "2026-11-16");
+  assert.equal(
+    d7BillsBreakdown.currentCycleBills,
+    120000,
+    "Day 7: $1,200.00 Apartment Rent (due 2026-11-25) is in currentCycleBills (<= 2026-11-29)",
+  );
+  assert.equal(
+    d7BillsBreakdown.protectedCycleBills,
+    8000,
+    "Day 7: $80.00 Internet Fiber (due 2026-12-11, protected: true) enters protectedCycleBills (<= following payday 2026-12-13)",
+  );
+  assertLedgerSnapshot("2026-11-16", "Day 7 (2026-11-16)", {
+    checkingBalance: 400000, // $4,000.00 ($3,970 + $30 repair correction)
+    totalCash: 930000, // $9,300.00 ($4,000 + $5,300)
+    pots: 105000, // $1,050.00
+    reservedBills: 128000, // $1,280.00 ($1,200.00 Rent in current cycle + $80.00 protected Dec 11 Internet Fiber in following cycle <= 2026-12-13)
+    reservedBudgets: 37500, // $375.00
+    readyToPay: 0,
+    ccMinimumProtection: 0,
+    totalCreditDebt: 40000, // $400.00
+    uncoveredCreditDebt: 40000, // $400.00
+    safeToSpend: 129500, // $1,295.00 ($2,545 - $1,200 Rent - $80 protected Dec Internet + $30 repair correction)
+    shortfall: 0,
+  });
+});
+
+test("Test 6D.1.5 — Time and boundary regression suite: month-end rollover, missed paycheck shortfall, partial/duplicate bills, CC timing, and backup/restore integrity", () => {
+  // 1. Missed or delayed paycheck + Negative Safe to Spend (Shortfall) on Payday Horizon Rollover
+  {
+    const s = blank();
+    const checking = s.accounts[0]!;
+    checking.opening = 212000; // $2,120.00 (Day 5 balance before paycheck)
+    s.opening = 212000;
+    s.payday = "2026-11-15";
+    s.paydaySchedule = {
+      frequency: "biweekly",
+      anchorDate: "2026-11-15",
+      weekendRule: "exact",
+      overrides: [],
+    };
+    s.pots = [
+      { id: "p1", name: "Emergency", saved: 105000, target: 200000, color: "#2a9d8f" }, // $1,050
+    ];
+    s.budgets = [
+      { id: "b1", category: "Groceries", limit: 37500, color: "#277c78" }, // $375
+    ];
+    s.bills = [
+      {
+        id: "bill-rent",
+        name: "Apartment Rent",
+        amount: 120000, // $1,200 due Nov 25
+        day: 25,
+        protected: false,
+        trackingStartDate: "2026-11-01",
+      },
+    ];
+
+    // On 2026-11-16 WITHOUT receiving the Nov 15 paycheck:
+    // Cash = $2,120.00; Obligations = $1,050 (pots) + $375 (budgets) + $1,200 (Rent) = $2,625.00
+    // Deficit: rawSafe = -$505.00 (-50500), safe = 0, shortfall = $505.00 (50500)
+    const tMissed = totals(s, "2026-11-16");
+    assert.equal(tMissed.balance, 212000, "Missed paycheck does not increase cash");
+    assert.equal(tMissed.bills, 120000, "Rent enters current cycle on Nov 16");
+    assert.equal(tMissed.rawSafe, -50500, "rawSafe is -$505.00");
+    assert.equal(tMissed.safe, 0, "Safe to Spend clamps at $0.00");
+    assert.equal(tMissed.shortfall, 50500, "Shortfall is $505.00");
+    const outlook = getMoneyOutlook(s, "2026-11-16");
+    assert.equal(outlook.hasShortfall, true);
+    assert.equal(outlook.shortfall, 50500);
+  }
+
+  // 2. Partial and duplicate bill payments
+  {
+    const s = blank();
+    const checking = s.accounts[0]!;
+    checking.opening = 100000;
+    s.opening = 100000;
+    s.payday = "2026-11-25";
+    const elecBill: Bill = {
+      id: "bill-elec",
+      name: "Electric Utility",
+      amount: 14000, // $140.00
+      day: 14,
+      protected: true,
+      trackingStartDate: "2026-11-01",
+    };
+    s.bills = [elecBill];
+
+    // Partial payment of $50.00
+    const part1 = recordBillPayment(s, "bill-elec", {
+      dueDate: "2026-11-14",
+      amount: 5000,
+      date: "2026-11-10",
+      accountId: checking.id,
+      status: "posted",
+    });
+    assert.ok(part1);
+    assert.equal(
+      getBillOccurrenceStatus(s, elecBill, "2026-11-14").status,
+      "partially_paid",
+    );
+    assert.equal(
+      totals(s, "2026-11-10").bills,
+      9000,
+      "Remaining $90.00 of partially paid bill stays reserved",
+    );
+
+    // Remaining payment of $90.00
+    const part2 = recordBillPayment(s, "bill-elec", {
+      dueDate: "2026-11-14",
+      amount: 9000,
+      date: "2026-11-14",
+      accountId: checking.id,
+      status: "posted",
+    });
+    assert.ok(part2);
+    assert.equal(
+      getBillOccurrenceStatus(s, elecBill, "2026-11-14").status,
+      "paid",
+    );
+    assert.equal(
+      totals(s, "2026-11-14").bills,
+      0,
+      "Bill reservation is $0.00 once paid in full",
+    );
+
+    // Attempting to manually settle an already-paid occurrence is rejected
+    assert.equal(
+      settleBillOccurrence(s, "bill-elec", "2026-11-14"),
+      false,
+      "Duplicate settlement of an already-paid occurrence must be rejected",
+    );
+
+    // If a duplicate payment is explicitly linked to the 2026-11-14 occurrence,
+    // getBillOccurrenceStatus flags 'overpaid' and clamps remainingAmount at 0 (never negative bill reserve)
+    const dupTx = recordBillPayment(s, "bill-elec", {
+      dueDate: "2026-11-14",
+      amount: 5000,
+      date: "2026-11-14",
+      accountId: checking.id,
+      status: "posted",
+    });
+    assert.ok(dupTx);
+    const overpaidStatus = getBillOccurrenceStatus(s, elecBill, "2026-11-14");
+    assert.equal(overpaidStatus.status, "overpaid");
+    assert.equal(overpaidStatus.overpaidAmount, 5000);
+    assert.equal(overpaidStatus.remainingAmount, 0);
+    assert.equal(
+      totals(s, "2026-11-14").bills,
+      0,
+      "Overpaid bill occurrence clamps remaining reservation at 0 without negative bill reserve",
+    );
+  }
+
+  // 3. Credit card payment timing (before due date, overdue after due date, and satisfied)
+  {
+    const s = blank();
+    const checking = s.accounts[0]!;
+    checking.opening = 200000;
+    s.opening = 200000;
+    s.payday = "2026-11-25";
+
+    const card: Account = {
+      id: "acc-cc-timing",
+      name: "Timing Card",
+      type: "credit",
+      opening: 30000, // $300.00 debt
+      creditLimit: 200000,
+      dueDay: 18,
+      minPayment: 5000, // $50.00 due 2026-11-18
+      protected: true,
+      includeInSafeToSpend: false,
+      createdAt: "2026-11-01",
+      updatedAt: "2026-11-01",
+      coveredCreditBaselineAt: "2026-11-01",
+    };
+    s.accounts.push(card);
+
+    // Before due date (2026-11-15): due in current window, uncovered minimum protected
+    const protBefore = getCreditCardMinimumProtection(card, s, "2026-11-15");
+    assert.equal(protBefore.isOverdue, false);
+    assert.equal(protBefore.dueDate, "2026-11-18");
+    assert.equal(protBefore.additionalProtection, 5000);
+
+    // After due date without payment (2026-11-19): transitions to overdue and retains $50 protection
+    const protOverdue = getCreditCardMinimumProtection(card, s, "2026-11-19");
+    assert.equal(protOverdue.isOverdue, true);
+    assert.equal(protOverdue.status, "overdue");
+    assert.equal(protOverdue.additionalProtection, 5000);
+
+    // Late payment of $50.00 on 2026-11-20 satisfies the overdue Nov 18 minimum and advances target to Dec 18
+    s.transactions.push({
+      id: "tx-late-min-pay",
+      name: "Card Minimum Payment",
+      amount: -5000,
+      category: "Payment",
+      date: "2026-11-20",
+      createdAt: "2026-11-20T10:00:00.000Z",
+      status: "posted",
+      accountId: checking.id,
+      kind: "payment",
+      targetAccountId: card.id,
+    });
+    const protAfterPay = getCreditCardMinimumProtection(card, s, "2026-11-20");
+    assert.equal(protAfterPay.isOverdue, false);
+    assert.equal(protAfterPay.dueDate, "2026-12-18");
+  }
+
+  // 4. Month-end rollover (2026-11-30 -> 2026-12-01) + Backup and restore integrity
+  {
+    const s = blank();
+    const checking = s.accounts[0]!;
+    checking.opening = 250000; // $2,500.00
+    s.opening = 250000;
+    s.payday = "2026-12-15";
+    const card: Account = {
+      id: "acc-cc-rollover",
+      name: "Rollover Card",
+      type: "credit",
+      opening: 0,
+      creditLimit: 300000,
+      includeInSafeToSpend: false,
+      createdAt: "2026-11-01",
+      updatedAt: "2026-11-01",
+      coveredCreditBaselineAt: "2026-11-01",
+    };
+    s.accounts.push(card);
+    s.budgets = [
+      { id: "b-groc", category: "Groceries", limit: 40000, color: "#277c78" }, // $400.00
+    ];
+
+    // Spend $150 cash and $120 credit in November 2026 ($270 spent, $130 budget remaining in Nov)
+    s.transactions.push(
+      {
+        id: "tx-nov-cash",
+        name: "Nov Cash Groceries",
+        amount: -15000,
+        category: "Groceries",
+        date: "2026-11-20",
+        createdAt: "2026-11-20T10:00:00.000Z",
+        status: "posted",
+        accountId: checking.id,
+        kind: "standard",
+      },
+      {
+        id: "tx-nov-card",
+        name: "Nov Card Groceries",
+        amount: -12000,
+        category: "Groceries",
+        date: "2026-11-28",
+        createdAt: "2026-11-28T10:00:00.000Z",
+        status: "posted",
+        accountId: card.id,
+        kind: "standard",
+      },
+    );
+
+    const tNov30 = totals(s, "2026-11-30");
+    assert.equal(tNov30.balance, 235000, "Nov 30 checking balance is $2,350.00");
+    assert.equal(tNov30.budgets, 13000, "Nov 30 remaining Groceries budget is $130.00");
+    assert.equal(tNov30.totalReadyToPay, 12000, "Nov 30 Ready to Pay is $120.00");
+    assert.equal(tNov30.safe, 210000, "Nov 30 Safe to Spend is $2,100.00");
+
+    // Rollover to December 1 (2026-12-01):
+    // Monthly Groceries budget resets to $400.00, while unpaid November Ready to Pay ($120.00) persists!
+    const tDec01 = totals(s, "2026-12-01");
+    assert.equal(tDec01.balance, 235000, "Dec 1 checking balance remains $2,350.00");
+    assert.equal(tDec01.budgets, 40000, "Dec 1 Groceries budget resets to full $400.00");
+    assert.equal(
+      tDec01.totalReadyToPay,
+      12000,
+      "Unpaid November Ready to Pay ($120.00) persists across month rollover",
+    );
+    assert.equal(
+      tDec01.safe,
+      183000,
+      "Dec 1 Safe to Spend is $2,350 - $400 (Dec budget) - $120 (carried RTP) = $1,830.00",
+    );
+
+    // Export and restore backup round-trip verification
+    const backupJson = exportBackup(s);
+    const preview = validateAndPreviewBackup(backupJson, "2026-12-01");
+    assert.equal(preview.valid, true);
+    const restored = preview.stateToRestore!;
+    const tRestored = totals(restored, "2026-12-01");
+    assert.equal(tRestored.balance, tDec01.balance);
+    assert.equal(tRestored.budgets, tDec01.budgets);
+    assert.equal(tRestored.totalReadyToPay, tDec01.totalReadyToPay);
+    assert.equal(tRestored.safe, tDec01.safe);
+  }
+});
+
+
 
 
 

@@ -275,7 +275,9 @@ export function useModal() {
             ? "scheduled"
             : rawStatus === "cleared"
               ? "cleared"
-              : "pending";
+              : rawStatus === "posted"
+                ? "posted"
+                : "pending";
         let type = t.amount > 0 ? "Income" : "Expense";
         if (t.kind === "transfer") {
           type = "Transfer";
@@ -918,6 +920,16 @@ export function useModal() {
         const newTxId = uid();
         savedTxId = newTxId;
 
+        let createdMs = Date.now();
+        for (const existingTx of state.value.transactions || []) {
+          if (existingTx.createdAt) {
+            const parsedMs = Date.parse(existingTx.createdAt);
+            if (Number.isFinite(parsedMs) && parsedMs >= createdMs) {
+              createdMs = parsedMs + 1;
+            }
+          }
+        }
+
         state.value.transactions.unshift({
           id: newTxId,
           name: txName,
@@ -931,7 +943,7 @@ export function useModal() {
           targetAccountId: kind !== "standard" ? f.targetAccountId : undefined,
           billId: f.billId || undefined,
           billDueDate: f.billId ? explicitBillDueDate : undefined,
-          createdAt: new Date().toISOString(),
+          createdAt: new Date(createdMs).toISOString(),
         });
       } else if (mode.value === "Edit transaction") {
         savedTxId = selected.value;
