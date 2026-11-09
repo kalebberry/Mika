@@ -32,9 +32,15 @@ function isMobilePrimary(label: PageName): boolean {
 }
 
 function selectPage(label: PageName) {
+  const wasMoreOpen = isMoreOpen.value;
   page.value = label;
   isMoreOpen.value = false;
   isMobileMenuOpen.value = false;
+  if (wasMoreOpen) {
+    nextTick(() => {
+      moreBtnRef.value?.focus();
+    });
+  }
 }
 
 function toggleMore() {
@@ -57,9 +63,33 @@ function closeMore() {
 }
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === "Escape" && isMoreOpen.value) {
+  if (!isMoreOpen.value) return;
+  if (e.key === "Escape") {
     e.preventDefault();
     closeMore();
+    return;
+  }
+  if (e.key === "Tab" && sheetRef.value) {
+    const focusables = Array.from(
+      sheetRef.value.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    if (focusables.length === 0) return;
+    const first = focusables[0]!;
+    const last = focusables[focusables.length - 1]!;
+    const active = document.activeElement as HTMLElement | null;
+    if (e.shiftKey) {
+      if (active === first || !sheetRef.value.contains(active)) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (active === last || !sheetRef.value.contains(active)) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
   }
 }
 

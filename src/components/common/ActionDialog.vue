@@ -289,17 +289,38 @@ function onColorSelectChange() {
 
 const showCycleOverride = ref(false);
 
+function focusDialogContent() {
+  nextTick(() => {
+    if (!dialogRef.value) return;
+    const firstInput = dialogRef.value.querySelector<HTMLElement>(
+      'input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled])',
+    );
+    if (firstInput) {
+      firstInput.focus();
+      return;
+    }
+    const fallbackBtn = dialogRef.value.querySelector<HTMLElement>(
+      'button[type="submit"]:not([disabled]), button.primary:not([disabled]), button.danger:not([disabled]), .modal-actions button:not([disabled]), button.close:not([disabled])',
+    );
+    fallbackBtn?.focus();
+  });
+}
+
 watch(
   () => mode.value,
   (newMode) => {
     showCycleOverride.value = false;
     if (newMode) {
-      nextTick(() => {
-        const firstInput = dialogRef.value?.querySelector<HTMLElement>(
-          'input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled])',
-        );
-        firstInput?.focus();
-      });
+      focusDialogContent();
+    }
+  },
+);
+
+watch(
+  () => payMethod.value,
+  () => {
+    if (mode.value === "Pay bill" || mode.value === "Settle bill") {
+      focusDialogContent();
     }
   },
 );
@@ -1271,6 +1292,7 @@ function onDateInput() {
             'Add transaction',
             'Edit transaction',
             'Add pot',
+            'Edit pot',
             'Add bill',
             'Edit bill',
             'Add budget',

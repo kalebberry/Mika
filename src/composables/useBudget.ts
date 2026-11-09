@@ -193,6 +193,7 @@ export interface StorageHealth {
   errorMessage: string;
   lastSavedAt: string | null;
   saveRevision: number;
+  isVerified?: boolean;
   hasRollbackSnapshot: boolean;
   rollbackTimestamp: string | null;
   hasCorruptedStash: boolean;
@@ -204,6 +205,7 @@ let initialHasCorrupt = false;
 let initialHasRollback = false;
 let initialRollbackTimestamp: string | null = null;
 let initialBlocked = false;
+let initialVerified = false;
 let lastLoadedStorageContent: string | null = null;
 
 if (typeof localStorage !== "undefined") {
@@ -235,6 +237,7 @@ if (typeof localStorage !== "undefined") {
       const validation = validateAndPreviewBackup(raw);
       if (validation.valid && validation.stateToRestore) {
         initialData = validation.stateToRestore;
+        initialVerified = true;
       } else {
         localStorage.setItem(STORAGE_CORRUPT_KEY, raw);
         initialHasCorrupt = true;
@@ -261,6 +264,7 @@ export const storageHealth = reactive<StorageHealth>({
   errorMessage: initialWarning,
   lastSavedAt: null,
   saveRevision: 0,
+  isVerified: initialVerified,
   hasRollbackSnapshot: initialHasRollback,
   rollbackTimestamp: initialRollbackTimestamp,
   hasCorruptedStash: initialHasCorrupt,
@@ -542,6 +546,7 @@ export function saveCurrentStateToStorage(stateToSave: State): {
     lastLoadedStorageContent = candidateRaw;
     storageHealth.saveRevision++;
     storageHealth.lastSavedAt = new Date().toISOString();
+    storageHealth.isVerified = true;
     if (
       storageHealth.status === "quota_exceeded" ||
       storageHealth.status === "concurrency_warning" ||
@@ -554,6 +559,7 @@ export function saveCurrentStateToStorage(stateToSave: State): {
   } catch (err: any) {
     const isQuota = err?.name === "QuotaExceededError";
     storageHealth.status = "quota_exceeded";
+    storageHealth.isVerified = false;
     storageHealth.errorMessage = isQuota
       ? "Storage quota exceeded. Your changes cannot be saved locally."
       : (err?.message || "Storage write failure.");
@@ -567,10 +573,17 @@ export function saveCurrentStateToStorage(stateToSave: State): {
   }
 }
 
-// Watch state changes for local storage persistence
+// Watch state changes for local storage persistence (skipping redundant writes when already persisted)
 watch(
   state,
   () => {
+    if (
+      lastLoadedStorageContent !== null &&
+      storageHealth.lastSavedAt !== null &&
+      JSON.stringify(state.value) === lastLoadedStorageContent
+    ) {
+      return;
+    }
     saveCurrentStateToStorage(state.value);
   },
   { deep: true },
@@ -791,10 +804,16 @@ export function useBudget() {
 
   function backup() {
     const nowIso = new Date().toISOString();
+    const prevLastBackupAt = state.value.lastBackupAt;
+    const prevLastBackupDate = state.value.lastBackupDate;
     state.value.lastBackupAt = nowIso;
     state.value.lastBackupDate = nowIso;
-    saveCurrentStateToStorage(state.value);
+    const saveResult = saveCurrentStateToStorage(state.value);
     const json = exportBackup(state.value);
+    if (!saveResult.success) {
+      state.value.lastBackupAt = prevLastBackupAt;
+      state.value.lastBackupDate = prevLastBackupDate;
+    }
     const url = URL.createObjectURL(
       new Blob([json], {
         type: "application/json",
@@ -805,17 +824,31 @@ export function useBudget() {
     a.download = `budget-backup-${today()}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    toast("Backup downloaded.");
+    if (saveResult.success) {
+      toast("Backup file download started. Save it in a safe location.");
+    } else {
+      toast(
+        "Backup file download started. Note: browser storage could not record the backup timestamp.",
+      );
+    }
   }
 
   function dismissSetup() {
+    const prev = state.value.setupDismissed;
     state.value.setupDismissed = true;
-    saveCurrentStateToStorage(state.value);
+    const res = saveCurrentStateToStorage(state.value);
+    if (!res.success) {
+      state.value.setupDismissed = prev;
+    }
   }
 
   function reopenSetup() {
+    const prev = state.value.setupDismissed;
     state.value.setupDismissed = false;
-    saveCurrentStateToStorage(state.value);
+    const res = saveCurrentStateToStorage(state.value);
+    if (!res.success) {
+      state.value.setupDismissed = prev;
+    }
   }
 
   async function prepareRestoreFromFile(

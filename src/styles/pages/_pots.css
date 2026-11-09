@@ -15,6 +15,22 @@
   margin-bottom: 2rem;
 }
 
+.pot-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.pot-edit-btn,
+.pot-delete-btn {
+  min-width: 3rem;
+  min-height: 3rem;
+  padding: 0.5rem 0.625rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .pot-amount {
   display: flex;
   justify-content: space-between;

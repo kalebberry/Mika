@@ -105,6 +105,12 @@ function handleDismiss() {
   flex-shrink: 0;
 }
 
+.reminder-actions button {
+  min-height: 3rem;
+  min-width: 3rem;
+  padding: 0.5rem 0.875rem;
+}
+
 @media (max-width: 480px) {
   .backup-reminder-banner {
     flex-direction: column;

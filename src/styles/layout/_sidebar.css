@@ -354,6 +354,7 @@
     gap: 0.375rem;
     padding: 0.625rem 0.5rem 0.75rem;
     min-height: 3rem; /* 48px WCAG touch target */
+    min-width: 0;
     border-left: 0;
     border-bottom: 0.25rem solid transparent;
     border-radius: var(--radius-md) var(--radius-md) 0 0;
@@ -380,7 +381,8 @@
 }
 
 @media (max-width: 37.5rem) {
-  .sidebar {
+  .sidebar,
+  .collapsed .sidebar {
     padding: 0.375rem 0.25rem max(0.375rem, env(safe-area-inset-bottom, 0px));
   }
 
@@ -388,7 +390,8 @@
     gap: 0.125rem;
   }
 
-  .sidebar nav button {
+  .sidebar nav button,
+  .collapsed .sidebar button {
     padding: 0.375rem 0.125rem 0.5rem;
     min-height: 3rem; /* 48px touch target */
     font-size: 0.65rem;
@@ -421,7 +424,8 @@
 }
 
 @media (max-width: 23.75rem) {
-  .sidebar {
+  .sidebar,
+  .collapsed .sidebar {
     padding: 0.25rem 0.125rem max(0.25rem, env(safe-area-inset-bottom, 0px));
   }
 
@@ -429,7 +433,8 @@
     gap: 0;
   }
 
-  .sidebar nav button {
+  .sidebar nav button,
+  .collapsed .sidebar button {
     padding: 0.25rem 0.0625rem 0.375rem;
     min-height: 3rem; /* 48px touch target height */
   }

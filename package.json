@@ -8,6 +8,8 @@
     "start": "vite",
     "build": "vue-tsc -b && vite build",
     "test": "node --test tests/budget.test.ts",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -15,6 +17,7 @@
     "vue": "^3.5.42"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.0",
     "@types/node": "^24.13.3",
     "@vitejs/plugin-vue": "^6.0.8",
     "@vue/tsconfig": "^0.9.1",

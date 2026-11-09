@@ -111,6 +111,7 @@ export interface PaydaySchedule {
   weekendRule: WeekendRule; // "exact" (default) | "preceding_friday"
   manualFollowingPayday?: string; // YYYY-MM-DD (manual mode)
   overrides: PaydayOverride[];
+  configured?: boolean;
 }
 
 export interface OverrideValidationResult {
@@ -132,8 +133,10 @@ export type State = {
   settledBills?: BillSettlement[];
   accounts: Account[];
   setupDismissed?: boolean;
+  workspaceCreatedAt?: string;
   lastBackupAt?: string;
   lastBackupDate?: string;
+  restoredBackupExportedAt?: string;
 };
 
 export interface ThemeColor {
@@ -147,15 +150,56 @@ export function updatePot(
   updates: { name?: string; target?: number; color?: string },
 ): Pot | null {
   const pot = (s.pots || []).find((p) => p.id === id);
-  if (!pot) return null;
-  if (updates.name !== undefined) pot.name = updates.name.trim();
-  if (updates.target !== undefined) pot.target = updates.target;
-  if (updates.color !== undefined) pot.color = updates.color;
-  if (pot.saved === undefined && (pot as any).amount !== undefined) {
-    pot.saved = (pot as any).amount;
+  if (!pot || !updates || typeof updates !== "object") return null;
+
+  // Validate all provided metadata fields before mutating
+  let nextName: string | undefined;
+  if (updates.name !== undefined) {
+    if (typeof updates.name !== "string" || updates.name.trim().length === 0) {
+      return null;
+    }
+    nextName = updates.name.trim();
   }
-  if ((pot as any).amount === undefined && pot.saved !== undefined) {
-    (pot as any).amount = pot.saved;
+
+  let nextTarget: number | undefined;
+  if (updates.target !== undefined) {
+    if (
+      typeof updates.target !== "number" ||
+      !Number.isFinite(updates.target) ||
+      updates.target <= 0 ||
+      updates.target > 10000000000
+    ) {
+      return null;
+    }
+    nextTarget = Math.round(updates.target);
+  }
+
+  let nextColor: string | undefined;
+  if (updates.color !== undefined) {
+    if (
+      typeof updates.color !== "string" ||
+      !/^#[0-9a-fA-F]{6}$/.test(updates.color.trim())
+    ) {
+      return null;
+    }
+    nextColor = updates.color.trim();
+  }
+
+  // Ensure legacy compatibility fields are in sync without modifying saved balance
+  const preservedSaved =
+    pot.saved !== undefined
+      ? pot.saved
+      : typeof (pot as any).amount === "number"
+        ? (pot as any).amount
+        : 0;
+
+  if (nextName !== undefined) pot.name = nextName;
+  if (nextTarget !== undefined) pot.target = nextTarget;
+  if (nextColor !== undefined) pot.color = nextColor;
+
+  pot.saved = preservedSaved;
+  if ((pot as any).amount !== undefined) {
+    (pot as any).amount = preservedSaved;
   }
   return pot;
 }
@@ -777,6 +821,7 @@ export function applyPaydayOverride(
     schedule: {
       ...schedule,
       overrides: nextOverrides,
+      configured: true,
     },
   };
 }
@@ -1032,6 +1077,7 @@ export function updatePaydaySchedule(
     weekendRule,
     manualFollowingPayday,
     overrides,
+    configured: true,
   };
 
   // Sync state.payday and state.followingPayday
@@ -2429,7 +2475,9 @@ export function blank(): State {
       manualFollowingPayday: followingPayday,
       weekendRule: "exact",
       overrides: [],
+      configured: false,
     },
+    workspaceCreatedAt: d,
     transactions: [],
     budgets: [],
     pots: [],
@@ -2465,6 +2513,7 @@ export function demo(): State {
       anchorDate: payday,
       weekendRule: "exact",
       overrides: [],
+      configured: true,
     },
     transactions: [
       {
@@ -5782,6 +5831,7 @@ export function migrateState(raw: any, now = today()): State {
   }
 
   // Support envelope objects ({ app: "mika-budget", data: State } or { state: State })
+  let envelopeExportedAt: string | undefined;
   if (raw.app === "mika-budget") {
     const formatVersion = Number(raw.formatVersion) || 1;
     if (formatVersion > CURRENT_BACKUP_FORMAT_VERSION) {
@@ -5799,6 +5849,9 @@ export function migrateState(raw: any, now = today()): State {
       throw new Error(
         "Cannot migrate malformed backup envelope: missing or invalid 'data' payload.",
       );
+    }
+    if (typeof raw.exportedAt === "string" && raw.exportedAt.trim()) {
+      envelopeExportedAt = raw.exportedAt.trim();
     }
     raw = raw.data;
   } else if (raw.state && typeof raw.state === "object") {
@@ -5919,7 +5972,7 @@ export function migrateState(raw: any, now = today()): State {
     ? raw.pots.map((p: any) => ({
         id: String(p.id || uid()),
         name: String(p.name || ""),
-        saved: Number(p.saved) || 0,
+        saved: Number(p.saved !== undefined ? p.saved : p.amount) || 0,
         target: Number(p.target) || 0,
         color: String(p.color || colors[0]),
       }))
@@ -6008,6 +6061,9 @@ export function migrateState(raw: any, now = today()): State {
       weekendRule,
       overrides: [],
     };
+    if (rawSched.configured !== undefined) {
+      baseSchedule.configured = Boolean(rawSched.configured);
+    }
     if (dayOfMonth !== undefined) baseSchedule.dayOfMonth = dayOfMonth;
     if (firstDay !== undefined) baseSchedule.firstDay = firstDay;
     if (secondDay !== undefined) baseSchedule.secondDay = secondDay;
@@ -6092,6 +6148,7 @@ export function migrateState(raw: any, now = today()): State {
       manualFollowingPayday: followingPayday,
       weekendRule: "exact",
       overrides: [],
+      configured: isValidDateString(raw.payday),
     };
   }
 
@@ -6212,8 +6269,12 @@ export function migrateState(raw: any, now = today()): State {
     settledBills,
     accounts,
     setupDismissed: raw.setupDismissed !== undefined ? Boolean(raw.setupDismissed) : undefined,
+    workspaceCreatedAt: raw.workspaceCreatedAt ? String(raw.workspaceCreatedAt) : undefined,
     lastBackupAt: raw.lastBackupAt ? String(raw.lastBackupAt) : (raw.lastBackupDate ? String(raw.lastBackupDate) : undefined),
     lastBackupDate: raw.lastBackupDate ? String(raw.lastBackupDate) : (raw.lastBackupAt ? String(raw.lastBackupAt) : undefined),
+    restoredBackupExportedAt: raw.restoredBackupExportedAt
+      ? String(raw.restoredBackupExportedAt)
+      : envelopeExportedAt,
   };
 }
 
@@ -6418,6 +6479,9 @@ export function validateAndPreviewBackup(
 
   // Migrate state deterministically
   const stateToRestore = migrateState(rawState, now);
+  if (isEnvelope && typeof parsed.exportedAt === "string" && parsed.exportedAt.trim()) {
+    stateToRestore.restoredBackupExportedAt = parsed.exportedAt.trim();
+  }
 
   // Check reference integrity & generate helpful warnings
   const warnings: string[] = [];
@@ -6475,11 +6539,19 @@ export interface SetupChecklistItem {
   actionLabel: string;
   targetPage?: string;
   targetModal?: string;
+  targetId?: string;
 }
 
 export function getSetupChecklistStatus(s: State) {
+  const accounts = s.accounts || [];
+  const primaryChecking =
+    accounts.find((a) => !a.archived && a.id === "acc-default-checking") ||
+    accounts.find((a) => !a.archived && a.type === "checking") ||
+    accounts.find((a) => a.type === "checking") ||
+    accounts.find((a) => !a.archived && a.type !== "credit");
+
   const hasChecking =
-    (s.accounts || []).some(
+    accounts.some(
       (a) =>
         a.type === "checking" &&
         ((a as any).openingBalance > 0 ||
@@ -6487,10 +6559,19 @@ export function getSetupChecklistStatus(s: State) {
           a.lastVerifiedAt !== undefined),
     ) || (s.transactions || []).length > 0;
 
+  const sched = s.paydaySchedule;
   const hasPayday = Boolean(
-    s.paydaySchedule?.frequency && s.paydaySchedule?.frequency !== "manual"
-      ? s.paydaySchedule?.anchorDate
-      : s.payday && s.payday !== "",
+    sched
+      ? sched.configured === true ||
+          (sched.frequency &&
+            sched.frequency !== "manual" &&
+            isValidDateString(sched.anchorDate)) ||
+          (Array.isArray(sched.overrides) && sched.overrides.length > 0) ||
+          (sched.configured !== false &&
+            isValidDateString(s.payday) &&
+            sched.anchorDate &&
+            s.payday !== sched.anchorDate)
+      : isValidDateString(s.payday),
   );
 
   const hasBills = Boolean(s.bills && s.bills.length > 0);
@@ -6505,6 +6586,7 @@ export function getSetupChecklistStatus(s: State) {
       completed: Boolean(hasChecking),
       actionLabel: "Adjust balance",
       targetModal: "Adjust balance",
+      targetId: primaryChecking?.id || "acc-default-checking",
     },
     {
       id: "payday",
@@ -6522,7 +6604,7 @@ export function getSetupChecklistStatus(s: State) {
         "Reserve money for rent, utilities, or subscriptions ahead of time.",
       completed: Boolean(hasBills),
       actionLabel: "Add bill",
-      targetModal: "Add recurring bill",
+      targetModal: "Add bill",
     },
     {
       id: "budgets",
@@ -6531,7 +6613,7 @@ export function getSetupChecklistStatus(s: State) {
         "Set caps for flexible expenses like groceries and dining.",
       completed: Boolean(hasBudgets),
       actionLabel: "Add budget",
-      targetModal: "Add spending budget",
+      targetModal: "Add budget",
     },
   ];
 
@@ -6562,6 +6644,7 @@ export interface BackupReminderStatus {
     | "new_workspace";
   daysSinceBackup: number;
   lastBackupDate?: string;
+  restoredBackupExportedAt?: string;
   message?: string;
 }
 
@@ -6569,6 +6652,15 @@ export function getBackupReminderStatus(
   s: State,
   now = today(),
 ): BackupReminderStatus {
+  if (s.demo) {
+    return {
+      shouldRemind: false,
+      reason: "insufficient_data",
+      daysSinceBackup: 0,
+      message: "",
+    };
+  }
+
   const hasAccounts = (s.accounts || []).length > 0;
   const hasRecords =
     (s.transactions || []).length >= 3 ||
@@ -6583,16 +6675,26 @@ export function getBackupReminderStatus(
     };
   }
 
-  const backupDateStr = s.lastBackupDate || s.lastBackupAt;
-  if (backupDateStr) {
-    const lastDate = backupDateStr.slice(0, 10);
-    const daysSince = daysBetween(lastDate, now);
+  const localBackupStr = s.lastBackupDate || s.lastBackupAt;
+  const restoredBackupStr = s.restoredBackupExportedAt;
+  const candidateBackups = [localBackupStr, restoredBackupStr].filter(
+    (v): v is string => typeof v === "string" && isValidDateString(v.slice(0, 10)),
+  );
+
+  if (candidateBackups.length > 0) {
+    // Pick the most recent backup timestamp (either local export or restored backup envelope)
+    const latestBackupStr = candidateBackups.sort((a, b) =>
+      b.slice(0, 10).localeCompare(a.slice(0, 10)),
+    )[0]!;
+    const lastDate = latestBackupStr.slice(0, 10);
+    const daysSince = Math.max(0, daysBetween(lastDate, now));
     if (daysSince >= 14) {
       return {
         shouldRemind: true,
         reason: "stale_backup",
         daysSinceBackup: daysSince,
-        lastBackupDate: backupDateStr,
+        lastBackupDate: localBackupStr || latestBackupStr,
+        restoredBackupExportedAt: restoredBackupStr,
         message: `It has been ${daysSince} days since your last backup.`,
       };
     }
@@ -6600,20 +6702,25 @@ export function getBackupReminderStatus(
       shouldRemind: false,
       reason: "recent_backup",
       daysSinceBackup: daysSince,
-      lastBackupDate: backupDateStr,
+      lastBackupDate: localBackupStr || latestBackupStr,
+      restoredBackupExportedAt: restoredBackupStr,
       message: "",
     };
   }
 
-  // Check if earliest transaction or account activity is at least 7 days old
-  const dates = [
-    ...(s.accounts || []).map((a) => a.createdAt || a.updatedAt),
-    ...(s.transactions || []).map((t) => t.date),
-  ].filter(Boolean);
+  // Determine workspace age using reliable creation metadata only (never transaction dates)
+  const metadataDates = [
+    s.workspaceCreatedAt,
+    ...(s.accounts || []).map((a) => a.createdAt),
+    ...(s.transactions || []).map((t) => t.createdAt),
+  ]
+    .filter((d): d is string => typeof d === "string" && isValidDateString(d.slice(0, 10)))
+    .map((d) => d.slice(0, 10))
+    .sort();
 
-  if (dates.length > 0) {
-    const earliest = dates.sort()[0]!.slice(0, 10);
-    const daysActive = daysBetween(earliest, now);
+  if (metadataDates.length > 0) {
+    const earliest = metadataDates[0]!;
+    const daysActive = Math.max(0, daysBetween(earliest, now));
     if (daysActive >= 7) {
       return {
         shouldRemind: true,

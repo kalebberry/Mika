@@ -131,6 +131,9 @@ import {
   type BeforePaydayCommitmentsSummary,
   exportBackup,
   validateAndPreviewBackup,
+  getSetupChecklistStatus,
+  getBackupReminderStatus,
+  type BackupReminderStatus,
   type BackupEnvelope,
   type RestorePreview,
   CURRENT_SCHEMA_VERSION,
@@ -3801,13 +3804,14 @@ test("Test 2B.23 — Stage 4: Safe to Spend breakdown & double-deduction prevent
   // Eligible cash: $1,000
   // Pots: -$100, Bills: -$100, Remaining budgets: -$300, Card reserves: -$0
   // Safe to Spend = $1,000 - $100 - $100 - $300 = $500.00
-  assert.equal(b.sum.value.balance, 100000);
-  assert.equal(b.sum.value.pots, 10000);
-  assert.equal(b.sum.value.bills, 10000);
-  assert.equal(b.sum.value.budgets, 30000);
-  assert.equal(b.sum.value.totalReadyToPay, 0);
-  assert.equal(b.sum.value.safe, 50000);
-  assert.equal(b.sum.value.shortfall, 0);
+  let sum23 = totals(b.state.value, simulatedToday);
+  assert.equal(sum23.balance, 100000);
+  assert.equal(sum23.pots, 10000);
+  assert.equal(sum23.bills, 10000);
+  assert.equal(sum23.budgets, 30000);
+  assert.equal(sum23.totalReadyToPay, 0);
+  assert.equal(sum23.safe, 50000);
+  assert.equal(sum23.shortfall, 0);
 
   // 1. Post a $100 credit card purchase in Groceries
   b.state.value.transactions.push({
@@ -3827,15 +3831,17 @@ test("Test 2B.23 — Stage 4: Safe to Spend breakdown & double-deduction prevent
   // - Remaining budget drops from $300 to $200
   // - Payment reserve increases from $0 to $100
   // Safe to Spend remains EXACTLY $500.00!
-  assert.equal(b.sum.value.balance, 100000);
-  assert.equal(b.sum.value.budgets, 20000, "Remaining budget is now $200");
-  assert.equal(b.sum.value.totalReadyToPay, 10000, "Credit card payment reserve is now $100");
-  assert.equal(b.sum.value.safe, 50000, "Safe to Spend is unchanged at $500 (no double deduction)");
+  sum23 = totals(b.state.value, simulatedToday);
+  assert.equal(sum23.balance, 100000);
+  assert.equal(sum23.budgets, 20000, "Remaining budget is now $200");
+  assert.equal(sum23.totalReadyToPay, 10000, "Credit card payment reserve is now $100");
+  assert.equal(sum23.safe, 50000, "Safe to Spend is unchanged at $500 (no double deduction)");
 
   // 2. Add an explicit manual payment reserve of $50 for additional card buffer
   b.assignCardPaymentReserve(card.id, 5000, `${simulatedToday}T11:00:00.000Z`);
-  assert.equal(b.sum.value.totalReadyToPay, 15000, "Total Ready to Pay is $150 ($100 auto + $50 manual)");
-  assert.equal(b.sum.value.safe, 45000, "Safe to Spend drops by $50 to $450");
+  sum23 = totals(b.state.value, simulatedToday);
+  assert.equal(sum23.totalReadyToPay, 15000, "Total Ready to Pay is $150 ($100 auto + $50 manual)");
+  assert.equal(sum23.safe, 45000, "Safe to Spend drops by $50 to $450");
 
   // 3. Make a $150 credit card payment from checking
   b.state.value.transactions.push({
@@ -3854,9 +3860,10 @@ test("Test 2B.23 — Stage 4: Safe to Spend breakdown & double-deduction prevent
   // Cash drops by $150 (from $1,000 to $850)
   // Payment reserve drops by $150 (from $150 to $0)
   // Safe to Spend: $850 - $100 (pots) - $100 (bills) - $200 (budget) - $0 (reserves) = $450.00
-  assert.equal(b.sum.value.balance, 85000, "Checking balance is $850");
-  assert.equal(b.sum.value.totalReadyToPay, 0, "Payment reserve cleanly consumed to $0");
-  assert.equal(b.sum.value.safe, 45000, "Safe to Spend remains $450.00 (no double deduction on payment)");
+  sum23 = totals(b.state.value, simulatedToday);
+  assert.equal(sum23.balance, 85000, "Checking balance is $850");
+  assert.equal(sum23.totalReadyToPay, 0, "Payment reserve cleanly consumed to $0");
+  assert.equal(sum23.safe, 45000, "Safe to Spend remains $450.00 (no double deduction on payment)");
 });
 
 test("Test 2B.24 — Stage 4: Shortfall reporting when protected allocations exceed eligible cash", () => {
@@ -3914,7 +3921,7 @@ test("Test 2B.24 — Stage 4: Shortfall reporting when protected allocations exc
   // Total obligations: $150 pot + $100 bill + $100 budget = $350.
   // Cash available: $250.
   // Deficit is $100.
-  let sum = b.sum.value;
+  let sum = totals(b.state.value, simulatedToday);
   assert.equal(sum.balance, 25000);
   assert.equal(sum.rawSafe, -10000, "rawSafe is -$100.00");
   assert.equal(sum.safe, 0, "Safe to Spend is clamped to $0.00");
@@ -3933,7 +3940,7 @@ test("Test 2B.24 — Stage 4: Shortfall reporting when protected allocations exc
     createdAt: `${simulatedToday}T10:00:00.000Z`,
   });
 
-  sum = b.sum.value;
+  sum = totals(b.state.value, simulatedToday);
   // Remaining dining budget drops by $50 (to $50), while totalReadyToPay increases by $50 (to $50)
   // Overall obligations remain $350 ($150 + $100 + $50 + $50)
   assert.equal(sum.budgets, 5000);
@@ -4196,7 +4203,7 @@ test("Test 2B.27 — Comprehensive Phase 2B Verification: Partial budget split, 
   b.state.value = state;
 
   // Initial Safe to Spend: $1,000 checking - $100 Groceries budget = $900
-  assert.equal(b.sum.value.safe, 90000, "Initial Safe to Spend is $900");
+  assert.equal(totals(b.state.value, simulatedToday).safe, 90000, "Initial Safe to Spend is $900");
 
   // Step 1: Partially budgeted credit purchase ($160 on Groceries with $100 budget)
   state.transactions.push({
@@ -4212,7 +4219,7 @@ test("Test 2B.27 — Comprehensive Phase 2B Verification: Partial budget split, 
     createdAt: `${simulatedToday}T10:00:00.000Z`,
   });
 
-  const covAfterPurchase = b.getCreditCardCoverage(card.id);
+  const covAfterPurchase = b.getCreditCardCoverage(card.id, simulatedToday);
   assert.equal(covAfterPurchase.totalOwed, 16000, "Total owed is $160.00");
   assert.equal(covAfterPurchase.readyToPay, 10000, "Ready to Pay is $100.00 (auto-covered from Groceries budget)");
   assert.equal(covAfterPurchase.uncoveredDebt, 6000, "Uncovered debt is $60.00 (excess over $100 budget)");
@@ -4223,7 +4230,7 @@ test("Test 2B.27 — Comprehensive Phase 2B Verification: Partial budget split, 
   // Cash: $1,000. Groceries budget remaining: $0. Ready to Pay: $100.
   // Safe to Spend = $1,000 - $0 - $100 = $900.
   // Note: Safe to Spend remains $900! The $100 was already deducted when budgeted; the $60 excess is uncovered debt awaiting cash allocation.
-  assert.equal(b.sum.value.safe, 90000, "Safe to Spend remains $900 without double deduction");
+  assert.equal(totals(b.state.value, simulatedToday).safe, 90000, "Safe to Spend remains $900 without double deduction");
 
   // Step 2: Open modal for Credit Card Payment
   m.open("Add transaction", card.id, "Credit Card Payment");
@@ -4234,6 +4241,7 @@ test("Test 2B.27 — Comprehensive Phase 2B Verification: Partial budget split, 
 
   // Step 3: Enter a mixed payment of $140 ($100 covered + $40 uncovered)
   m.form.value.amount = "140";
+  m.form.value.date = simulatedToday;
   const paymentAmountCents = 14000;
   const coveredPortion = Math.min(paymentAmountCents, covAfterPurchase.readyToPay);
   const uncoveredPortion = Math.max(0, paymentAmountCents - covAfterPurchase.readyToPay);
@@ -4245,7 +4253,7 @@ test("Test 2B.27 — Comprehensive Phase 2B Verification: Partial budget split, 
   assert.equal(m.error.value, "", "Mixed payment submission succeeds");
 
   // Step 4: Verify post-payment invariants
-  const covAfterPay = b.getCreditCardCoverage(card.id);
+  const covAfterPay = b.getCreditCardCoverage(card.id, simulatedToday);
   assert.equal(covAfterPay.totalOwed, 2000, "Total owed drops from $160 to $20 ($160 - $140)");
   assert.equal(covAfterPay.readyToPay, 0, "Ready to Pay is $0 (consumed all $100 reserved funds first)");
   assert.equal(covAfterPay.uncoveredDebt, 2000, "Remaining debt ($20) is uncovered");
@@ -4256,7 +4264,7 @@ test("Test 2B.27 — Comprehensive Phase 2B Verification: Partial budget split, 
   // Safe to Spend = $860.
   // Notice: Safe to Spend decreased from $900 to $860, exactly by $40 (the uncovered portion)!
   // The $100 covered portion did not decrease Safe to Spend again!
-  assert.equal(b.sum.value.safe, 86000, "Safe to Spend reduced only by the $40 uncovered portion, not the $100 covered portion");
+  assert.equal(totals(b.state.value, simulatedToday).safe, 86000, "Safe to Spend reduced only by the $40 uncovered portion, not the $100 covered portion");
 
   // Step 5: Test remaining debt prefill
   // Now Ready to Pay is $0, but Total Owed is $20.
@@ -4270,15 +4278,16 @@ test("Test 2B.27 — Comprehensive Phase 2B Verification: Partial budget split, 
 
   // Pay remaining $20 uncovered
   m.form.value.amount = "20";
+  m.form.value.date = simulatedToday;
   m.submit();
   assert.equal(m.error.value, "");
 
-  const covFinal = b.getCreditCardCoverage(card.id);
+  const covFinal = b.getCreditCardCoverage(card.id, simulatedToday);
   assert.equal(covFinal.totalOwed, 0, "Card is completely paid off ($0 debt)");
   assert.equal(covFinal.readyToPay, 0, "Ready to Pay is $0");
   assert.equal(covFinal.status, "zero_balance");
   assert.equal(b.getAccountBalance(checking), 84000, "Checking cash reduced to $840");
-  assert.equal(b.sum.value.safe, 84000, "Safe to Spend is $840");
+  assert.equal(totals(b.state.value, simulatedToday).safe, 84000, "Safe to Spend is $840");
 });
 
 test("Test 3A.1 — Schema v5 migration: preserves v4 payday values, defaults to manual schedule, and preserves financial numbers identically", () => {
@@ -5971,6 +5980,8 @@ test("Test 3A.2.17 — Date-range safety handling, diagnostics, and non-omission
 test("Test 3A.2.18 — Preserved Phase 2B Covered Credit and Safe to Spend invariants under recordBillPayment", () => {
   const simulatedToday = "2026-10-16";
   const state: State = blank();
+  state.payday = "2026-10-23";
+  state.followingPayday = "2026-11-06";
   state.accounts = [
     {
       id: "acc-checking",
@@ -6760,6 +6771,8 @@ test("Test 3A.3.11 — Manual payday empty state vs confirmed deposits and safet
   // 1. Stale manual schedule: anchor in the past (2026-08-01) and no manualFollowingPayday, no overrides
   const state: State = blank();
   state.opening = 300000; // $3,000 cash
+  state.payday = "2026-10-30";
+  state.followingPayday = "2026-11-13";
   state.paydaySchedule = {
     frequency: "manual",
     anchorDate: "2026-08-01", // Past / stale
@@ -14131,16 +14144,17 @@ test("Test 5A.8 — Reporting period switching: isolated calendar months", () =>
 
 test("Test 5A.9 — Factual observations grounded strictly in recorded data", () => {
   const state = blank();
+  const simNow = "2026-10-21";
 
   // Case 1: Empty
-  const emptyInsights = getInsightsSpending(state, "2026-10");
+  const emptyInsights = getInsightsSpending(state, "2026-10", simNow);
   assert.equal(emptyInsights.observation, "No spending recorded for this period yet.");
 
   // Case 2: Single category
   state.transactions = [
     { id: "tx-1", name: "Groceries", amount: -6000, category: "Groceries", date: "2026-10-10", status: "posted" },
   ];
-  const singleInsights = getInsightsSpending(state, "2026-10");
+  const singleInsights = getInsightsSpending(state, "2026-10", simNow);
   assert.equal(singleInsights.observation, "Groceries is your only recorded spending category this month.");
 
   // Case 3: Multiple categories
@@ -14148,7 +14162,7 @@ test("Test 5A.9 — Factual observations grounded strictly in recorded data", ()
     { id: "tx-2", name: "Restaurant", amount: -14000, category: "Dining Out", date: "2026-10-12", status: "posted" },
   );
   // Total: $200.00. Dining Out is $140.00 (70%), Groceries is $60.00 (30%)
-  const multiInsights = getInsightsSpending(state, "2026-10");
+  const multiInsights = getInsightsSpending(state, "2026-10", simNow);
   assert.equal(
     multiInsights.observation,
     "Dining Out is your largest recorded spending category this month, accounting for 70% of your spending.",
@@ -14156,18 +14170,21 @@ test("Test 5A.9 — Factual observations grounded strictly in recorded data", ()
 });
 
 test("Test 5A.10 — Financial invariants preserved: Safe to Spend and existing ledger pure", () => {
+  const simNow = today();
+  const currentMonth = simNow.slice(0, 7);
+  const prevMonth = getPreviousMonth(currentMonth);
   const state = demo();
-  const beforeTotals = totals(state, "2026-10-21");
+  const beforeTotals = totals(state, simNow);
 
   // Run insights computations across multiple periods
-  const thisMonthInsights = getInsightsSpending(state, "2026-10");
-  const lastMonthInsights = getInsightsSpending(state, "2026-09");
+  const thisMonthInsights = getInsightsSpending(state, currentMonth, simNow);
+  const lastMonthInsights = getInsightsSpending(state, prevMonth, simNow);
 
   assert.ok(thisMonthInsights.totalSpent > 0, "Demo data has spending this month");
   assert.ok(lastMonthInsights !== null, "Last month insights computed");
 
   // Re-verify totals
-  const afterTotals = totals(state, "2026-10-21");
+  const afterTotals = totals(state, simNow);
   assert.equal(afterTotals.balance, beforeTotals.balance, "Balance invariant preserved");
   assert.equal(afterTotals.pots, beforeTotals.pots, "Pots invariant preserved");
   assert.equal(afterTotals.budgets, beforeTotals.budgets, "Budgets invariant preserved");
@@ -17984,7 +18001,7 @@ test("Test 6B.31 — Savings Pots: updatePot modifications, color retention, and
     {
       id: "pot-vacation",
       name: "Vacation",
-      amount: 50000, // $500 saved
+      saved: 50000, // $500 canonical saved balance
       target: 100000, // $1,000 target
       color: "#2563EB",
     },
@@ -18006,12 +18023,37 @@ test("Test 6B.31 — Savings Pots: updatePot modifications, color retention, and
   assert.equal(updatedPot.name, "Summer Holiday");
   assert.equal(updatedPot.target, 150000);
   assert.equal(updatedPot.color, "#14B8A6");
-  assert.equal(updatedPot.amount, 50000, "Saved amount must be preserved");
+  assert.equal(updatedPot.saved, 50000, "Canonical saved amount must be preserved");
 
   // Verify financial totals remain identical since saved pot amount was unchanged
   const postUpdateTotals = totals(s);
   assert.equal(postUpdateTotals.pots, 50000);
   assert.equal(postUpdateTotals.safe, 150000);
+
+  // Reject invalid metadata inputs without mutating pot
+  assert.equal(updatePot(s, "pot-vacation", { name: "   " }), null);
+  assert.equal(updatePot(s, "pot-vacation", { target: 0 }), null);
+  assert.equal(updatePot(s, "pot-vacation", { target: -500 }), null);
+  assert.equal(updatePot(s, "pot-vacation", { color: "not-a-hex" }), null);
+  assert.equal(updatedPot.name, "Summer Holiday");
+  assert.equal(updatedPot.target, 150000);
+  assert.equal(updatedPot.color, "#14B8A6");
+  assert.equal(updatedPot.saved, 50000);
+
+  // Legacy pot fixture with `amount` instead of `saved`
+  const legacyPot: any = {
+    id: "pot-legacy",
+    name: "Rainy Day",
+    amount: 25000,
+    target: 100000,
+    color: "#277c78",
+  };
+  s.pots.push(legacyPot);
+  const updatedLegacy = updatePot(s, "pot-legacy", { name: "Emergency Reserve" });
+  assert.ok(updatedLegacy);
+  assert.equal(updatedLegacy.name, "Emergency Reserve");
+  assert.equal(updatedLegacy.saved, 25000, "Legacy amount synchronized to canonical saved");
+  assert.equal((updatedLegacy as any).amount, 25000, "Legacy amount preserved");
 
   // Updating non-existent pot returns null
   const missing = updatePot(s, "pot-nonexistent", { name: "Ghost" });
@@ -18080,6 +18122,262 @@ test("Test 6B.34 — Setup checklist tracking and state persistence", () => {
   const migrated = migrateState(s);
   assert.equal(migrated.setupDismissed, true);
   assert.equal(migrated.lastBackupDate, "2026-10-22T23:30:00.000Z");
+});
+
+test("Test 6C.1 — Setup checklist status: default placeholder payday does not mark payday complete, and actions resolve valid modal names and checking account ID", () => {
+  const s = blank();
+  const status = getSetupChecklistStatus(s);
+
+  assert.equal(status.completedCount, 0, "Fresh blank workspace has 0 completed setup steps");
+  assert.equal(status.isAllComplete, false);
+  assert.equal(status.shouldShow, true);
+
+  const balanceItem = status.items.find((i) => i.id === "balance")!;
+  const paydayItem = status.items.find((i) => i.id === "payday")!;
+  const billsItem = status.items.find((i) => i.id === "bills")!;
+  const budgetsItem = status.items.find((i) => i.id === "budgets")!;
+
+  assert.equal(balanceItem.completed, false);
+  assert.equal(balanceItem.targetModal, "Adjust balance");
+  assert.equal(balanceItem.targetId, "acc-default-checking");
+
+  assert.equal(paydayItem.completed, false, "Placeholder manual payday on blank() must not mark payday complete");
+  assert.equal(paydayItem.targetPage, "Settings");
+
+  assert.equal(billsItem.completed, false);
+  assert.equal(billsItem.targetModal, "Add bill");
+
+  assert.equal(budgetsItem.completed, false);
+  assert.equal(budgetsItem.targetModal, "Add budget");
+
+  // Custom checking account ID resolution when default ID is absent
+  s.accounts = [
+    {
+      id: "acc-custom-checking",
+      name: "Main Checking",
+      type: "checking",
+      opening: 0,
+      includeInSafeToSpend: true,
+      archived: false,
+      createdAt: "2026-11-01",
+      updatedAt: "2026-11-01",
+    },
+  ];
+  const customStatus = getSetupChecklistStatus(s);
+  const customBalanceItem = customStatus.items.find((i) => i.id === "balance")!;
+  assert.equal(customBalanceItem.targetId, "acc-custom-checking");
+
+  // Completing steps updates checklist status accurately
+  s.accounts[0]!.opening = 250000;
+  updatePaydaySchedule(s, {
+    frequency: "biweekly",
+    anchorDate: "2026-11-13",
+    weekendRule: "exact",
+  });
+  s.bills.push({
+    id: "bill-rent",
+    name: "Rent",
+    amount: 120000,
+    day: 1,
+    protected: true,
+  });
+  s.budgets.push({
+    id: "bg-groc",
+    category: "Groceries",
+    limit: 40000,
+    color: "#277c78",
+  });
+
+  const completedStatus = getSetupChecklistStatus(s);
+  assert.equal(completedStatus.completedCount, 4);
+  assert.equal(completedStatus.isAllComplete, true);
+  assert.equal(completedStatus.shouldShow, false);
+});
+
+test("Test 6C.2 — Setup checklist modal integration: Adjust balance, Add bill, and Add budget open functional workflows", () => {
+  const b = useBudget();
+  const m = useModal();
+  const s = blank();
+  s.accounts = [
+    {
+      id: "acc-custom-chk",
+      name: "Custom Checking",
+      type: "checking",
+      opening: 125000,
+      includeInSafeToSpend: true,
+      archived: false,
+      createdAt: "2026-11-01",
+      updatedAt: "2026-11-01",
+    },
+  ];
+  b.state.value = s;
+
+  // 1. Opening "Adjust balance" without explicit ID resolves primary checking account ID from state
+  m.open("Adjust balance");
+  assert.equal(m.mode.value, "Adjust balance");
+  assert.equal(m.selected.value, "acc-custom-chk");
+  assert.equal(m.form.value.name, "Custom Checking");
+  assert.equal(m.form.value.amount, "1250");
+  m.form.value.amount = "1500.00";
+  m.submit();
+  assert.equal(m.error.value, "");
+  assert.equal(b.getAccountBalance(b.state.value.accounts[0]!), 150000);
+
+  // 2. Opening "Add bill" from checklist targetModal submits a new recurring bill
+  const checklist = getSetupChecklistStatus(b.state.value);
+  const billItem = checklist.items.find((i) => i.id === "bills")!;
+  m.open(billItem.targetModal!);
+  assert.equal(m.mode.value, "Add bill");
+  m.form.value.name = "Internet Service";
+  m.form.value.amount = "65.00";
+  m.form.value.day = 15;
+  m.submit();
+  assert.equal(m.error.value, "");
+  assert.equal(b.state.value.bills.length, 1);
+  assert.equal(b.state.value.bills[0]!.name, "Internet Service");
+
+  // 3. Opening "Add budget" from checklist targetModal submits a new spending budget
+  const budgetItem = checklist.items.find((i) => i.id === "budgets")!;
+  m.open(budgetItem.targetModal!);
+  assert.equal(m.mode.value, "Add budget");
+  m.form.value.category = "Groceries";
+  m.form.value.amount = "400.00";
+  m.submit();
+  assert.equal(m.error.value, "");
+  assert.equal(b.state.value.budgets.length, 1);
+  assert.equal(b.state.value.budgets[0]!.limit, 40000);
+});
+
+test("Test 6C.3 — Backup reminder reliability: demo mode exclusion, historical transaction dates vs workspace creation metadata, and restored backup timestamps", () => {
+  const simNow = "2026-11-08";
+
+  // 1. Demo mode never shows backup reminders
+  const demoState = demo();
+  const demoReminder = getBackupReminderStatus(demoState, simNow);
+  assert.equal(demoReminder.shouldRemind, false, "Demo mode must never trigger backup reminders");
+
+  // 2. Brand-new workspace with backdated historical transactions does NOT trigger premature reminder
+  const newWorkspace = blank();
+  newWorkspace.workspaceCreatedAt = "2026-11-07"; // created yesterday
+  newWorkspace.accounts[0]!.createdAt = "2026-11-07";
+  newWorkspace.accounts[0]!.updatedAt = "2026-11-07";
+  newWorkspace.transactions = [
+    {
+      id: "tx-hist-1",
+      name: "Historical Rent",
+      amount: -120000,
+      category: "Housing",
+      date: "2026-09-01", // 2 months ago transaction date!
+      status: "cleared",
+      accountId: "acc-default-checking",
+      createdAt: "2026-11-07T10:00:00.000Z",
+    },
+    {
+      id: "tx-hist-2",
+      name: "Historical Groceries",
+      amount: -8500,
+      category: "Groceries",
+      date: "2026-09-05",
+      status: "cleared",
+      accountId: "acc-default-checking",
+      createdAt: "2026-11-07T10:05:00.000Z",
+    },
+    {
+      id: "tx-hist-3",
+      name: "Historical Electric",
+      amount: -9500,
+      category: "Utilities",
+      date: "2026-09-10",
+      status: "cleared",
+      accountId: "acc-default-checking",
+      createdAt: "2026-11-07T10:10:00.000Z",
+    },
+  ];
+
+  const newStatus = getBackupReminderStatus(newWorkspace, simNow);
+  assert.equal(
+    newStatus.shouldRemind,
+    false,
+    "Historical transaction dates must not age a newly created workspace",
+  );
+  assert.equal(newStatus.reason, "new_workspace");
+
+  // 3. Workspace created >= 7 days ago without any backup triggers "never_backed_up"
+  newWorkspace.workspaceCreatedAt = "2026-10-25";
+  newWorkspace.accounts[0]!.createdAt = "2026-10-25";
+  const agedStatus = getBackupReminderStatus(newWorkspace, simNow);
+  assert.equal(agedStatus.shouldRemind, true);
+  assert.equal(agedStatus.reason, "never_backed_up");
+  assert.equal(agedStatus.daysSinceBackup, 14);
+
+  // 4. Restoring an enveloped backup preserves envelope exportedAt in restoredBackupExportedAt without faking a new local export
+  const exportedJson = exportBackup(newWorkspace);
+  const envelope = JSON.parse(exportedJson);
+  envelope.exportedAt = "2026-11-05T12:00:00.000Z"; // exported 3 days ago
+  const previewRes = validateAndPreviewBackup(JSON.stringify(envelope), simNow);
+  assert.equal(previewRes.valid, true);
+  const restoredState = previewRes.stateToRestore!;
+  assert.equal(restoredState.lastBackupAt, undefined, "Source backup export must not overwrite local lastBackupAt");
+  assert.equal(restoredState.restoredBackupExportedAt, "2026-11-05T12:00:00.000Z");
+
+  const restoredRecentReminder = getBackupReminderStatus(restoredState, simNow);
+  assert.equal(restoredRecentReminder.shouldRemind, false, "Recently exported restored backup does not immediately nag");
+  assert.equal(restoredRecentReminder.reason, "recent_backup");
+  assert.equal(restoredRecentReminder.daysSinceBackup, 3);
+
+  // 5. Restoring a stale backup (> 14 days old) triggers stale_backup reminder
+  envelope.exportedAt = "2026-10-15T12:00:00.000Z";
+  const stalePreview = validateAndPreviewBackup(JSON.stringify(envelope), simNow);
+  const staleRestored = stalePreview.stateToRestore!;
+  const staleReminder = getBackupReminderStatus(staleRestored, simNow);
+  assert.equal(staleReminder.shouldRemind, true);
+  assert.equal(staleReminder.reason, "stale_backup");
+});
+
+test("Test 6C.4 — Storage persistence verification and failure rollback in dismissSetup and reopenSetup", () => {
+  const originalLocalStorage = globalThis.localStorage;
+  const store: Record<string, string> = {};
+  (globalThis as any).localStorage = {
+    getItem: (k: string) => store[k] || null,
+    setItem: (k: string, v: string) => {
+      store[k] = v;
+    },
+    removeItem: (k: string) => {
+      delete store[k];
+    },
+  };
+
+  try {
+    const b = useBudget();
+    const s = blank();
+    b.state.value = s;
+
+    // Normal persistence sets isVerified = true
+    const saveOk = saveCurrentStateToStorage(b.state.value);
+    assert.equal(saveOk.success, true);
+    assert.equal(storageHealth.isVerified, true);
+
+    b.dismissSetup();
+    assert.equal(b.state.value.setupDismissed, true);
+
+    b.reopenSetup();
+    assert.equal(b.state.value.setupDismissed, false);
+
+    // Simulate storageBlocked failure: dismissSetup must revert in-memory setupDismissed
+    b.storageBlocked.value = true;
+    b.dismissSetup();
+    assert.equal(
+      b.state.value.setupDismissed,
+      false,
+      "Failed storage write must revert setupDismissed",
+    );
+    b.storageBlocked.value = false;
+    saveCurrentStateToStorage(b.state.value);
+  } finally {
+    (globalThis as any).localStorage = originalLocalStorage;
+    storageHealth.status = "healthy";
+    storageHealth.errorMessage = "";
+  }
 });
 
 

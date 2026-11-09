@@ -13,11 +13,7 @@ const hasShortfall = computed(() => outlook.value.hasShortfall);
   <article
     class="card money-outlook-summary-card"
     aria-labelledby="outlook-summary-title"
-    tabindex="0"
-    role="region"
     @click="navigateToMoneyOutlook"
-    @keydown.enter="navigateToMoneyOutlook"
-    @keydown.space.prevent="navigateToMoneyOutlook"
   >
     <div class="outlook-summary-header">
       <div class="outlook-header-title-group">
@@ -162,6 +158,8 @@ const hasShortfall = computed(() => outlook.value.hasShortfall);
   font-weight: 600;
   color: var(--color-teal, #277c78);
   text-decoration: underline;
+  min-height: 3rem;
+  padding: 0.5rem 0.25rem;
 }
 
 @media (max-width: 480px) {

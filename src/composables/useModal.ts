@@ -144,19 +144,46 @@ export function useModal() {
     if (m === "Restore backup") {
       restoreConfirmed.value = false;
     }
+    let resolvedTargetId = id;
+    if (m === "Adjust balance" && !resolvedTargetId) {
+      const primaryChecking =
+        (state.value.accounts || []).find(
+          (a) => !a.archived && a.id === "acc-default-checking",
+        ) ||
+        (state.value.accounts || []).find(
+          (a) => !a.archived && a.type === "checking",
+        ) ||
+        (state.value.accounts || []).find((a) => a.type === "checking") ||
+        (state.value.accounts || []).find(
+          (a) => !a.archived && a.type !== "credit",
+        );
+      resolvedTargetId = primaryChecking?.id || "acc-default-checking";
+    }
+
+    const wasAlreadyOpen = Boolean(dialogRef.value?.open);
+    if (!wasAlreadyOpen && typeof document !== "undefined") {
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (activeEl?.closest?.(".menu-dropdown")) {
+        const menuTrigger = activeEl
+          .closest(".menu-container")
+          ?.querySelector<HTMLElement>(".menu-trigger");
+        focusBefore.value = menuTrigger || activeEl;
+      } else {
+        focusBefore.value = activeEl;
+      }
+    }
+
     mode.value = m;
-    selected.value = id;
+    selected.value = resolvedTargetId;
     error.value = "";
     fieldErrors.value = {};
-    focusBefore.value =
-      typeof document !== "undefined"
-        ? (document.activeElement as HTMLElement)
-        : null;
     payMethod.value = m === "Settle bill" ? "settled" : "transaction";
 
     let initialColor = colors[0]!;
     if (m === "Add budget") {
-      const usedBudgetColors = state.value.budgets.map((b) => b.color.toLowerCase());
+      const usedBudgetColors = state.value.budgets.map((b) =>
+        b.color.toLowerCase(),
+      );
       const available = themeColors.find(
         (tc) => !usedBudgetColors.includes(tc.value.toLowerCase()),
       );
@@ -177,7 +204,9 @@ export function useModal() {
       (state.value.accounts || []).find(
         (a) => !a.archived && a.id === "acc-default-checking",
       ) || (state.value.accounts || []).find((a) => !a.archived);
-    const defaultAccountId = defaultAcc ? defaultAcc.id : "acc-default-checking";
+    const defaultAccountId = defaultAcc
+      ? defaultAcc.id
+      : "acc-default-checking";
 
     let resolvedAccountId = defaultAccountId;
     if (lastUsedSpendingAccountId.value) {
@@ -200,12 +229,17 @@ export function useModal() {
       if (lastUsedExpenseCategory.value) {
         const isKnownCategory =
           (categories.value || []).some(
-            (c) => c.toLowerCase() === lastUsedExpenseCategory.value.toLowerCase(),
+            (c) =>
+              c.toLowerCase() === lastUsedExpenseCategory.value.toLowerCase(),
           ) ||
           (state.value.budgets || []).some(
-            (b) => b.category.toLowerCase() === lastUsedExpenseCategory.value.toLowerCase(),
+            (b) =>
+              b.category.toLowerCase() ===
+              lastUsedExpenseCategory.value.toLowerCase(),
           );
-        resolvedCategory = isKnownCategory ? lastUsedExpenseCategory.value : "Groceries";
+        resolvedCategory = isKnownCategory
+          ? lastUsedExpenseCategory.value
+          : "Groceries";
       } else {
         resolvedCategory = "Groceries";
       }
@@ -323,7 +357,9 @@ export function useModal() {
         };
       }
     } else if (m === "Adjust balance") {
-      const acc = (state.value.accounts || []).find((item) => item.id === id);
+      const acc = (state.value.accounts || []).find(
+        (item) => item.id === resolvedTargetId,
+      );
       if (acc) {
         const bal = getAccountBalance(acc);
         form.value = {
@@ -370,10 +406,14 @@ export function useModal() {
       };
     } else if (
       m === "Add transaction" &&
-      (defaultCategory?.toLowerCase() === "income" || id?.toLowerCase() === "income")
+      (defaultCategory?.toLowerCase() === "income" ||
+        id?.toLowerCase() === "income")
     ) {
       const incomeAcc = (state.value.accounts || []).find(
-        (a) => a.id === resolvedAccountId && (a.type === "checking" || a.type === "savings") && !a.archived,
+        (a) =>
+          a.id === resolvedAccountId &&
+          (a.type === "checking" || a.type === "savings") &&
+          !a.archived,
       );
       form.value = {
         ...form.value,
@@ -383,7 +423,8 @@ export function useModal() {
       };
     } else if (
       m === "Add transaction" &&
-      (defaultCategory?.toLowerCase() === "expense" || id?.toLowerCase() === "expense")
+      (defaultCategory?.toLowerCase() === "expense" ||
+        id?.toLowerCase() === "expense")
     ) {
       form.value = {
         ...form.value,
@@ -393,7 +434,8 @@ export function useModal() {
       };
     } else if (
       m === "Add transaction" &&
-      (defaultCategory === "Credit Card Payment" || defaultCategory === "payment")
+      (defaultCategory === "Credit Card Payment" ||
+        defaultCategory === "payment")
     ) {
       const targetCard = (state.value.accounts || []).find(
         (a) => a.id === id && a.type === "credit",
@@ -426,13 +468,17 @@ export function useModal() {
       };
     } else if (
       m === "Add transaction" &&
-      (defaultCategory?.toLowerCase() === "transfer" || id?.toLowerCase() === "transfer")
+      (defaultCategory?.toLowerCase() === "transfer" ||
+        id?.toLowerCase() === "transfer")
     ) {
       const cashAccounts = (state.value.accounts || []).filter(
         (a) => !a.archived && (a.type === "checking" || a.type === "savings"),
       );
-      const sourceAcc = cashAccounts.find((a) => a.id === id) || cashAccounts[0];
-      const targetAcc = cashAccounts.find((a) => a.id !== (sourceAcc?.id || ""));
+      const sourceAcc =
+        cashAccounts.find((a) => a.id === id) || cashAccounts[0];
+      const targetAcc = cashAccounts.find(
+        (a) => a.id !== (sourceAcc?.id || ""),
+      );
       form.value = {
         ...form.value,
         type: "Transfer",
@@ -444,15 +490,12 @@ export function useModal() {
     } else if (m === "Pay bill" || m === "Settle bill") {
       const b = state.value.bills.find((item) => item.id === id);
       if (b) {
-        const targetDue =
-          isValidDateString(defaultCategory)
-            ? defaultCategory
-            : getBillTargetOccurrenceDate(state.value, b, today());
+        const targetDue = isValidDateString(defaultCategory)
+          ? defaultCategory
+          : getBillTargetOccurrenceDate(state.value, b, today());
         const occStatus = getBillOccurrenceStatus(state.value, b, targetDue);
         const defaultAmt =
-          occStatus.remainingAmount > 0
-            ? occStatus.remainingAmount
-            : b.amount;
+          occStatus.remainingAmount > 0 ? occStatus.remainingAmount : b.amount;
         form.value = {
           ...form.value,
           name: b.name,
@@ -466,20 +509,36 @@ export function useModal() {
       }
     }
 
-    dialogRef.value?.showModal();
+    if (dialogRef.value && !dialogRef.value.open) {
+      dialogRef.value.showModal();
+    }
   }
 
   function close() {
-    if (mode.value === "Restore backup") {
+    if (!mode.value && !dialogRef.value?.open) {
+      return;
+    }
+    const prevMode = mode.value;
+    mode.value = "";
+    if (prevMode === "Restore backup") {
       cancelRestore();
     }
     try {
-      dialogRef.value?.close();
+      if (dialogRef.value?.open) {
+        dialogRef.value?.close();
+      }
     } catch {}
     try {
-      focusBefore.value?.focus();
+      if (focusBefore.value && focusBefore.value.isConnected) {
+        focusBefore.value?.focus();
+      } else if (typeof document !== "undefined") {
+        const fallback = document.querySelector<HTMLElement>(
+          "main button:not([disabled]), main a[href], main input:not([disabled])",
+        );
+        fallback?.focus();
+      }
+      focusBefore.value = null;
     } catch {}
-    mode.value = "";
   }
 
   function submit() {
@@ -509,7 +568,8 @@ export function useModal() {
         limitCents = cents(parseAmount(f.creditLimit || 0));
         if (!Number.isFinite(limitCents) || limitCents < 0) {
           error.value = "Enter a valid credit limit ($0.00 or greater).";
-          fieldErrors.value.creditLimit = "Enter a valid credit limit ($0.00 or greater).";
+          fieldErrors.value.creditLimit =
+            "Enter a valid credit limit ($0.00 or greater).";
           return;
         }
         if (f.minPayment) {
@@ -542,7 +602,9 @@ export function useModal() {
         fieldErrors.value.name = "Enter an account name.";
         return;
       }
-      const acc = (state.value.accounts || []).find((a) => a.id === selected.value);
+      const acc = (state.value.accounts || []).find(
+        (a) => a.id === selected.value,
+      );
       if (!acc) return;
       const isCredit = acc.type === "credit";
       let limitCents: number | undefined;
@@ -552,7 +614,8 @@ export function useModal() {
           limitCents = cents(parseAmount(f.creditLimit));
           if (!Number.isFinite(limitCents) || limitCents < 0) {
             error.value = "Enter a valid credit limit ($0.00 or greater).";
-            fieldErrors.value.creditLimit = "Enter a valid credit limit ($0.00 or greater).";
+            fieldErrors.value.creditLimit =
+              "Enter a valid credit limit ($0.00 or greater).";
             return;
           }
         }
@@ -646,8 +709,7 @@ export function useModal() {
           return;
         }
         if (reserveAmount > cov.manualReleasable) {
-          error.value =
-            `Cannot release more than the manually assigned reserve (${money(cov.manualReleasable)}).`;
+          error.value = `Cannot release more than the manually assigned reserve (${money(cov.manualReleasable)}).`;
           return;
         }
         const ok = releaseCardPaymentReserve(acc.id, reserveAmount);
@@ -679,12 +741,7 @@ export function useModal() {
     }
 
     if (
-      [
-        "Add pot",
-        "Edit pot",
-        "Add bill",
-        "Edit bill",
-      ].includes(mode.value) &&
+      ["Add pot", "Edit pot", "Add bill", "Edit bill"].includes(mode.value) &&
       !name
     ) {
       error.value = "Enter a name.";
@@ -714,8 +771,12 @@ export function useModal() {
             "Transfers between the same account are not permitted. Choose different accounts.";
           return;
         }
-        const src = (state.value.accounts || []).find((a) => a.id === f.accountId);
-        const dest = (state.value.accounts || []).find((a) => a.id === f.targetAccountId);
+        const src = (state.value.accounts || []).find(
+          (a) => a.id === f.accountId,
+        );
+        const dest = (state.value.accounts || []).find(
+          (a) => a.id === f.targetAccountId,
+        );
         if (src?.type === "credit" || dest?.type === "credit") {
           error.value =
             "Transfers can only be made between cash accounts (checking and savings). For credit cards, choose 'Credit Card Payment'.";
@@ -727,8 +788,12 @@ export function useModal() {
             "Select both a payment source (checking/savings) and destination credit card.";
           return;
         }
-        const src = (state.value.accounts || []).find((a) => a.id === f.accountId);
-        const dest = (state.value.accounts || []).find((a) => a.id === f.targetAccountId);
+        const src = (state.value.accounts || []).find(
+          (a) => a.id === f.accountId,
+        );
+        const dest = (state.value.accounts || []).find(
+          (a) => a.id === f.targetAccountId,
+        );
         if (src?.type === "credit") {
           error.value = "Payments cannot originate from a credit card.";
           return;
@@ -752,7 +817,8 @@ export function useModal() {
           }
         }
         if (maxPayable <= 0) {
-          error.value = "This credit card has no positive outstanding balance to pay.";
+          error.value =
+            "This credit card has no positive outstanding balance to pay.";
           return;
         }
         if (amount > maxPayable) {
@@ -841,7 +907,11 @@ export function useModal() {
         if (f.billId && !explicitBillDueDate) {
           const linkedBill = state.value.bills.find((b) => b.id === f.billId);
           if (linkedBill) {
-            explicitBillDueDate = nextUnpaidDueDate(state.value, linkedBill, f.date);
+            explicitBillDueDate = nextUnpaidDueDate(
+              state.value,
+              linkedBill,
+              f.date,
+            );
           }
         }
 
@@ -858,8 +928,7 @@ export function useModal() {
           postedDate: status !== "scheduled" ? f.date : undefined,
           accountId: f.accountId,
           kind,
-          targetAccountId:
-            kind !== "standard" ? f.targetAccountId : undefined,
+          targetAccountId: kind !== "standard" ? f.targetAccountId : undefined,
           billId: f.billId || undefined,
           billDueDate: f.billId ? explicitBillDueDate : undefined,
           createdAt: new Date().toISOString(),
@@ -882,7 +951,10 @@ export function useModal() {
           } else if (targetBillId === existing.billId) {
             // Bill association remains unchanged: preserve existing.billDueDate
             // unless the user explicitly provided a different billDueDate
-            if (f.billDueDate !== undefined && f.billDueDate !== existing.billDueDate) {
+            if (
+              f.billDueDate !== undefined &&
+              f.billDueDate !== existing.billDueDate
+            ) {
               targetBillDueDate = f.billDueDate || undefined;
             } else {
               targetBillDueDate = existing.billDueDate;
@@ -892,7 +964,9 @@ export function useModal() {
             if (f.billDueDate && isValidDateString(f.billDueDate)) {
               targetBillDueDate = f.billDueDate;
             } else {
-              const newBill = state.value.bills.find((b) => b.id === targetBillId);
+              const newBill = state.value.bills.find(
+                (b) => b.id === targetBillId,
+              );
               targetBillDueDate = newBill
                 ? nextUnpaidDueDate(state.value, newBill, f.date)
                 : undefined;
@@ -993,7 +1067,8 @@ export function useModal() {
         }
         if (!/^#[0-9a-fA-F]{6}$/.test(custom)) {
           error.value = "Enter a valid 6-character hex color (e.g. #277c78).";
-          fieldErrors.value.customColor = "Enter a valid 6-character hex color (e.g. #277c78).";
+          fieldErrors.value.customColor =
+            "Enter a valid 6-character hex color (e.g. #277c78).";
           return;
         }
         resolvedColor = custom.toLowerCase();
@@ -1066,7 +1141,8 @@ export function useModal() {
       page.value = "Overview";
     } else if (mode.value === "Restore backup") {
       if (!restoreConfirmed.value) {
-        error.value = "Confirm that you understand your current data will be replaced.";
+        error.value =
+          "Confirm that you understand your current data will be replaced.";
         return;
       }
       const ok = confirmRestore();
@@ -1173,8 +1249,13 @@ export function useModal() {
     let confirmationMessage = "Saved. You’re up to date.";
     let toastActionItem: ToastAction | undefined;
 
-    if (currentMode === "Add transaction" || currentMode === "Edit transaction") {
-      const acc = (state.value.accounts || []).find((a) => a.id === savedTxAccountId);
+    if (
+      currentMode === "Add transaction" ||
+      currentMode === "Edit transaction"
+    ) {
+      const acc = (state.value.accounts || []).find(
+        (a) => a.id === savedTxAccountId,
+      );
       const accName = acc ? acc.name : "Primary Checking";
       const formattedAmt = money(savedTxAmount);
       const isSched = savedTxStatus === "scheduled";
@@ -1185,10 +1266,14 @@ export function useModal() {
       } else if (savedTxType === "Income") {
         confirmationMessage = `${verb} ${formattedAmt} · Income · ${accName}`;
       } else if (savedTxType === "Transfer") {
-        const dest = (state.value.accounts || []).find((a) => a.id === savedTxTargetAccountId);
+        const dest = (state.value.accounts || []).find(
+          (a) => a.id === savedTxTargetAccountId,
+        );
         confirmationMessage = `${verb} ${formattedAmt} · Transfer · ${accName} → ${dest?.name || "Account"}`;
       } else if (savedTxType === "Credit Card Payment") {
-        const dest = (state.value.accounts || []).find((a) => a.id === savedTxTargetAccountId);
+        const dest = (state.value.accounts || []).find(
+          (a) => a.id === savedTxTargetAccountId,
+        );
         confirmationMessage = `${verb} ${formattedAmt} · Payment · ${accName} → ${dest?.name || "Credit Card"}`;
       }
 
@@ -1203,9 +1288,12 @@ export function useModal() {
       }
     } else if (currentMode === "Pay bill") {
       if (currentMethod === "settled") {
-        confirmationMessage = "Marked settled before setup without deducting cash.";
+        confirmationMessage =
+          "Marked settled before setup without deducting cash.";
       } else {
-        const payAcc = (state.value.accounts || []).find((a) => a.id === form.value.accountId);
+        const payAcc = (state.value.accounts || []).find(
+          (a) => a.id === form.value.accountId,
+        );
         const payAccName = payAcc ? payAcc.name : "Primary Checking";
         const isSched = form.value.status === "scheduled";
         const verb = isSched ? "Scheduled" : "Paid";
@@ -1222,9 +1310,11 @@ export function useModal() {
         }
       }
     } else if (currentMode === "Start fresh") {
-      confirmationMessage = "Ready for your numbers. Set your balance to begin.";
+      confirmationMessage =
+        "Ready for your numbers. Set your balance to begin.";
     } else if (currentMode === "Settle bill") {
-      confirmationMessage = "Marked settled before setup without deducting cash.";
+      confirmationMessage =
+        "Marked settled before setup without deducting cash.";
     } else if (currentMode === "Edit pot") {
       confirmationMessage = `Pot “${form.value.name}” updated.`;
     }

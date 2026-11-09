@@ -738,13 +738,40 @@ function handleRemoveOverride(idOrDate: string) {
           </div>
         </div>
 
-        <div v-else class="storage-health-indicator" role="status">
+        <div
+          v-else-if="storageHealth.status === 'blocked'"
+          class="storage-banner recovery-banner"
+          role="alert"
+        >
+          <span class="banner-icon" aria-hidden="true">⚠️</span>
+          <div class="banner-content">
+            <strong>Storage Writes Blocked</strong>
+            <p>{{ storageHealth.errorMessage || 'Local storage writes are currently blocked to protect unrecovered data.' }}</p>
+          </div>
+        </div>
+
+        <div
+          v-else-if="storageHealth.isVerified || storageHealth.lastSavedAt"
+          class="storage-health-indicator"
+          role="status"
+        >
           <span class="health-dot active" aria-hidden="true">●</span>
           <span><strong>Local Browser Storage: Active & Healthy</strong></span>
         </div>
 
+        <div v-else class="storage-health-indicator" role="status">
+          <span class="health-dot" aria-hidden="true">○</span>
+          <span><strong>Local Browser Storage: Ready (No Saves Verified Yet)</strong></span>
+        </div>
+
         <p class="muted settings-desc">
           Your financial details are stored 100% locally on this device in browser storage. Zero tracking and no external servers.
+          <span v-if="state.lastBackupDate || state.lastBackupAt">
+            Last local backup export initiated: <strong>{{ (state.lastBackupDate || state.lastBackupAt || '').slice(0, 10) }}</strong>.
+          </span>
+          <span v-if="state.restoredBackupExportedAt">
+            Restored from backup exported on: <strong>{{ state.restoredBackupExportedAt.slice(0, 10) }}</strong>.
+          </span>
         </p>
 
         <div class="settings-data-actions">

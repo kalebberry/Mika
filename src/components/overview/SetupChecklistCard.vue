@@ -11,7 +11,7 @@ const checklist = computed(() => setupChecklist.value);
 
 function handleItemAction(item: SetupChecklistItem) {
   if (item.targetModal) {
-    open(item.targetModal as any);
+    open(item.targetModal as any, item.targetId || "");
     return;
   }
   if (item.targetPage) {
@@ -166,7 +166,16 @@ function handleItemAction(item: SetupChecklistItem) {
 
 .dismiss-btn {
   font-size: 0.75rem;
-  padding: 0.25rem 0.5rem;
+  padding: 0.5rem 0.75rem;
+  min-height: 3rem;
+  min-width: 3rem;
+}
+
+.setup-action-btn,
+.setup-reopen-bar button {
+  min-height: 3rem;
+  min-width: 3rem;
+  padding: 0.5rem 0.875rem;
 }
 
 .setup-progress-bar-bg {

@@ -59,6 +59,28 @@ dialog h2 {
 .close {
   font-size: 1.8rem;
   color: var(--color-muted);
+  min-width: 3rem;
+  min-height: 3rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.close:hover {
+  color: var(--color-dark);
+}
+
+.close:focus-visible {
+  outline: 2px solid var(--color-teal);
+  outline-offset: 2px;
+  color: var(--color-dark);
 }
 
 dialog label {
@@ -201,9 +223,37 @@ dialog .reset-confirm {
   transform: scale(1.15);
 }
 
+.swatch-btn:focus-visible {
+  outline: 2px solid var(--color-teal);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-teal);
+}
+
 .swatch-btn.active {
   box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-teal);
   transform: scale(1.12);
+}
+
+@media (max-width: 50rem) {
+  .color-swatches-grid {
+    grid-template-columns: repeat(auto-fill, minmax(3rem, 1fr));
+    gap: 0.5rem;
+  }
+
+  .swatch-btn {
+    width: 3rem;
+    height: 3rem;
+    min-width: 3rem;
+    min-height: 3rem;
+    margin: 0 auto;
+  }
+
+  .custom-color-input {
+    width: 3rem;
+    height: 3rem;
+    min-width: 3rem;
+    min-height: 3rem;
+  }
 }
 
 .swatch-btn.used::after {
