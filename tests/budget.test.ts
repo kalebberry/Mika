@@ -18739,6 +18739,215 @@ test("Test 6D.1.1 — Mixed cash and credit card category spending: chronology, 
     assert.equal(t.balance, 94000, "Checking is $1,000 - $110 + $50 = $940.00");
     assert.equal(t.safe, 80000, "Safe to Spend remains $800.00 ($940 - $20 budget - $120 Ready to Pay)");
   }
+
+  // E. Active auto-reserve protection against cross-card refund over-allocation + manual reserve lot preservation
+  {
+    const s = blank();
+    const checking = s.accounts[0]!;
+    checking.opening = 100000; // $1,000.00
+    s.opening = 100000;
+    s.payday = "2026-11-25";
+
+    const cardA: Account = {
+      id: "acc-cc-e1",
+      name: "Freedom",
+      type: "credit",
+      opening: 20000, // $200.00 prior uncovered debt
+      creditLimit: 500000,
+      includeInSafeToSpend: false,
+      createdAt: "2026-10-01",
+      updatedAt: "2026-11-01",
+      coveredCreditBaselineAt: "2026-10-01",
+      paymentReservations: [
+        {
+          id: "res-manual-e1",
+          amount: 5000, // $50.00 manual reserve toward prior debt
+          date: "2026-11-01",
+          createdAt: "2026-11-01T09:00:00.000Z",
+        },
+      ],
+    };
+    const cardB: Account = {
+      id: "acc-cc-e2",
+      name: "Sapphire",
+      type: "credit",
+      opening: 10000, // $100.00 prior debt from October
+      creditLimit: 500000,
+      includeInSafeToSpend: false,
+      createdAt: "2026-10-01",
+      updatedAt: "2026-11-01",
+      coveredCreditBaselineAt: "2026-10-01",
+    };
+    s.accounts.push(cardA, cardB);
+    s.budgets = [
+      { id: "b-groc", category: "Groceries", limit: 10000, color: "#277c78" }, // $100.00
+    ];
+
+    // 1. $100.00 credit purchase on Card A on Nov 2 -> fully covered ($100 auto reserve + $50 manual reserve = $150 Ready to Pay)
+    s.transactions.push({
+      id: "tx-e-purchase-a",
+      name: "Supermarket A",
+      amount: -10000,
+      category: "Groceries",
+      date: "2026-11-02",
+      createdAt: "2026-11-02T10:00:00.000Z",
+      status: "posted",
+      accountId: cardA.id,
+      kind: "standard",
+    });
+
+    // 2. $50.00 credit refund on Card B on Nov 3 (e.g. refund of an October purchase on Card B)
+    // Card A STILL holds $100.00 of active auto-reserve from the $100.00 November Groceries budget!
+    s.transactions.push({
+      id: "tx-e-refund-b",
+      name: "October Return on Card B",
+      amount: 5000,
+      category: "Groceries",
+      date: "2026-11-03",
+      createdAt: "2026-11-03T10:00:00.000Z",
+      status: "posted",
+      accountId: cardB.id,
+      kind: "standard",
+    });
+
+    // 3. $50.00 credit purchase on Card B on Nov 4
+    // Because Card A's $100.00 auto-reserve for November Groceries is still active (netAutoCovered = $100.00),
+    // Card B must NOT be granted an extra $50.00 auto-reserve beyond the $100.00 budget limit!
+    s.transactions.push({
+      id: "tx-e-purchase-b",
+      name: "Supermarket B",
+      amount: -5000,
+      category: "Groceries",
+      date: "2026-11-04",
+      createdAt: "2026-11-04T10:00:00.000Z",
+      status: "posted",
+      accountId: cardB.id,
+      kind: "standard",
+    });
+
+    const covA = getCreditCardCoverage(cardA, s, simDate);
+    const covB = getCreditCardCoverage(cardB, s, simDate);
+    assert.equal(
+      covA.readyToPay,
+      15000,
+      "Card A Ready to Pay is $150.00 ($100.00 auto reserve + $50.00 manual reserve lot)",
+    );
+    assert.equal(
+      covA.manualReleasable,
+      5000,
+      "Card A preserves $50.00 manual reserve lot as releasable",
+    );
+    assert.equal(
+      covB.readyToPay,
+      0,
+      "Card B is not double-allocated auto-reserve while Card A still holds the full $100.00 budget in auto-reserve",
+    );
+  }
+
+  // F. Credit card refund on partially covered purchase + multi-card refund isolation + array-order independence
+  {
+    const s = blank();
+    const checking = s.accounts[0]!;
+    checking.opening = 100000; // $1,000.00
+    s.opening = 100000;
+    s.payday = "2026-11-25";
+
+    const cardA: Account = {
+      id: "acc-cc-f1",
+      name: "Card A",
+      type: "credit",
+      opening: 0,
+      creditLimit: 500000,
+      includeInSafeToSpend: false,
+      createdAt: "2026-11-01",
+      updatedAt: "2026-11-01",
+      coveredCreditBaselineAt: "2026-11-01",
+    };
+    const cardB: Account = {
+      id: "acc-cc-f2",
+      name: "Card B",
+      type: "credit",
+      opening: 0,
+      creditLimit: 500000,
+      includeInSafeToSpend: false,
+      createdAt: "2026-11-01",
+      updatedAt: "2026-11-01",
+      coveredCreditBaselineAt: "2026-11-01",
+    };
+    s.accounts.push(cardA, cardB);
+    s.budgets = [
+      { id: "b-groc", category: "Groceries", limit: 15000, color: "#277c78" }, // $150.00
+    ];
+
+    // 1. $80.00 cash purchase on Nov 2 ($70.00 budget left)
+    s.transactions.push({
+      id: "tx-f-cash",
+      name: "Cash Market",
+      amount: -8000,
+      category: "Groceries",
+      date: "2026-11-02",
+      createdAt: "2026-11-02T10:00:00.000Z",
+      status: "posted",
+      accountId: checking.id,
+      kind: "standard",
+    });
+
+    // 2. $100.00 credit purchase on Card A on Nov 3 ($70.00 covered, $30.00 uncovered)
+    s.transactions.push({
+      id: "tx-f-card-a",
+      name: "Card A Market",
+      amount: -10000,
+      category: "Groceries",
+      date: "2026-11-03",
+      createdAt: "2026-11-03T10:00:00.000Z",
+      status: "posted",
+      accountId: cardA.id,
+      kind: "standard",
+    });
+
+    // 3. $40.00 credit purchase on Card B on Nov 4 ($0.00 covered, $40.00 uncovered)
+    s.transactions.push({
+      id: "tx-f-card-b",
+      name: "Card B Market",
+      amount: -4000,
+      category: "Groceries",
+      date: "2026-11-04",
+      createdAt: "2026-11-04T10:00:00.000Z",
+      status: "posted",
+      accountId: cardB.id,
+      kind: "standard",
+    });
+
+    // 4. $50.00 credit refund on Card A on Nov 5:
+    // On Card A, the $100.00 purchase had $30.00 uncovered and $70.00 covered.
+    // The $50.00 refund absorbs the $30.00 uncovered portion first and trims $20.00 from Card A's Ready to Pay (to $50.00),
+    // without retroactively reallocating coverage to Card B's earlier Nov 4 purchase!
+    s.transactions.push({
+      id: "tx-f-refund-a",
+      name: "Card A Refund",
+      amount: 5000,
+      category: "Groceries",
+      date: "2026-11-05",
+      createdAt: "2026-11-05T10:00:00.000Z",
+      status: "posted",
+      accountId: cardA.id,
+      kind: "standard",
+    });
+
+    const covA = getCreditCardCoverage(cardA, s, simDate);
+    const covB = getCreditCardCoverage(cardB, s, simDate);
+    assert.equal(covA.readyToPay, 5000, "Card A Ready to Pay trimmed from $70.00 to $50.00");
+    assert.equal(covA.uncoveredDebt, 0, "Card A has $0.00 uncovered debt ($50.00 debt fully covered)");
+    assert.equal(covB.readyToPay, 0, "Card B earlier Nov 4 purchase is not retroactively reallocated coverage");
+    assert.equal(covB.uncoveredDebt, 4000, "Card B still has $40.00 uncovered debt");
+
+    // Verify array-order independence: reversing s.transactions produces identical coverage
+    s.transactions.reverse();
+    const covAReversed = getCreditCardCoverage(cardA, s, simDate);
+    const covBReversed = getCreditCardCoverage(cardB, s, simDate);
+    assert.equal(covAReversed.readyToPay, 5000, "Card A Ready to Pay is invariant to transaction array order");
+    assert.equal(covBReversed.readyToPay, 0, "Card B Ready to Pay is invariant to transaction array order");
+  }
 });
 
 test("Test 6D.1.2 — Credit card impact preview accuracy: uncovered debt explanation does not falsely claim Safe to Spend reduction at purchase time", () => {
@@ -19387,9 +19596,27 @@ test("Test 6D.1.5 — Time and boundary regression suite: month-end rollover, mi
     ];
     s.bills = [
       {
+        id: "bill-internet",
+        name: "Internet Fiber",
+        amount: 8000, // $80.00 due day 11 (Nov 11 paid; Dec 11 protected in next cycle <= 2026-12-13)
+        day: 11,
+        protected: true,
+        trackingStartDate: "2026-11-01",
+        settledDueDates: ["2026-11-11"],
+      },
+      {
+        id: "bill-electric",
+        name: "Electric Utility",
+        amount: 14000, // $140.00 due day 14 (Nov 14 paid; Dec 14 is after followingPayday 2026-12-13)
+        day: 14,
+        protected: true,
+        trackingStartDate: "2026-11-01",
+        settledDueDates: ["2026-11-14"],
+      },
+      {
         id: "bill-rent",
         name: "Apartment Rent",
-        amount: 120000, // $1,200 due Nov 25
+        amount: 120000, // $1,200.00 due Nov 25 (<= nextPayday 2026-11-29)
         day: 25,
         protected: false,
         trackingStartDate: "2026-11-01",
@@ -19397,17 +19624,19 @@ test("Test 6D.1.5 — Time and boundary regression suite: month-end rollover, mi
     ];
 
     // On 2026-11-16 WITHOUT receiving the Nov 15 paycheck:
-    // Cash = $2,120.00; Obligations = $1,050 (pots) + $375 (budgets) + $1,200 (Rent) = $2,625.00
-    // Deficit: rawSafe = -$505.00 (-50500), safe = 0, shortfall = $505.00 (50500)
+    // Cash = $2,120.00; Obligations = $1,050 (pots) + $375 (budgets) + $1,200 (Rent) + $80 (Dec 11 protected Internet) = $2,705.00
+    // Deficit: rawSafe = -$585.00 (-58500), safe = 0, shortfall = $585.00 (58500)
     const tMissed = totals(s, "2026-11-16");
     assert.equal(tMissed.balance, 212000, "Missed paycheck does not increase cash");
-    assert.equal(tMissed.bills, 120000, "Rent enters current cycle on Nov 16");
-    assert.equal(tMissed.rawSafe, -50500, "rawSafe is -$505.00");
+    assert.equal(tMissed.currentCycleBills, 120000, "Rent ($1,200.00) enters current cycle on Nov 16");
+    assert.equal(tMissed.protectedCycleBills, 8000, "Protected Dec 11 Internet Fiber ($80.00) enters following cycle on Nov 16");
+    assert.equal(tMissed.bills, 128000, "Total reserved bills is $1,280.00 ($1,200 Rent + $80 protected Internet)");
+    assert.equal(tMissed.rawSafe, -58500, "rawSafe is -$585.00");
     assert.equal(tMissed.safe, 0, "Safe to Spend clamps at $0.00");
-    assert.equal(tMissed.shortfall, 50500, "Shortfall is $505.00");
+    assert.equal(tMissed.shortfall, 58500, "Shortfall is $585.00");
     const outlook = getMoneyOutlook(s, "2026-11-16");
     assert.equal(outlook.hasShortfall, true);
-    assert.equal(outlook.shortfall, 50500);
+    assert.equal(outlook.shortfall, 58500);
   }
 
   // 2. Partial and duplicate bill payments

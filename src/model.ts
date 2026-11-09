@@ -1348,9 +1348,8 @@ export function getCreditCardCoverage(
       runningLiabilityByCard.set(acc.id, acc.opening);
     }
   }
-  if (!runningLiabilityByCard.has(account.id)) {
-    runningLiabilityByCard.set(account.id, account.opening);
-  }
+  accountMap.set(account.id, account);
+  runningLiabilityByCard.set(account.id, account.opening);
 
   interface TimelineEvent {
     type:
@@ -1452,18 +1451,21 @@ export function getCreditCardCoverage(
 
   const typePriority: Record<TimelineEvent["type"], number> = {
     cash_refund: 1,
-    credit_refund: 1,
-    cash_purchase: 2,
-    credit_purchase: 2,
-    manual_reserve: 3,
-    payment: 4,
+    credit_refund: 2,
+    cash_purchase: 3,
+    credit_purchase: 4,
+    manual_reserve: 5,
+    payment: 6,
   };
   events.sort((a, b) => {
     if (a.date !== b.date) return a.date.localeCompare(b.date);
     const tsA = a.createdAt.length === 10 ? `${a.createdAt}T00:00:00.000Z` : a.createdAt;
     const tsB = b.createdAt.length === 10 ? `${b.createdAt}T00:00:00.000Z` : b.createdAt;
     if (tsA !== tsB) return tsA.localeCompare(tsB);
-    return typePriority[a.type] - typePriority[b.type];
+    if (typePriority[a.type] !== typePriority[b.type]) {
+      return typePriority[a.type] - typePriority[b.type];
+    }
+    return (a.txId || "").localeCompare(b.txId || "");
   });
 
   interface CategoryBudgetTracker {
@@ -1471,6 +1473,7 @@ export function getCreditCardCoverage(
     cashRefunds: number;
     creditPurchases: number;
     creditRefunds: number;
+    netAutoCovered: number;
   }
   const categoryBudgetMap = new Map<string, CategoryBudgetTracker>();
 
@@ -1482,6 +1485,7 @@ export function getCreditCardCoverage(
         cashRefunds: 0,
         creditPurchases: 0,
         creditRefunds: 0,
+        netAutoCovered: 0,
       };
       categoryBudgetMap.set(key, tr);
     }
@@ -1491,10 +1495,9 @@ export function getCreditCardCoverage(
   const getCategoryUsed = (key: string): number => {
     const tr = categoryBudgetMap.get(key);
     if (!tr) return 0;
-    return (
-      Math.max(0, tr.cashPurchases - tr.cashRefunds) +
-      Math.max(0, tr.creditPurchases - tr.creditRefunds)
-    );
+    const netCash = Math.max(0, tr.cashPurchases - tr.cashRefunds);
+    const netCredit = Math.max(0, tr.creditPurchases - tr.creditRefunds);
+    return netCash + Math.max(netCredit, tr.netAutoCovered);
   };
 
   let reservePool = 0;
@@ -1502,8 +1505,18 @@ export function getCreditCardCoverage(
   interface ReserveLot {
     type: "auto" | "manual";
     amount: number;
+    key?: string;
   }
   const reserveLots: ReserveLot[] = [];
+  const autoLotsByCard = new Map<string, Array<{ amount: number; key: string }>>();
+  const getCardAutoLots = (cardId: string) => {
+    let lots = autoLotsByCard.get(cardId);
+    if (!lots) {
+      lots = [];
+      autoLotsByCard.set(cardId, lots);
+    }
+    return lots;
+  };
 
   for (const ev of events) {
     if (ev.type === "cash_purchase") {
@@ -1533,11 +1546,27 @@ export function getCreditCardCoverage(
         getTracker(key).creditRefunds += ev.amount;
       }
 
+      const cardAutoLots = getCardAutoLots(ev.cardId);
+      const cardAutoPool = cardAutoLots.reduce((sum, l) => sum + l.amount, 0);
+      const maxLiabilityForAuto = Math.max(0, nextLiab);
+      if (cardAutoPool > maxLiabilityForAuto) {
+        let excessAuto = cardAutoPool - maxLiabilityForAuto;
+        for (let i = cardAutoLots.length - 1; i >= 0 && excessAuto > 0; i--) {
+          const lot = cardAutoLots[i]!;
+          if (lot.amount > 0) {
+            const trim = Math.min(lot.amount, excessAuto);
+            lot.amount -= trim;
+            const tr = getTracker(lot.key);
+            tr.netAutoCovered = Math.max(0, tr.netAutoCovered - trim);
+            excessAuto -= trim;
+          }
+        }
+      }
+
       if (ev.cardId === account.id) {
         const currentAutoPool = reserveLots
           .filter((l) => l.type === "auto")
           .reduce((sum, l) => sum + l.amount, 0);
-        const maxLiabilityForAuto = Math.max(0, nextLiab);
         if (currentAutoPool > maxLiabilityForAuto) {
           let excessAuto = currentAutoPool - maxLiabilityForAuto;
           for (let i = reserveLots.length - 1; i >= 0 && excessAuto > 0; i--) {
@@ -1589,12 +1618,21 @@ export function getCreditCardCoverage(
             coveredPortion = Math.min(netRequiringCoverage, remaining);
           }
 
-          getTracker(key).creditPurchases += netRequiringCoverage;
+          const tr = getTracker(key);
+          tr.creditPurchases += netRequiringCoverage;
+          if (coveredPortion > 0) {
+            tr.netAutoCovered += coveredPortion;
+            getCardAutoLots(ev.cardId).push({ amount: coveredPortion, key });
+          }
 
           if (ev.cardId === account.id) {
             reservePool += coveredPortion;
             if (coveredPortion > 0) {
-              reserveLots.push({ type: "auto", amount: coveredPortion });
+              reserveLots.push({
+                type: "auto",
+                amount: coveredPortion,
+                key,
+              });
             }
           }
         }
@@ -1602,6 +1640,15 @@ export function getCreditCardCoverage(
     } else if (ev.type === "payment" && ev.cardId) {
       const prevLiab = runningLiabilityByCard.get(ev.cardId) ?? 0;
       runningLiabilityByCard.set(ev.cardId, prevLiab - ev.amount);
+
+      const cardAutoLots = getCardAutoLots(ev.cardId);
+      let toConsumeCardAuto = ev.amount;
+      for (let i = 0; i < cardAutoLots.length && toConsumeCardAuto > 0; i++) {
+        const lot = cardAutoLots[i]!;
+        const take = Math.min(lot.amount, toConsumeCardAuto);
+        lot.amount -= take;
+        toConsumeCardAuto -= take;
+      }
 
       if (ev.cardId === account.id) {
         const consumed = Math.min(reservePool, ev.amount);
