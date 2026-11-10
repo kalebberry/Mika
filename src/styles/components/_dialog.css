@@ -70,7 +70,9 @@ dialog h2 {
   cursor: pointer;
   line-height: 1;
   padding: 0;
-  transition: color var(--transition-fast), background var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .close:hover {
@@ -219,7 +221,9 @@ dialog .reset-confirm {
   border-radius: 50%;
   border: 2px solid transparent;
   cursor: pointer;
-  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    transform var(--transition-fast),
+    box-shadow var(--transition-fast);
   padding: 0;
   display: flex;
   align-items: center;
@@ -235,11 +239,15 @@ dialog .reset-confirm {
 .swatch-btn:focus-visible {
   outline: 2px solid var(--color-teal);
   outline-offset: 2px;
-  box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-teal);
+  box-shadow:
+    0 0 0 2px var(--color-surface),
+    0 0 0 4px var(--color-teal);
 }
 
 .swatch-btn.active {
-  box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-teal);
+  box-shadow:
+    0 0 0 2px var(--color-surface),
+    0 0 0 4px var(--color-teal);
   transform: scale(1.12);
 }
 

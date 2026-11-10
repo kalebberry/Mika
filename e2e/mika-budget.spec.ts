@@ -18,7 +18,9 @@ async function seedCleanWorkspace(page: Page) {
   await expect(dialog).toBeVisible();
   await dialog.locator('input[type="radio"][value="all"]').check();
   await dialog.locator(".reset-confirm input[type='checkbox']").check();
-  await dialog.getByRole("button", { name: /Confirm and start fresh/i }).click();
+  await dialog
+    .getByRole("button", { name: /Confirm and start fresh/i })
+    .click();
   await expect(dialog).toBeHidden();
 }
 
@@ -88,7 +90,10 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await expect(dialog).toBeHidden();
 
     // Navigate to Pots
-    await page.locator(".sidebar").getByRole("button", { name: /Pots/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Pots/i })
+      .click();
     await expect(page.locator(".page-header h1")).toHaveText("Pots");
 
     // Create a pot
@@ -111,7 +116,9 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await expect(potCard.locator(".pot-amount strong")).toHaveText("$350.00");
 
     // Edit pot name, target, and color
-    await potCard.getByRole("button", { name: /Edit Emergency Fund pot/i }).click();
+    await potCard
+      .getByRole("button", { name: /Edit Emergency Fund pot/i })
+      .click();
     await expect(dialog).toBeVisible();
     await expect(dialog.locator("#dialog-title")).toContainText("Edit pot");
     // Ensure no saved balance input exists in Edit pot mode
@@ -129,8 +136,13 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await expect(potCard.locator(".pot-amount strong")).toHaveText("$350.00");
 
     // Verify Safe to Spend on Overview is $2,000.00 - $350.00 = $1,650.00
-    await page.locator(".sidebar").getByRole("button", { name: /Overview/i }).click();
-    await expect(page.locator(".safe-card .safe-number")).toHaveText("$1,650.00");
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Overview/i })
+      .click();
+    await expect(page.locator(".safe-card .safe-number")).toHaveText(
+      "$1,650.00",
+    );
   });
 
   test("Journey 3 — Dialog transitions, focus management & Escape handling", async ({
@@ -142,10 +154,16 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await seedCleanWorkspace(page);
 
     // Navigate to Accounts
-    await page.locator(".sidebar").getByRole("button", { name: /Accounts/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Accounts/i })
+      .click();
 
     // 1. Open "Add account" when Primary Checking exists, then transition in-place to "Adjust balance"
-    await page.getByRole("button", { name: /Add account/i }).first().click();
+    await page
+      .getByRole("button", { name: /Add account/i })
+      .first()
+      .click();
     const dialog = page.locator("dialog[open]");
     await expect(dialog).toBeVisible();
     await expect(dialog.locator("#dialog-title")).toHaveText("Add account");
@@ -168,7 +186,10 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await expect(dialog).toBeHidden();
 
     // 2. Add a secondary savings account ($0 balance), open Edit account from 3-dot menu, transition to Delete account
-    await page.getByRole("button", { name: /Add account/i }).first().click();
+    await page
+      .getByRole("button", { name: /Add account/i })
+      .first()
+      .click();
     await expect(dialog).toBeVisible();
     await dialog.getByLabel(/Account Type/i).selectOption("savings");
     await dialog.getByLabel(/Account Name/i).fill("Vacation Savings");
@@ -190,7 +211,9 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     const deleteBtn = dialog.getByRole("button", { name: /Delete account/i });
     await expect(deleteBtn).toBeVisible();
     await expect(deleteBtn).toHaveText(/Delete account/);
-    const btnBg = await deleteBtn.evaluate((el) => window.getComputedStyle(el).backgroundColor);
+    const btnBg = await deleteBtn.evaluate(
+      (el) => window.getComputedStyle(el).backgroundColor,
+    );
     expect(btnBg).toMatch(/rgba\(0,\s*0,\s*0,\s*0\)|transparent/);
 
     // Transition into Delete account inside the open dialog
@@ -288,7 +311,10 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await expect(page.locator(".backup-reminder-banner")).toHaveCount(0);
 
     // Navigate to Settings
-    await page.locator(".sidebar").getByRole("button", { name: /Settings/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Settings/i })
+      .click();
     await expect(page.locator(".page-header h1")).toHaveText("Settings");
     await expect(page.locator(".storage-health-indicator")).toContainText(
       "Local Browser Storage: Active & Healthy",
@@ -317,11 +343,16 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await expect(dialog).toBeVisible();
     await dialog.locator('input[type="radio"][value="all"]').check();
     await dialog.locator(".reset-confirm input[type='checkbox']").check();
-    await dialog.getByRole("button", { name: /Confirm and start fresh/i }).click();
+    await dialog
+      .getByRole("button", { name: /Confirm and start fresh/i })
+      .click();
     await expect(dialog).toBeHidden();
 
     // Start fresh returns to Overview; navigate back to Settings to import the backup
-    await page.locator(".sidebar").getByRole("button", { name: /Settings/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Settings/i })
+      .click();
     await expect(page.locator(".page-header h1")).toHaveText("Settings");
 
     // Upload the backup file via the file input
@@ -333,12 +364,19 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await expect(dialog.locator("#dialog-title")).toHaveText("Restore backup");
     await expect(dialog).toContainText("$1,845.50");
     await dialog.locator(".reset-confirm input[type='checkbox']").check();
-    await dialog.getByRole("button", { name: /Replace and restore backup/i }).click();
+    await dialog
+      .getByRole("button", { name: /Replace and restore backup/i })
+      .click();
     await expect(dialog).toBeHidden();
 
     // Navigate to Overview and verify $1,845.50 Safe to Spend is restored
-    await page.locator(".sidebar").getByRole("button", { name: /Overview/i }).click();
-    await expect(page.locator(".safe-card .safe-number")).toHaveText("$1,845.50");
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Overview/i })
+      .click();
+    await expect(page.locator(".safe-card .safe-number")).toHaveText(
+      "$1,845.50",
+    );
   });
 
   test("Journey 7 — Transaction and budget workflow updates ledger & Safe to Spend", async ({
@@ -388,7 +426,10 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await expect(page.locator("table")).toContainText("$45.00");
 
     // 5. Verify budget progress in Budgets view ($45.00 spent, $155.00 remaining)
-    await page.locator(".sidebar").getByRole("button", { name: /Budgets/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Budgets/i })
+      .click();
     await expect(page.locator(".budgets-layout")).toContainText("$45.00");
     await expect(page.locator(".budgets-layout")).toContainText("$155.00");
   });
@@ -399,7 +440,10 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await seedCleanWorkspace(page);
 
     // Create a pot on desktop first so we can verify pot Edit/Delete touch targets across viewports
-    await page.locator(".sidebar").getByRole("button", { name: /Pots/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Pots/i })
+      .click();
     await page.locator(".page-header button.primary").click();
     const dialog = page.locator("dialog[open]");
     await dialog.getByLabel(/^Name/i).fill("Rainy Day");
@@ -466,9 +510,7 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
         const actionBox = await checklistActionBtn.boundingBox();
         expect(actionBox?.height).toBeGreaterThanOrEqual(48);
 
-        const dismissBtn = page.locator(
-          ".setup-checklist-card .dismiss-btn",
-        );
+        const dismissBtn = page.locator(".setup-checklist-card .dismiss-btn");
         const dismissBox = await dismissBtn.boundingBox();
         expect(dismissBox?.height).toBeGreaterThanOrEqual(48);
         expect(dismissBox?.width).toBeGreaterThanOrEqual(48);
@@ -651,7 +693,10 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await expect(dialog).toBeHidden();
 
     // Navigate to Pots and add $150.00 to Vacation Fund
-    await page.locator(".sidebar").getByRole("button", { name: /Pots/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Pots/i })
+      .click();
     const vacationPot = page
       .locator(".pot-card")
       .filter({ hasText: "Vacation Fund" });
@@ -660,10 +705,15 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await dialog.getByLabel(/Amount \(\$\)/i).fill("150.00");
     await dialog.getByRole("button", { name: /^Save$/i }).click();
     await expect(dialog).toBeHidden();
-    await expect(vacationPot.locator(".pot-amount strong")).toHaveText("$450.00");
+    await expect(vacationPot.locator(".pot-amount strong")).toHaveText(
+      "$450.00",
+    );
 
     // Verify Day 1 on Overview
-    await page.locator(".sidebar").getByRole("button", { name: /Overview/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Overview/i })
+      .click();
     await expect(safeNumber).toHaveText("$1,230.00");
     await page.locator("#safe-breakdown-toggle").click();
     await expect(safeBreakdown).toContainText("$3,075.00");
@@ -688,10 +738,15 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await expect(dialog).toBeHidden();
 
     // Log $90.00 Dining Out purchase on Sapphire Rewards Card
-    await page.locator(".sidebar").getByRole("button", { name: /Overview/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Overview/i })
+      .click();
     await page.locator(".page-header button.primary").click();
     await expect(dialog).toBeVisible();
-    await dialog.getByRole("combobox", { name: /^Account/i }).selectOption("acc-cc-sapphire");
+    await dialog
+      .getByRole("combobox", { name: /^Account/i })
+      .selectOption("acc-cc-sapphire");
     await dialog.getByLabel(/Amount \(\$\)/i).fill("90.00");
     await dialog.getByLabel(/Category/i).selectOption("Dining Out");
     await dialog.getByLabel(/Payee \/ Description/i).fill("Bistro Maya");
@@ -758,7 +813,10 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     // -----------------------------------------------------------------------
     await page.clock.setSystemTime(new Date("2026-11-13T09:00:00"));
 
-    await page.locator(".sidebar").getByRole("button", { name: /Overview/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Overview/i })
+      .click();
     await page.locator(".page-header button.primary").click();
     await expect(dialog).toBeVisible();
     await dialog.getByLabel(/Amount \(\$\)/i).fill("85.00");
@@ -792,7 +850,10 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await expect(dialog).toBeHidden();
 
     // Make $140.00 Credit Card Payment ($90.00 covered by Ready to Pay + $50.00 uncovered debt paydown)
-    await page.locator(".sidebar").getByRole("button", { name: /Overview/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Overview/i })
+      .click();
     await page.locator(".page-header button.primary").click();
     await expect(dialog).toBeVisible();
     await dialog
@@ -843,13 +904,18 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
       .click();
     await expect(dialog).toBeVisible();
     // Verify status select preserved ledger posted/pending state across reload
-    await expect(dialog.getByLabel(/Status/i)).toHaveValue(/^(posted|pending)$/);
+    await expect(dialog.getByLabel(/Status/i)).toHaveValue(
+      /^(posted|pending)$/,
+    );
     await dialog.getByLabel(/Amount \(\$\)/i).fill("180.00");
     await dialog.getByRole("button", { name: /Save changes/i }).click();
     await expect(dialog).toBeHidden();
 
     // Verify Day 7 on Overview ($1,295.00 Safe to Spend, $4,000.00 Checking, $1,200.00 current-cycle Rent + $80.00 next-cycle protected Internet Fiber)
-    await page.locator(".sidebar").getByRole("button", { name: /Overview/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Overview/i })
+      .click();
     await expect(safeNumber).toHaveText("$1,295.00");
     await page.locator("#safe-breakdown-toggle").click();
     await expect(safeBreakdown).toContainText("$4,000.00");
@@ -859,7 +925,10 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     // -----------------------------------------------------------------------
     // Backup Export & Full Restore Integrity Verification on Day 7
     // -----------------------------------------------------------------------
-    await page.locator(".sidebar").getByRole("button", { name: /Settings/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Settings/i })
+      .click();
     const downloadPromise = page.waitForEvent("download");
     await page.getByRole("button", { name: /Download backup/i }).click();
     const download = await downloadPromise;
@@ -878,7 +947,10 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await expect(safeNumber).toHaveText("$0.00");
 
     // Import and restore Day 7 backup
-    await page.locator(".sidebar").getByRole("button", { name: /Settings/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Settings/i })
+      .click();
     const fileInput = page.locator('input[type="file"][accept=".json"]');
     await fileInput.setInputFiles(downloadPath!);
     await expect(dialog).toBeVisible();
@@ -890,9 +962,15 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await expect(dialog).toBeHidden();
 
     // Verify restored Day 7 state on Overview and Accounts
-    await page.locator(".sidebar").getByRole("button", { name: /Overview/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Overview/i })
+      .click();
     await expect(safeNumber).toHaveText("$1,295.00");
-    await page.locator(".sidebar").getByRole("button", { name: /Accounts/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Accounts/i })
+      .click();
     await expect(accountsGrid).toContainText("$9,300.00"); // Total Cash Assets ($4,000 + $5,300)
     await expect(accountsGrid).toContainText("$400.00"); // Total Credit Card Debt
     await expect(accountsGrid).toContainText("$0.00"); // Ready to Pay
@@ -943,7 +1021,10 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await expect(safeNumber).toHaveText("$0.00");
 
     // Budgets preserved
-    await page.locator(".sidebar").getByRole("button", { name: /Budgets/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Budgets/i })
+      .click();
     const budgetLines = page.locator(".budget-summary .summary-line");
     const budgetCount = await budgetLines.count();
     expect(budgetCount).toBeGreaterThan(0);
@@ -960,21 +1041,34 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await expect(paidBadges).toHaveCount(0); // All kept bills reset to unpaid
 
     // Accounts preserved with $0.00 balances
-    await page.locator(".sidebar").getByRole("button", { name: /Accounts/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Accounts/i })
+      .click();
     const accountsGrid = page.locator(".accounts-stat-grid");
     await expect(accountsGrid).toContainText("$0.00");
 
     // 4. Reload persistence
     await page.reload();
     await expect(accountsGrid).toContainText("$0.00");
-    await page.locator(".sidebar").getByRole("button", { name: /Overview/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Overview/i })
+      .click();
     await expect(safeNumber).toHaveText("$0.00");
 
     // 5. Duplicate-submit prevention via modal submission guard
-    await page.locator(".sidebar").getByRole("button", { name: /Transactions/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("button", { name: /Transactions/i })
+      .click();
     await expect(page.locator("table tbody tr")).toHaveCount(0);
 
-    const addTxBtn = page.getByRole("button", { name: /Record first transaction|Add transaction/i }).first();
+    const addTxBtn = page
+      .getByRole("button", {
+        name: /Record first transaction|Add transaction/i,
+      })
+      .first();
     await addTxBtn.click();
     await expect(dialog).toBeVisible();
 
