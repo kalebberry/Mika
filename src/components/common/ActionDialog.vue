@@ -1021,8 +1021,7 @@ function onDateInput() {
       >
         <button
           type="button"
-          class="text-link danger small"
-          style="color: var(--color-danger, #c94736); display: inline-flex; align-items: center; gap: 0.35rem;"
+          class="text-link danger small delete-account-btn"
           @click="open('Delete account', selected)"
         >
           🗑 Delete account...
@@ -2038,5 +2037,32 @@ function onDateInput() {
   font-weight: 600;
   margin-top: 0.2rem;
   display: block;
+}
+
+.delete-account-btn {
+  background: transparent !important;
+  color: var(--color-danger, #c94736) !important;
+  font-size: 0.875rem;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all var(--transition-normal, 0.2s ease);
+}
+
+.delete-account-btn:hover {
+  background: var(--color-danger-light, #fff0ed) !important;
+  color: var(--color-danger-text, #a92d26) !important;
+  border-color: rgba(179, 67, 55, 0.2);
+  text-decoration: underline;
+}
+
+.delete-account-btn:focus-visible {
+  outline: 2px solid var(--color-danger, #c94736);
+  outline-offset: 2px;
 }
 </style>

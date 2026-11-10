@@ -64,6 +64,16 @@
   font-size: 0.875rem;
 }
 
+.text-link.danger {
+  color: var(--color-danger, #c94736);
+  background: transparent;
+}
+
+.text-link.danger:hover {
+  text-decoration: underline;
+  color: var(--color-danger-text, #a92d26);
+}
+
 .delete-icon {
   font-size: 1.25rem;
   min-width: 3rem;

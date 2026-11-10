@@ -186,8 +186,15 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
     await expect(dialog).toBeVisible();
     await expect(dialog.locator("#dialog-title")).toHaveText("Edit account");
 
+    // Verify delete account trigger has visible text and transparent background (not red-on-red)
+    const deleteBtn = dialog.getByRole("button", { name: /Delete account/i });
+    await expect(deleteBtn).toBeVisible();
+    await expect(deleteBtn).toHaveText(/Delete account/);
+    const btnBg = await deleteBtn.evaluate((el) => window.getComputedStyle(el).backgroundColor);
+    expect(btnBg).toMatch(/rgba\(0,\s*0,\s*0,\s*0\)|transparent/);
+
     // Transition into Delete account inside the open dialog
-    await dialog.getByRole("button", { name: /Delete account/i }).click();
+    await deleteBtn.click();
     expect(pageErrors).toHaveLength(0);
     await expect(dialog).toBeVisible();
     await expect(dialog.locator("#dialog-title")).toHaveText("Delete account");
