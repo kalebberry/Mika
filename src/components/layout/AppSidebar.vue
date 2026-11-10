@@ -114,7 +114,7 @@ onUnmounted(() => {
       @click.prevent="page = 'Overview'"
       aria-label="Budget - Go to Overview"
     >
-      <span class="brand-mark">m.m</span>
+      <span class="brand-mark">m.</span>
       <span class="brand-name">mika<span class="brand-dot">.</span></span>
     </a>
     <nav aria-label="Main navigation">
