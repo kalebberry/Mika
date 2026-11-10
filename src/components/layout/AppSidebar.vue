@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick } from "vue";
-import { useBudget, navItems, type PageName } from "../../composables/useBudget";
+import {
+  useBudget,
+  navItems,
+  type PageName,
+} from "../../composables/useBudget";
 
 const { page, collapsed, isMobileMenuOpen } = useBudget();
 
@@ -10,9 +14,7 @@ const sheetRef = ref<HTMLElement | null>(null);
 
 const secondaryPages: PageName[] = ["Insights", "Pots", "Settings"];
 
-const isSecondaryActive = computed(() =>
-  secondaryPages.includes(page.value),
-);
+const isSecondaryActive = computed(() => secondaryPages.includes(page.value));
 
 const activeSecondaryItem = computed(() => {
   return navItems.find(([label]) => label === page.value);
@@ -48,7 +50,9 @@ function toggleMore() {
   isMobileMenuOpen.value = isMoreOpen.value;
   if (isMoreOpen.value) {
     nextTick(() => {
-      const firstBtn = sheetRef.value?.querySelector<HTMLElement>("button.mobile-more-item");
+      const firstBtn = sheetRef.value?.querySelector<HTMLElement>(
+        "button.mobile-more-item",
+      );
       firstBtn?.focus();
     });
   }
@@ -110,8 +114,8 @@ onUnmounted(() => {
       @click.prevent="page = 'Overview'"
       aria-label="Budget - Go to Overview"
     >
-      <span class="brand-mark">b.</span>
-      <span class="brand-name">budget<span class="brand-dot">.</span></span>
+      <span class="brand-mark">m.m</span>
+      <span class="brand-name">mika<span class="brand-dot">.</span></span>
     </a>
     <nav aria-label="Main navigation">
       <button
@@ -125,7 +129,10 @@ onUnmounted(() => {
         :aria-current="page === label ? 'page' : undefined"
         :title="label"
       >
-        <span class="nav-icon" :class="{ 'has-svg': label === 'Accounts' || label === 'Insights' }">
+        <span
+          class="nav-icon"
+          :class="{ 'has-svg': label === 'Accounts' || label === 'Insights' }"
+        >
           <svg
             v-if="label === 'Accounts'"
             class="sidebar-icon-svg"
@@ -175,11 +182,18 @@ onUnmounted(() => {
         <span
           class="nav-icon"
           :class="{
-            'has-svg': isSecondaryActive && activeSecondaryItem && activeSecondaryItem[0] === 'Insights',
+            'has-svg':
+              isSecondaryActive &&
+              activeSecondaryItem &&
+              activeSecondaryItem[0] === 'Insights',
           }"
         >
           <svg
-            v-if="isSecondaryActive && activeSecondaryItem && activeSecondaryItem[0] === 'Insights'"
+            v-if="
+              isSecondaryActive &&
+              activeSecondaryItem &&
+              activeSecondaryItem[0] === 'Insights'
+            "
             class="sidebar-icon-svg"
             viewBox="0 0 24 24"
             fill="none"
@@ -194,21 +208,25 @@ onUnmounted(() => {
             <line x1="6" y1="20" x2="6" y2="14" />
           </svg>
           <template v-else>
-            {{ isSecondaryActive && activeSecondaryItem ? activeSecondaryItem[1] : "⋯" }}
+            {{
+              isSecondaryActive && activeSecondaryItem
+                ? activeSecondaryItem[1]
+                : "⋯"
+            }}
           </template>
         </span>
         <span class="nav-label">
-          {{ isSecondaryActive && activeSecondaryItem ? activeSecondaryItem[0] : "More" }}
+          {{
+            isSecondaryActive && activeSecondaryItem
+              ? activeSecondaryItem[0]
+              : "More"
+          }}
         </span>
       </button>
     </nav>
 
     <!-- Mobile Secondary Overflow Drawer / Sheet -->
-    <div
-      v-if="isMoreOpen"
-      class="mobile-more-overlay"
-      @click.self="closeMore"
-    >
+    <div v-if="isMoreOpen" class="mobile-more-overlay" @click.self="closeMore">
       <div
         ref="sheetRef"
         class="mobile-more-sheet"
@@ -254,7 +272,12 @@ onUnmounted(() => {
               <strong>Your Insights</strong>
               <small>Understand your money at your own pace</small>
             </div>
-            <span v-if="page === 'Insights'" class="more-item-check" aria-hidden="true">✓</span>
+            <span
+              v-if="page === 'Insights'"
+              class="more-item-check"
+              aria-hidden="true"
+              >✓</span
+            >
           </button>
           <button
             type="button"
@@ -267,7 +290,12 @@ onUnmounted(() => {
               <strong>Pots</strong>
               <small>Savings goals and target amounts</small>
             </div>
-            <span v-if="page === 'Pots'" class="more-item-check" aria-hidden="true">✓</span>
+            <span
+              v-if="page === 'Pots'"
+              class="more-item-check"
+              aria-hidden="true"
+              >✓</span
+            >
           </button>
           <button
             type="button"
@@ -280,7 +308,12 @@ onUnmounted(() => {
               <strong>Settings</strong>
               <small>Manage workspace, payday & preferences</small>
             </div>
-            <span v-if="page === 'Settings'" class="more-item-check" aria-hidden="true">✓</span>
+            <span
+              v-if="page === 'Settings'"
+              class="more-item-check"
+              aria-hidden="true"
+              >✓</span
+            >
           </button>
         </div>
       </div>
