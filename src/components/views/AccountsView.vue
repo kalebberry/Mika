@@ -1085,10 +1085,12 @@ function getCoverageBadge(status: string) {
 
 .menu-item.danger {
   color: var(--color-danger, #c94736);
+  background: transparent;
 }
 
 .menu-item.danger:hover {
   background: #fff0ee;
+  color: var(--color-danger-text, #a92d26);
 }
 
 /* Inline Expanded Body */

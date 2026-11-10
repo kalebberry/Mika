@@ -103,15 +103,15 @@ dialog label small {
   margin-top: 0.3125rem;
 }
 
-button.danger:not(.text-link),
-.primary.danger,
+dialog button.danger:not(.text-link),
+dialog .primary.danger,
 .modal-actions button.danger,
-button[type="submit"].danger {
+dialog button[type="submit"].danger {
   background: var(--color-danger);
   color: #ffffff;
 }
 
-.text-link.danger {
+dialog .text-link.danger {
   background: transparent !important;
   color: var(--color-danger, #c94736) !important;
 }

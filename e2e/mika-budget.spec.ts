@@ -203,6 +203,18 @@ test.describe("Mika Budget — Phase 6C Critical Browser Regression Journeys", (
       exact: true,
     });
     await menuTrigger.click();
+
+    // Verify the dropdown menu's "Delete account..." item has visible text and transparent background (not red-on-red)
+    const dropdownDeleteBtn = page.getByRole("menuitem", {
+      name: /Delete account/i,
+    });
+    await expect(dropdownDeleteBtn).toBeVisible();
+    await expect(dropdownDeleteBtn).toHaveText(/Delete account/);
+    const dropdownDeleteBg = await dropdownDeleteBtn.evaluate(
+      (el) => window.getComputedStyle(el).backgroundColor,
+    );
+    expect(dropdownDeleteBg).toMatch(/rgba\(0,\s*0,\s*0,\s*0\)|transparent/);
+
     await page.getByRole("menuitem", { name: /Edit details/i }).click();
     await expect(dialog).toBeVisible();
     await expect(dialog.locator("#dialog-title")).toHaveText("Edit account");
