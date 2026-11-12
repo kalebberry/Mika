@@ -1266,3 +1266,140 @@
   }
 }
 
+
+
+/*
+ * Studio Eien / Mika editorial dashboard study.
+ * Scoped to Overview so other financial views and semantic status colors stay intact.
+ */
+.daily-dashboard {
+  --editorial-cream: #f7f6f2;
+  --editorial-surface: #fdfcf9;
+  --editorial-ink: #25251f;
+  --editorial-rule: #d9d6cd;
+  --editorial-muted: #65645c;
+}
+
+.daily-dashboard .safe-card {
+  background: var(--editorial-ink);
+  color: #fdfcf9;
+  border: 1px solid var(--editorial-ink);
+  border-radius: 0.75rem;
+  box-shadow: none;
+}
+
+.daily-dashboard .safe-label {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.daily-dashboard .spark {
+  color: #d2cdbf;
+}
+
+.daily-dashboard .safe-number {
+  font-size: clamp(2.5rem, 5vw, 4.25rem);
+  font-weight: 600;
+  letter-spacing: -0.065em;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  margin-block: 0.875rem 0.75rem;
+}
+
+.daily-dashboard .safe-main > p {
+  color: #e1ded5;
+  line-height: 1.6;
+}
+
+.daily-dashboard .safe-number.negative {
+  color: #ffd4ca;
+}
+
+.daily-dashboard .safe-breakdown-toggle {
+  background: transparent;
+  border-color: #a7a397;
+  border-radius: 0.375rem;
+  min-height: 2.75rem;
+}
+
+.daily-dashboard .safe-breakdown-toggle:hover {
+  background: #414139;
+}
+
+.daily-dashboard .safe-breakdown {
+  border-color: #77756c;
+}
+
+.daily-dashboard .safe-breakdown > div {
+  color: #e1ded5;
+}
+
+.daily-dashboard .safe-breakdown .safe-total {
+  border-color: #77756c;
+  color: #ffffff;
+}
+
+.daily-dashboard .card,
+.daily-dashboard .stat,
+.daily-dashboard .saved-total {
+  background: var(--editorial-surface);
+  border: 1px solid var(--editorial-rule);
+  border-radius: 0.625rem;
+  box-shadow: none;
+}
+
+.daily-dashboard .card h2,
+.daily-dashboard .supporting-details-heading {
+  color: var(--editorial-ink);
+  letter-spacing: -0.035em;
+}
+
+.daily-dashboard .stat strong,
+.daily-dashboard .saved-total strong {
+  color: var(--editorial-ink);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.055em;
+}
+
+.daily-dashboard .supporting-financial-details {
+  border-top: 1px solid var(--editorial-rule);
+}
+
+.daily-dashboard .supporting-details-heading {
+  font-weight: 600;
+}
+
+/* Keep contrast and surfaces consistent if the user selected dark mode. */
+[data-theme="dark"] .daily-dashboard {
+  --editorial-surface: #29282e;
+  --editorial-ink: #f8f4f0;
+  --editorial-rule: #48464e;
+}
+
+[data-theme="dark"] .daily-dashboard .safe-card {
+  background: #25251f;
+  color: #fdfcf9;
+  border-color: #565449;
+}
+
+[data-theme="dark"] .daily-dashboard .safe-label,
+[data-theme="dark"] .daily-dashboard .safe-number,
+[data-theme="dark"] .daily-dashboard .card h2,
+[data-theme="dark"] .daily-dashboard .supporting-details-heading,
+[data-theme="dark"] .daily-dashboard .stat strong,
+[data-theme="dark"] .daily-dashboard .saved-total strong {
+  color: #f8f4f0;
+}
+
+[data-theme="dark"] .daily-dashboard .safe-number.negative {
+  color: #ffd4ca;
+}
+
+@media (max-width: 37.5rem) {
+  .daily-dashboard .safe-number {
+    font-size: clamp(2.25rem, 10vw, 3.25rem);
+  }
+}
